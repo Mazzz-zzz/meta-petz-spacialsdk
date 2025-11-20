@@ -37,6 +37,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   lateinit var textView: TextView
   lateinit var webView: WebView
+  private var currentPet: String? = null
 
   override fun registerFeatures(): List<SpatialFeature> {
     val features =
@@ -73,11 +74,13 @@ class ImmersiveActivity : AppSystemActivity() {
     scene.setViewOrigin(0.0f, 0.0f, 2.0f, 180.0f)
   }
 
-  fun playVideo(webviewURI: String) {
-    textView.visibility = View.GONE
-    webView.visibility = View.VISIBLE
-    val additionalHttpHeaders = mapOf("Referer" to "https://${packageName}")
-    webView.loadUrl(webviewURI, additionalHttpHeaders)
+  fun selectPet(petName: String) {
+    currentPet = petName
+    textView.text = "You selected: $petName! Your pet will appear soon."
+    textView.visibility = View.VISIBLE
+    webView.visibility = View.GONE
+    // TODO: Load the selected pet model in the scene
+    // For now, just update the text view
   }
 
   override fun registerPanels(): List<PanelRegistration> {
@@ -99,11 +102,15 @@ class ImmersiveActivity : AppSystemActivity() {
               webSettings.mediaPlaybackRequiresUserGesture = false
             },
         ),
-        // Registering a Compose panel
+        // Registering a Compose panel for pet selection
         ComposeViewPanelRegistration(
             R.id.options_panel,
             composeViewCreator = { _, context ->
-              ComposeView(context).apply { setContent { OptionsPanel(::playVideo) } }
+              ComposeView(context).apply {
+                setContent {
+                  OptionsPanel(onSelectPet = ::selectPet)
+                }
+              }
             },
             settingsCreator = {
               UIPanelSettings(

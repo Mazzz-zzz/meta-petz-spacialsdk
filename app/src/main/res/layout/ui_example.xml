@@ -15,7 +15,8 @@
     android:layout_height="match_parent"
     android:gravity="center"
     android:textColor="#000000"
-    android:text="Choose option to play video."
+    android:textSize="24sp"
+    android:text="Welcome to MetaPetz! Choose your virtual pet companion."
   />
   <WebView
     android:id="@+id/web_view"
