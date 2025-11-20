@@ -52,6 +52,7 @@ class ImmersiveActivity : AppSystemActivity() {
   lateinit var webView: WebView
   private var currentPet: String? = null
   private var currentPetEntity: Entity? = null
+  private var pedestalEntity: Entity? = null
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
 
@@ -99,6 +100,14 @@ class ImmersiveActivity : AppSystemActivity() {
 
     scene.setViewOrigin(0.0f, 0.0f, 2.0f, 180.0f)
 
+    // Configure bright lighting to illuminate the pet
+    scene.setLightingEnvironment(
+        ambientColor = Vector3(1.5f, 1.5f, 1.5f),  // Bright ambient light
+        sunColor = Vector3(3.0f, 3.0f, 3.0f),      // Bright directional light
+        sunDirection = -Vector3(0f, -1f, 1f),      // Light from above and front
+        environmentIntensity = 1.0f
+    )
+
     // Get the WebviewPanel entity to attach pet to it
     panelEntity = Query.where { has(Panel.id) }
         .eval()
@@ -117,9 +126,11 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     spinningJob = null
 
-    // Remove previous pet if exists
+    // Remove previous pet and pedestal if they exist
     currentPetEntity?.destroy()
     currentPetEntity = null
+    pedestalEntity?.destroy()
+    pedestalEntity = null
 
     // Load the new pet model from assets
     val modelPath = petModels[petName]
@@ -139,13 +150,30 @@ class ImmersiveActivity : AppSystemActivity() {
           // Get the panel entity to attach to
           val panel = panelEntity ?: Entity.nullEntity()
 
+          // Create glowing pedestal to illuminate the pet
+          pedestalEntity = Entity.create(
+              listOf(
+                  Mesh("apk:///models/pedestal_glowing.glb".toUri()),
+                  Transform(
+                      Pose(
+                          // Position pedestal at base, centered and in front of panel
+                          Vector3(0f, -0.15f, 0.2f),
+                          Quaternion()
+                      )
+                  ),
+                  Scale(Vector3(0.25f, 0.1f, 0.25f)), // Scaled to provide good base
+                  TransformParent(panel)
+              )
+          )
+
+          // Create pet entity positioned on top of pedestal
           currentPetEntity = Entity.create(
               listOf(
                   Mesh(modelPath.toUri()),
                   Transform(
                       Pose(
-                          // Local position relative to panel: centered and 0.2m in front
-                          Vector3(0f, 0f, 0.2f),
+                          // Local position: centered, slightly above pedestal, in front of panel
+                          Vector3(0f, 0.05f, 0.2f),
                           initialRotation
                       )
                   ),
@@ -197,7 +225,7 @@ class ImmersiveActivity : AppSystemActivity() {
           entity.setComponent(
               Transform(
                   Pose(
-                      Vector3(0f, 0f, 0.2f), // Local position: centered and 0.2m in front
+                      Vector3(0f, 0.05f, 0.2f), // Local position: on pedestal
                       rotation
                   )
               )
