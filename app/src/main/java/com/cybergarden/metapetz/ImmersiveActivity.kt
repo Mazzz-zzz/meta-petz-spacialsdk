@@ -37,7 +37,10 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.PI
 
 class ImmersiveActivity : AppSystemActivity() {
   private val activityScope = CoroutineScope(Dispatchers.Main)
@@ -46,6 +49,7 @@ class ImmersiveActivity : AppSystemActivity() {
   lateinit var webView: WebView
   private var currentPet: String? = null
   private var currentPetEntity: Entity? = null
+  private var spinningJob: Job? = null
 
   // Pet model file paths in assets
   private val petModels = mapOf(
@@ -98,6 +102,10 @@ class ImmersiveActivity : AppSystemActivity() {
     textView.visibility = View.VISIBLE
     webView.visibility = View.GONE
 
+    // Cancel previous spinning animation
+    spinningJob?.cancel()
+    spinningJob = null
+
     // Remove previous pet if exists
     currentPetEntity?.destroy()
     currentPetEntity = null
@@ -107,21 +115,35 @@ class ImmersiveActivity : AppSystemActivity() {
     if (modelPath != null) {
       activityScope.launch {
         try {
-          // Create entity with GLB mesh
+          // Create entity with GLB mesh positioned in the display window
+          // Initial rotation: 180° around X-axis to flip upright
+          val xFlipRadians = PI.toFloat()
+          val initialRotation = Quaternion(
+              kotlin.math.sin(xFlipRadians / 2).toFloat(),
+              0f,
+              0f,
+              kotlin.math.cos(xFlipRadians / 2).toFloat()
+          )
+
           currentPetEntity = Entity.create(
               listOf(
                   Mesh(modelPath.toUri()),
                   Transform(
                       Pose(
-                          Vector3(0.0f, 0.5f, -1.5f),
-                          Quaternion()
+                          // Position centered and in front of the display panel
+                          // Panel is at (0.293, 1.1, -1.7), so we position in front
+                          Vector3(0.29f, 1.1f, -1.5f),
+                          initialRotation
                       )
                   ),
-                  Scale(Vector3(0.3f, 0.3f, 0.3f))
+                  Scale(Vector3(0.2f, 0.2f, 0.2f))
               )
           )
 
           textView.text = "Meet your new pet $petName! ${petName.lowercase()} is ready to play!"
+
+          // Start spinning animation
+          startSpinning()
         } catch (e: Exception) {
           textView.text = "Error loading $petName: ${e.message}\nPath: $modelPath"
         }
@@ -129,6 +151,61 @@ class ImmersiveActivity : AppSystemActivity() {
     } else {
       textView.text = "Pet model not found for $petName"
     }
+  }
+
+  private fun startSpinning() {
+    val entity = currentPetEntity ?: return
+
+    spinningJob = activityScope.launch {
+      var angle = 0f
+      val rotationSpeed = 0.5f // Degrees per frame (slow rotation)
+
+      while (isActive) {
+        try {
+          // Update rotation around Y axis
+          angle = (angle + rotationSpeed) % 360f
+          val yRotRadians = angle * PI.toFloat() / 180f
+
+          // Flip model upright (180° around X-axis) and combine with Y-axis spin
+          // X-axis flip: 180 degrees = PI radians
+          val xFlipRadians = PI.toFloat()
+
+          // Quaternion for 180° rotation around X-axis (to flip upright)
+          val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
+
+          // Quaternion for Y-axis rotation (spinning)
+          val qy = Quaternion(0f, kotlin.math.sin(yRotRadians / 2), 0f, kotlin.math.cos(yRotRadians / 2))
+
+          // Combine rotations: first flip, then spin (qy * qx)
+          val rotation = multiplyQuaternions(qy, qx)
+
+          // Update entity transform - centered and in front of the display panel
+          entity.setComponent(
+              Transform(
+                  Pose(
+                      Vector3(0.29f, 1.1f, -1.5f), // Centered and in front of panel
+                      rotation
+                  )
+              )
+          )
+
+          delay(16) // ~60 FPS
+        } catch (e: Exception) {
+          // Entity might have been destroyed, stop spinning
+          break
+        }
+      }
+    }
+  }
+
+  // Helper function to multiply two quaternions
+  private fun multiplyQuaternions(q1: Quaternion, q2: Quaternion): Quaternion {
+    return Quaternion(
+        q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+        q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+        q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
+        q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z
+    )
   }
 
   override fun registerPanels(): List<PanelRegistration> {
@@ -173,6 +250,7 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   override fun onSpatialShutdown() {
+    spinningJob?.cancel()
     super.onSpatialShutdown()
   }
 
