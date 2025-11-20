@@ -74,7 +74,42 @@ fun OptionsPanelPreview() {
 
 @Composable
 fun OptionsPanel(onSelectPet: (String) -> Unit) {
-  var selectedPet by remember { mutableStateOf<Pet?>(null) }
+  val pets: List<Pet> = listOf(
+      Pet("Cat", "🐱", "A playful feline friend", "Curious"),
+      Pet("Dog", "🐶", "A loyal canine companion", "Loyal"),
+      Pet("Bunny", "🐰", "A cute hopping rabbit", "Gentle"),
+      Pet("Bird", "🐦", "A chirping feathered friend", "Energetic"),
+      Pet("Fish", "🐠", "A swimming aquatic pal", "Calm"),
+      Pet("Hamster", "🐹", "A tiny furry buddy", "Playful"),
+  )
+
+  SpatialTheme(colorScheme = getPanelTheme()) {
+    Column(
+        modifier =
+            Modifier.fillMaxSize()
+                .clip(SpatialTheme.shapes.large)
+                .background(brush = LocalColorScheme.current.panel)
+                .padding(32.dp),
+        verticalArrangement = Arrangement.Top,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      // Always show Pet Selection Screen in options panel
+      PetSelectionScreen(
+          pets = pets,
+          onSelectPet = { pet ->
+            onSelectPet(pet.name)
+          }
+      )
+    }
+  }
+}
+
+// Separate composable for the Pet Info Panel
+@Composable
+fun PetInfoPanel(
+    petName: String,
+    onClose: () -> Unit
+) {
   var petStats by remember { mutableStateOf(PetStats()) }
 
   val pets: List<Pet> = listOf(
@@ -86,17 +121,17 @@ fun OptionsPanel(onSelectPet: (String) -> Unit) {
       Pet("Hamster", "🐹", "A tiny furry buddy", "Playful"),
   )
 
+  val pet = pets.find { it.name == petName } ?: return
+
   // Simulate stat decay over time (Tamagotchi-style)
-  LaunchedEffect(selectedPet) {
-    if (selectedPet != null) {
-      while (true) {
-        delay(5000) // Every 5 seconds
-        petStats = petStats.copy(
-            hunger = max(0f, petStats.hunger - 0.05f),
-            happiness = max(0f, petStats.happiness - 0.03f),
-            energy = max(0f, petStats.energy - 0.04f)
-        )
-      }
+  LaunchedEffect(petName) {
+    while (true) {
+      delay(5000) // Every 5 seconds
+      petStats = petStats.copy(
+          hunger = max(0f, petStats.hunger - 0.05f),
+          happiness = max(0f, petStats.happiness - 0.03f),
+          energy = max(0f, petStats.energy - 0.04f)
+      )
     }
   }
 
@@ -110,25 +145,12 @@ fun OptionsPanel(onSelectPet: (String) -> Unit) {
         verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      if (selectedPet == null) {
-        // Pet Selection Screen
-        PetSelectionScreen(
-            pets = pets,
-            onSelectPet = { pet ->
-              selectedPet = pet
-              petStats = PetStats() // Reset stats for new pet
-              onSelectPet(pet.name)
-            }
-        )
-      } else {
-        // Pet Info & Care Screen
-        PetInfoScreen(
-            pet = selectedPet!!,
-            stats = petStats,
-            onStatsUpdate = { newStats -> petStats = newStats },
-            onBack = { selectedPet = null }
-        )
-      }
+      PetInfoScreen(
+          pet = pet,
+          stats = petStats,
+          onStatsUpdate = { newStats -> petStats = newStats },
+          onBack = onClose
+      )
     }
   }
 }

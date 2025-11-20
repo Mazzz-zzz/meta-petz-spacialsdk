@@ -5,7 +5,17 @@ import android.os.Bundle
 import android.view.View
 import android.webkit.WebView
 import android.widget.TextView
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
@@ -53,7 +63,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   lateinit var textView: TextView
   lateinit var webView: WebView
-  private var currentPet: String? = null
+  private var currentPet by mutableStateOf<String?>(null)
   private var currentPetEntity: Entity? = null
   private var pedestalEntity: Entity? = null
   private var spinningJob: Job? = null
@@ -121,9 +131,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
   fun selectPet(petName: String) {
     currentPet = petName
-    textView.text = "Loading your $petName..."
-    textView.visibility = View.VISIBLE
-    webView.visibility = View.GONE
 
     // Cancel previous spinning animation
     spinningJob?.cancel()
@@ -192,16 +199,12 @@ class ImmersiveActivity : AppSystemActivity() {
               )
           )
 
-          textView.text = "Meet your new pet $petName! ${petName.lowercase()} is ready to play!"
-
           // Start spinning animation
           startSpinning()
         } catch (e: Exception) {
-          textView.text = "Error loading $petName: ${e.message}\nPath: $modelPath"
+          // Error loading pet
         }
       }
-    } else {
-      textView.text = "Pet model not found for $petName"
     }
   }
 
@@ -277,22 +280,41 @@ class ImmersiveActivity : AppSystemActivity() {
 
   override fun registerPanels(): List<PanelRegistration> {
     return listOf(
-        // Registering light-weight Views panel
-        LayoutXMLPanelRegistration(
+        // Registering Pet Info Panel (shows stats when pet is selected)
+        ComposeViewPanelRegistration(
             R.id.ui_example,
-            layoutIdCreator = { _ -> R.layout.ui_example },
-            settingsCreator = { _ -> UIPanelSettings() },
-            panelSetupWithRootView = { rootView, _, _ ->
-              webView =
-                  rootView.findViewById<WebView>(R.id.web_view) ?: return@LayoutXMLPanelRegistration
-              textView =
-                  rootView.findViewById<TextView>(R.id.text_view)
-                      ?: return@LayoutXMLPanelRegistration
-              val webSettings = webView.settings
-              @SuppressLint("SetJavaScriptEnabled")
-              webSettings.javaScriptEnabled = true
-              webSettings.mediaPlaybackRequiresUserGesture = false
+            composeViewCreator = { _, context ->
+              ComposeView(context).apply {
+                setContent {
+                  if (currentPet != null) {
+                    PetInfoPanel(
+                        petName = currentPet!!,
+                        onClose = {
+                          currentPet = null
+                          currentPetEntity?.destroy()
+                          currentPetEntity = null
+                          pedestalEntity?.destroy()
+                          pedestalEntity = null
+                        }
+                    )
+                  } else {
+                    // Show welcome message
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                      Text(
+                          text = "Select a pet to get started!",
+                          fontSize = 24.sp,
+                          color = Color.White,
+                          textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                      )
+                    }
+                  }
+                }
+              }
             },
+            settingsCreator = { _ -> UIPanelSettings() },
         ),
         // Registering a Compose panel for pet selection
         ComposeViewPanelRegistration(
