@@ -31,8 +31,11 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.toolkit.Mesh
+import com.meta.spatial.toolkit.Panel
 import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Transform
+import com.meta.spatial.toolkit.TransformParent
+import com.meta.spatial.core.Query
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +53,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentPet: String? = null
   private var currentPetEntity: Entity? = null
   private var spinningJob: Job? = null
+  private var panelEntity: Entity? = null
 
   // Pet model file paths in assets
   private val petModels = mapOf(
@@ -94,6 +98,13 @@ class ImmersiveActivity : AppSystemActivity() {
     super.onSceneReady()
 
     scene.setViewOrigin(0.0f, 0.0f, 2.0f, 180.0f)
+
+    // Get the WebviewPanel entity to attach pet to it
+    panelEntity = Query.where { has(Panel.id) }
+        .eval()
+        .firstOrNull {
+          it.getComponent<Panel>().panelRegistrationId == R.id.ui_example
+        }
   }
 
   fun selectPet(petName: String) {
@@ -115,7 +126,7 @@ class ImmersiveActivity : AppSystemActivity() {
     if (modelPath != null) {
       activityScope.launch {
         try {
-          // Create entity with GLB mesh positioned in the display window
+          // Create entity with GLB mesh as a child of the panel
           // Initial rotation: 180° around X-axis to flip upright
           val xFlipRadians = PI.toFloat()
           val initialRotation = Quaternion(
@@ -125,18 +136,21 @@ class ImmersiveActivity : AppSystemActivity() {
               kotlin.math.cos(xFlipRadians / 2).toFloat()
           )
 
+          // Get the panel entity to attach to
+          val panel = panelEntity ?: Entity.nullEntity()
+
           currentPetEntity = Entity.create(
               listOf(
                   Mesh(modelPath.toUri()),
                   Transform(
                       Pose(
-                          // Position centered and in front of the display panel
-                          // Panel is at (0.293, 1.1, -1.7), so we position in front
-                          Vector3(0.29f, 1.1f, -1.5f),
+                          // Local position relative to panel: centered and 0.2m in front
+                          Vector3(0f, 0f, 0.2f),
                           initialRotation
                       )
                   ),
-                  Scale(Vector3(0.2f, 0.2f, 0.2f))
+                  Scale(Vector3(0.2f, 0.2f, 0.2f)),
+                  TransformParent(panel)
               )
           )
 
@@ -179,11 +193,11 @@ class ImmersiveActivity : AppSystemActivity() {
           // Combine rotations: first flip, then spin (qy * qx)
           val rotation = multiplyQuaternions(qy, qx)
 
-          // Update entity transform - centered and in front of the display panel
+          // Update entity transform with local position (relative to panel)
           entity.setComponent(
               Transform(
                   Pose(
-                      Vector3(0.29f, 1.1f, -1.5f), // Centered and in front of panel
+                      Vector3(0f, 0f, 0.2f), // Local position: centered and 0.2m in front
                       rotation
                   )
               )
