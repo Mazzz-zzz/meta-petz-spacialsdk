@@ -27,6 +27,10 @@ android {
 
   packaging { resources.excludes.add("META-INF/LICENSE") }
 
+  androidResources {
+    noCompress.addAll(listOf("glb", "gltf", "glxf", "bin"))
+  }
+
   lint { abortOnError = false }
 
   buildTypes {

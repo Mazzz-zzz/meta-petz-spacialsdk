@@ -26,6 +26,13 @@ import com.meta.spatial.toolkit.QuadShapeOptions
 import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.vr.LocomotionSystem
 import com.meta.spatial.vr.VRFeature
+import com.meta.spatial.core.Entity
+import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Quaternion
+import com.meta.spatial.core.Vector3
+import com.meta.spatial.toolkit.Mesh
+import com.meta.spatial.toolkit.Scale
+import com.meta.spatial.toolkit.Transform
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +45,17 @@ class ImmersiveActivity : AppSystemActivity() {
   lateinit var textView: TextView
   lateinit var webView: WebView
   private var currentPet: String? = null
+  private var currentPetEntity: Entity? = null
+
+  // Pet model file paths in assets
+  private val petModels = mapOf(
+      "Cat" to "apk:///models/cat.glb",
+      "Dog" to "apk:///models/dog.glb",
+      "Bunny" to "apk:///models/bunny.glb",
+      "Bird" to "apk:///models/bird.glb",
+      "Fish" to "apk:///models/fish.glb",
+      "Hamster" to "apk:///models/hamster.glb",
+  )
 
   override fun registerFeatures(): List<SpatialFeature> {
     val features =
@@ -76,11 +94,41 @@ class ImmersiveActivity : AppSystemActivity() {
 
   fun selectPet(petName: String) {
     currentPet = petName
-    textView.text = "You selected: $petName! Your pet will appear soon."
+    textView.text = "Loading your $petName..."
     textView.visibility = View.VISIBLE
     webView.visibility = View.GONE
-    // TODO: Load the selected pet model in the scene
-    // For now, just update the text view
+
+    // Remove previous pet if exists
+    currentPetEntity?.destroy()
+    currentPetEntity = null
+
+    // Load the new pet model from assets
+    val modelPath = petModels[petName]
+    if (modelPath != null) {
+      activityScope.launch {
+        try {
+          // Create entity with GLB mesh
+          currentPetEntity = Entity.create(
+              listOf(
+                  Mesh(modelPath.toUri()),
+                  Transform(
+                      Pose(
+                          Vector3(0.0f, 0.5f, -1.5f),
+                          Quaternion()
+                      )
+                  ),
+                  Scale(Vector3(0.3f, 0.3f, 0.3f))
+              )
+          )
+
+          textView.text = "Meet your new pet $petName! ${petName.lowercase()} is ready to play!"
+        } catch (e: Exception) {
+          textView.text = "Error loading $petName: ${e.message}\nPath: $modelPath"
+        }
+      }
+    } else {
+      textView.text = "Pet model not found for $petName"
+    }
   }
 
   override fun registerPanels(): List<PanelRegistration> {
