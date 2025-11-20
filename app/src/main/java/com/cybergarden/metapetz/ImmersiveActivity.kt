@@ -35,6 +35,9 @@ import com.meta.spatial.toolkit.Panel
 import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.TransformParent
+import com.meta.spatial.toolkit.Animated
+import com.meta.spatial.toolkit.PlaybackState
+import com.meta.spatial.toolkit.PlaybackType
 import com.meta.spatial.core.Query
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -70,7 +73,7 @@ class ImmersiveActivity : AppSystemActivity() {
     val features =
         mutableListOf<SpatialFeature>(
             VRFeature(this),
-            ComposeFeature(),
+            ComposeFeature()
         )
     if (BuildConfig.DEBUG) {
       features.add(CastInputForwardFeature(this))
@@ -156,8 +159,8 @@ class ImmersiveActivity : AppSystemActivity() {
                   Mesh("apk:///models/pedestal_glowing.glb".toUri()),
                   Transform(
                       Pose(
-                          // Position pedestal at base, centered and in front of panel
-                          Vector3(0f, -0.15f, 0.2f),
+                          // Position pedestal centered in front of panel
+                          Vector3(0f, 0.0f, 0.2f),
                           Quaternion()
                       )
                   ),
@@ -166,19 +169,26 @@ class ImmersiveActivity : AppSystemActivity() {
               )
           )
 
-          // Create pet entity positioned on top of pedestal
+          // Create pet entity with basic components
           currentPetEntity = Entity.create(
               listOf(
                   Mesh(modelPath.toUri()),
                   Transform(
                       Pose(
-                          // Local position: centered, slightly above pedestal, in front of panel
-                          Vector3(0f, 0.05f, 0.2f),
+                          // Local position: centered directly in front of panel
+                          Vector3(0f, 0.2f, 0.2f),
                           initialRotation
                       )
                   ),
                   Scale(Vector3(0.2f, 0.2f, 0.2f)),
-                  TransformParent(panel)
+                  TransformParent(panel),
+                  // Play built-in GLB animations if they exist (track 0 = first animation)
+                  Animated(
+                      startTime = System.currentTimeMillis(),
+                      playbackState = PlaybackState.PLAYING,
+                      playbackType = PlaybackType.LOOP,
+                      track = 0
+                  )
               )
           )
 
@@ -201,6 +211,7 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob = activityScope.launch {
       var angle = 0f
       val rotationSpeed = 0.5f // Degrees per frame (slow rotation)
+      var time = 0f // Time tracker for animations
 
       while (isActive) {
         try {
@@ -221,11 +232,25 @@ class ImmersiveActivity : AppSystemActivity() {
           // Combine rotations: first flip, then spin (qy * qx)
           val rotation = multiplyQuaternions(qy, qx)
 
-          // Update entity transform with local position (relative to panel)
+          // Dancing animation: bouncing up and down with side-to-side sway
+          time += 0.016f // Increment time (16ms frame time)
+          val bounceHeight = kotlin.math.sin(time * 3f) * 0.03f // Bounce up/down
+          val sideToSide = kotlin.math.sin(time * 2f) * 0.02f // Sway left/right
+
+          // Base position + dancing movements
+          val baseY = 0.2f
+          val baseX = 0f
+          val dancing = Vector3(
+              baseX + sideToSide, // X: side-to-side sway
+              baseY + bounceHeight, // Y: bouncing motion
+              0.2f // Z: fixed distance in front
+          )
+
+          // Update entity transform with dancing position
           entity.setComponent(
               Transform(
                   Pose(
-                      Vector3(0f, 0.05f, 0.2f), // Local position: on pedestal
+                      dancing,
                       rotation
                   )
               )
