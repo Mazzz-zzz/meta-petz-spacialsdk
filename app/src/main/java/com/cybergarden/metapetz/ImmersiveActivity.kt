@@ -5,9 +5,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
-import android.view.View
-import android.webkit.WebView
-import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
@@ -25,6 +22,7 @@ import androidx.core.net.toUri
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
+import com.meta.spatial.compose.composePanel
 import com.meta.spatial.core.SpatialFeature
 import com.meta.spatial.datamodelinspector.DataModelInspectorFeature
 import com.meta.spatial.debugtools.HotReloadFeature
@@ -34,7 +32,6 @@ import com.meta.spatial.ovrmetrics.OVRMetricsFeature
 import com.meta.spatial.runtime.NetworkedAssetLoader
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
-import com.meta.spatial.toolkit.LayoutXMLPanelRegistration
 import com.meta.spatial.toolkit.PanelRegistration
 import com.meta.spatial.toolkit.PanelStyleOptions
 import com.meta.spatial.toolkit.QuadShapeOptions
@@ -69,27 +66,30 @@ import kotlin.math.PI
 class ImmersiveActivity : AppSystemActivity() {
   private val activityScope = CoroutineScope(Dispatchers.Main)
 
-  lateinit var textView: TextView
-  lateinit var webView: WebView
   private var currentPet by mutableStateOf<String?>(null)
   private var currentPetEntity: Entity? = null
   private var pedestalEntity: Entity? = null
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
+  private var photoCaptureModalEntity: Entity? = null
+  private var headTrackingJob: Job? = null
   private var customPetImageUrl: String? = null
   private var isCustomPet = false // Track if current pet is a custom 3D model (different rotation)
 
-  // Firebase Manager for cloud persistence
-  lateinit var firebaseManager: FirebaseManager
-    private set
+  // Firebase Manager for cloud persistence (lazy so available during registerPanels)
+  val firebaseManager: FirebaseManager by lazy {
+    FirebaseManager(applicationContext).also { it.updateLastActive() }
+  }
 
   // Replicate Manager for AI background removal
-  lateinit var replicateManager: ReplicateManager
-    private set
+  val replicateManager: ReplicateManager by lazy {
+    ReplicateManager(ReplicateManager.DEFAULT_API_TOKEN, applicationContext)
+  }
 
   // Photo Capture Manager for passthrough camera
-  lateinit var photoCaptureManager: PhotoCaptureManager
-    private set
+  val photoCaptureManager: PhotoCaptureManager by lazy {
+    PhotoCaptureManager(applicationContext)
+  }
 
   private var pendingCameraCallback: ((Bitmap?) -> Unit)? = null
   private var cameraPermissionGranted = false
@@ -131,16 +131,6 @@ class ImmersiveActivity : AppSystemActivity() {
         File(applicationContext.getCacheDir().canonicalPath),
         OkHttpAssetFetcher(),
     )
-
-    // Initialize Firebase Manager
-    firebaseManager = FirebaseManager(applicationContext)
-    firebaseManager.updateLastActive()
-
-    // Initialize Replicate Manager for AI background removal and 3D generation
-    replicateManager = ReplicateManager(ReplicateManager.DEFAULT_API_TOKEN, applicationContext)
-
-    // Initialize Photo Capture Manager for passthrough camera
-    photoCaptureManager = PhotoCaptureManager(applicationContext)
     checkAndRequestCameraPermission()
 
     // Enable MR mode
@@ -172,6 +162,153 @@ class ImmersiveActivity : AppSystemActivity() {
         .firstOrNull {
           it.getComponent<Panel>().panelRegistrationId == R.id.ui_example
         }
+
+    // Create the PhotoCapturePanel entity programmatically for head tracking
+    createPhotoCapturePanel()
+
+    // Start head tracking for the photo capture modal
+    startHeadTracking()
+  }
+
+  /**
+   * Get the head entity from PlayerBodyAttachmentSystem
+   */
+  private fun getHeadEntity(): Entity? {
+    return systemManager
+        .tryFindSystem<PlayerBodyAttachmentSystem>()
+        ?.tryGetLocalPlayerAvatarBody()
+        ?.head
+  }
+
+  /**
+   * Get the left hand entity from PlayerBodyAttachmentSystem
+   */
+  private fun getLeftHandEntity(): Entity? {
+    return systemManager
+        .tryFindSystem<PlayerBodyAttachmentSystem>()
+        ?.tryGetLocalPlayerAvatarBody()
+        ?.leftHand
+  }
+
+  /**
+   * Get the right hand entity from PlayerBodyAttachmentSystem
+   */
+  private fun getRightHandEntity(): Entity? {
+    return systemManager
+        .tryFindSystem<PlayerBodyAttachmentSystem>()
+        ?.tryGetLocalPlayerAvatarBody()
+        ?.rightHand
+  }
+
+  /**
+   * Create the photo capture modal panel programmatically.
+   * Starts HIDDEN - use palm-up gesture to toggle visibility.
+   */
+  private fun createPhotoCapturePanel() {
+    // Create the panel entity - starts hidden (below ground)
+    photoCaptureModalEntity = Entity.create(
+        listOf(
+            Panel(R.id.photo_capture_modal),
+            Transform(
+                Pose(
+                    Vector3(0f, -100f, 0f), // Start hidden
+                    Quaternion()
+                )
+            )
+        )
+    )
+    photoPanelVisible = false
+    Log.d(TAG, "Photo capture modal panel created (hidden - palm up to open)")
+  }
+
+  // Track panel visibility state
+  private var photoPanelVisible by mutableStateOf(false)
+  private var lastPalmUpTime = 0L
+  private var lastPinchTime = 0L
+  private val GESTURE_COOLDOWN = 1000L
+  private val PINCH_COOLDOWN = 2000L
+
+  // Callback for pinch-triggered photo capture
+  var onPinchCapture: (() -> Unit)? = null
+
+  /**
+   * Start hand gesture detection for the photo capture modal panel.
+   * - Palm up gesture TOGGLES panel
+   * - Panel LOCKS in place when opened
+   * - PINCH gesture triggers photo capture
+   */
+  private fun startHeadTracking() {
+    headTrackingJob?.cancel()
+    headTrackingJob = activityScope.launch {
+      var wasPalmUpActive = false
+      var wasPinchActive = false
+
+      while (isActive) {
+        try {
+          val leftHand = getLeftHandEntity()
+          val rightHand = getRightHandEntity()
+          val head = getHeadEntity()
+          val panel = photoCaptureModalEntity
+
+          if (leftHand != null && head != null && panel != null) {
+            val leftHandPose = leftHand.tryGetComponent<Transform>()?.transform
+            val rightHandPose = rightHand?.tryGetComponent<Transform>()?.transform
+            val headPose = head.tryGetComponent<Transform>()?.transform
+
+            if (leftHandPose != null && leftHandPose != Pose() && headPose != null) {
+              val currentTime = System.currentTimeMillis()
+
+              // === PALM UP GESTURE (left hand) - Toggle panel ===
+              val handUp = leftHandPose.q * Vector3(0f, 1f, 0f)
+              val isPalmUp = handUp.y > 0.6f
+              val isHandRaised = leftHandPose.t.y > (headPose.t.y - 0.4f)
+              val isPalmUpActive = isPalmUp && isHandRaised
+
+              if (isPalmUpActive && !wasPalmUpActive && (currentTime - lastPalmUpTime > GESTURE_COOLDOWN)) {
+                lastPalmUpTime = currentTime
+                photoPanelVisible = !photoPanelVisible
+
+                if (photoPanelVisible) {
+                  val forward = headPose.q * Vector3(0f, 0f, 1f)
+                  forward.y = 0f
+                  val panelRotation = Quaternion.lookRotation(forward)
+                  val panelPose = Pose(
+                      headPose.t + panelRotation * Vector3(0f, -0.1f, 0.7f),
+                      panelRotation * Quaternion(10f, 0f, 0f)
+                  )
+                  panel.setComponent(Transform(panelPose))
+                  Log.d(TAG, "🖐️ Palm up - OPENED viewfinder")
+                } else {
+                  panel.setComponent(Transform(Pose(Vector3(0f, -100f, 0f), Quaternion())))
+                  Log.d(TAG, "🖐️ Palm up - CLOSED viewfinder")
+                }
+              }
+              wasPalmUpActive = isPalmUpActive
+
+              // === PINCH GESTURE (right hand) - Capture photo ===
+              if (photoPanelVisible && rightHandPose != null && rightHandPose != Pose()) {
+                val rightHandForward = rightHandPose.q * Vector3(0f, 0f, 1f)
+                val isPinching = rightHandForward.y < -0.3f
+
+                if (isPinching && !wasPinchActive && (currentTime - lastPinchTime > PINCH_COOLDOWN)) {
+                  lastPinchTime = currentTime
+                  Log.d(TAG, "👌 PINCH - capturing photo!")
+                  onPinchCapture?.invoke()
+                }
+                wasPinchActive = isPinching
+              } else {
+                wasPinchActive = false
+              }
+            }
+          }
+
+          delay(16)
+        } catch (e: Exception) {
+          Log.e(TAG, "Hand tracking error: ${e.message}")
+          delay(16)
+        }
+      }
+    }
   }
 
   private fun checkAndRequestCameraPermission() {
@@ -504,11 +641,48 @@ class ImmersiveActivity : AppSystemActivity() {
               )
             },
         ),
+        // Photo capture panel with pinch gesture support
+        PanelRegistration(R.id.photo_capture_modal) {
+          config {
+            width = PHOTO_MODAL_WIDTH
+            height = PHOTO_MODAL_HEIGHT
+            layoutWidthInDp = 920f * PHOTO_MODAL_WIDTH
+            themeResourceId = R.style.PanelAppThemeTransparent
+            includeGlass = false
+          }
+          composePanel {
+            setContent {
+              PhotoCaptureModal(
+                  replicateManager = replicateManager,
+                  onCapturePhoto = ::capturePhoto,
+                  onClose = {
+                    // Close panel via palm-up gesture toggle
+                    photoPanelVisible = false
+                    photoCaptureModalEntity?.setComponent(
+                        Transform(Pose(Vector3(0f, -100f, 0f), Quaternion()))
+                    )
+                  },
+                  onPetCreated = { glbUrl ->
+                    selectCustomPet(glbUrl)
+                    // Close panel after pet is created
+                    photoPanelVisible = false
+                    photoCaptureModalEntity?.setComponent(
+                        Transform(Pose(Vector3(0f, -100f, 0f), Quaternion()))
+                    )
+                  },
+                  onRegisterPinchCallback = { callback ->
+                    onPinchCapture = callback
+                  }
+              )
+            }
+          }
+        },
     )
   }
 
   override fun onSpatialShutdown() {
     spinningJob?.cancel()
+    headTrackingJob?.cancel()
     photoCaptureManager.dispose()
     super.onSpatialShutdown()
   }

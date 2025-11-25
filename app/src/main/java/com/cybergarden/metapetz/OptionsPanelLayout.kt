@@ -16,6 +16,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -329,14 +330,15 @@ fun PetSelectionScreen(
 
 /**
  * Photo Capture Modal - A standalone modal for creating custom pets
- * This is spawned as a separate panel in front of the user
+ * Uses pinch gesture to capture photos - simpler one-handed flow
  */
 @Composable
 fun PhotoCaptureModal(
     replicateManager: ReplicateManager,
     onCapturePhoto: (callback: (Bitmap?) -> Unit) -> Unit,
     onClose: () -> Unit,
-    onPetCreated: (String) -> Unit
+    onPetCreated: (String) -> Unit,
+    onRegisterPinchCallback: (((() -> Unit)?) -> Unit)? = null
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
     Column(
@@ -348,13 +350,221 @@ fun PhotoCaptureModal(
         verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      PhotoCaptureContent(
+      ViewfinderContent(
           replicateManager = replicateManager,
           onCapturePhoto = onCapturePhoto,
           onClose = onClose,
-          onPetCreated = onPetCreated
+          onPetCreated = onPetCreated,
+          onRegisterPinchCallback = onRegisterPinchCallback
       )
     }
+  }
+}
+
+/**
+ * Viewfinder-style UI for photo capture with pinch gesture
+ */
+@Composable
+fun ViewfinderContent(
+    replicateManager: ReplicateManager,
+    onCapturePhoto: (callback: (Bitmap?) -> Unit) -> Unit,
+    onClose: () -> Unit,
+    onPetCreated: (String) -> Unit,
+    onRegisterPinchCallback: (((() -> Unit)?) -> Unit)? = null
+) {
+  var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var isCapturing by remember { mutableStateOf(false) }
+  var isProcessing by remember { mutableStateOf(false) }
+  var isGenerating3D by remember { mutableStateOf(false) }
+  var generationProgress by remember { mutableStateOf(0) }
+  var processedImageUrl by remember { mutableStateOf<String?>(null) }
+  var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var glbModelUrl by remember { mutableStateOf<String?>(null) }
+  var statusMessage by remember { mutableStateOf("Point at your subject") }
+
+  val scope = rememberCoroutineScope()
+
+  // Register pinch callback for photo capture
+  LaunchedEffect(Unit) {
+    onRegisterPinchCallback?.invoke {
+      if (!isCapturing && capturedBitmap == null) {
+        isCapturing = true
+        statusMessage = "Capturing..."
+        onCapturePhoto { bitmap ->
+          isCapturing = false
+          if (bitmap != null) {
+            capturedBitmap = bitmap
+            statusMessage = "Photo captured! Processing..."
+            // Auto-start background removal
+            scope.launch {
+              try {
+                val dataUrl = replicateManager.bitmapToDataUrl(bitmap)
+                isProcessing = true
+                val result = replicateManager.removeBackground(dataUrl)
+                if (result != null) {
+                  processedImageUrl = result
+                  processedBitmap = replicateManager.downloadImage(result)
+                  statusMessage = "Generating 3D model..."
+                  // Auto-start 3D generation
+                  isGenerating3D = true
+                  val glbUrl = replicateManager.generateModel3D(result) { progress ->
+                    generationProgress = progress
+                    statusMessage = "Creating 3D pet... $progress%"
+                  }
+                  if (glbUrl != null) {
+                    glbModelUrl = glbUrl
+                    statusMessage = "3D pet ready! Pinch to use it"
+                  } else {
+                    statusMessage = "Failed to generate 3D. Pinch to retry."
+                  }
+                  isGenerating3D = false
+                }
+                isProcessing = false
+              } catch (e: Exception) {
+                statusMessage = "Error: ${e.message}"
+                isProcessing = false
+                isGenerating3D = false
+              }
+            }
+          } else {
+            statusMessage = "Capture failed. Try again."
+          }
+        }
+      } else if (glbModelUrl != null) {
+        // Pinch again to use the 3D pet
+        scope.launch {
+          statusMessage = "Loading pet..."
+          val cachedUrl = replicateManager.downloadAndCacheGlb(glbModelUrl!!)
+          onPetCreated(cachedUrl)
+          onClose()
+        }
+      }
+    }
+  }
+
+  // Cleanup callback on dispose
+  DisposableEffect(Unit) {
+    onDispose {
+      onRegisterPinchCallback?.invoke(null)
+    }
+  }
+
+  Column(
+      modifier = Modifier.fillMaxSize(),
+      verticalArrangement = Arrangement.SpaceBetween,
+      horizontalAlignment = Alignment.CenterHorizontally
+  ) {
+    // Header
+    Text(
+        text = "Custom Pet Camera",
+        fontSize = 22.sp,
+        fontWeight = FontWeight.Bold,
+        color = Color.White
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    // Viewfinder area
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0x22FFFFFF))
+            .border(3.dp, Color(0xFF9C27B0), RoundedCornerShape(16.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+      if (capturedBitmap != null) {
+        // Show captured/processed image
+        val displayBitmap = processedBitmap ?: capturedBitmap
+        Image(
+            bitmap = displayBitmap!!.asImageBitmap(),
+            contentDescription = "Captured",
+            modifier = Modifier.fillMaxSize().padding(8.dp),
+            contentScale = ContentScale.Fit
+        )
+        // Overlay progress indicator
+        if (isProcessing || isGenerating3D) {
+          Box(
+              modifier = Modifier.fillMaxSize().background(Color(0x88000000)),
+              contentAlignment = Alignment.Center
+          ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+              CircularProgressIndicator(color = Color(0xFF9C27B0))
+              Spacer(modifier = Modifier.height(8.dp))
+              Text(
+                  text = if (isGenerating3D) "$generationProgress%" else "Processing...",
+                  color = Color.White,
+                  fontSize = 16.sp
+              )
+            }
+          }
+        }
+      } else {
+        // Empty viewfinder
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          Icon(
+              imageVector = Icons.Filled.Add,
+              contentDescription = "Camera",
+              tint = Color(0xFF9C27B0).copy(alpha = 0.5f),
+              modifier = Modifier.size(64.dp)
+          )
+          if (isCapturing) {
+            Spacer(modifier = Modifier.height(8.dp))
+            CircularProgressIndicator(color = Color(0xFF9C27B0))
+          }
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    // Status message
+    Text(
+        text = statusMessage,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.Medium,
+        color = Color.White,
+        textAlign = TextAlign.Center
+    )
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Gesture hint
+    SecondaryCard(modifier = Modifier.fillMaxWidth()) {
+      Row(
+          modifier = Modifier.padding(16.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.Center
+      ) {
+        Text(
+            text = "👌",
+            fontSize = 32.sp
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column {
+          Text(
+              text = if (glbModelUrl != null) "Pinch to use pet" else "Pinch to capture",
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold,
+              color = Color.White
+          )
+          Text(
+              text = "Use your right hand",
+              fontSize = 12.sp,
+              color = SpatialColor.white90
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // Close button (palm up also closes)
+    SecondaryButton(
+        label = "Close (or 🖐️ palm up)",
+        onClick = onClose
+    )
   }
 }
 
