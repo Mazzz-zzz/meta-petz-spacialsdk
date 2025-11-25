@@ -41,6 +41,7 @@ import com.meta.spatial.toolkit.QuadShapeOptions
 import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.vr.LocomotionSystem
 import com.meta.spatial.vr.VRFeature
+import com.meta.spatial.isdk.IsdkFeature
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
@@ -112,6 +113,7 @@ class ImmersiveActivity : AppSystemActivity() {
     val features =
         mutableListOf<SpatialFeature>(
             VRFeature(this),
+            IsdkFeature(this, spatial, systemManager),  // Enable hand tracking and controller interactions
             ComposeFeature()
         )
     if (BuildConfig.DEBUG) {
