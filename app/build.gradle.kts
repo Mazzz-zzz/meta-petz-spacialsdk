@@ -3,6 +3,7 @@ plugins {
   alias(libs.plugins.jetbrains.kotlin.android)
   alias(libs.plugins.meta.spatial.plugin)
   alias(libs.plugins.jetbrains.kotlin.plugin.compose)
+  alias(libs.plugins.google.services)
 }
 
 android {
@@ -56,6 +57,12 @@ dependencies {
   testImplementation(libs.junit)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.espresso.core)
+
+  // Firebase (using BOM for version management)
+  implementation(platform(libs.firebase.bom))
+  implementation(libs.firebase.analytics)
+  implementation(libs.firebase.firestore)
+  implementation(libs.firebase.database)
 
   // This project incorporates the Meta Spatial SDK, licensed under the Meta Platforms Technologies
   // SDK License Agreement available at https://developers.meta.com/horizon/licenses/oculussdk/

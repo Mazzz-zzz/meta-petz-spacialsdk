@@ -69,6 +69,10 @@ class ImmersiveActivity : AppSystemActivity() {
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
 
+  // Firebase Manager for cloud persistence
+  lateinit var firebaseManager: FirebaseManager
+    private set
+
   // Pet model file paths in assets
   private val petModels = mapOf(
       "Cat" to "apk:///models/cat.glb",
@@ -100,6 +104,10 @@ class ImmersiveActivity : AppSystemActivity() {
         File(applicationContext.getCacheDir().canonicalPath),
         OkHttpAssetFetcher(),
     )
+
+    // Initialize Firebase Manager
+    firebaseManager = FirebaseManager(applicationContext)
+    firebaseManager.updateLastActive()
 
     // Enable MR mode
     systemManager.findSystem<LocomotionSystem>().enableLocomotion(false)
@@ -289,6 +297,7 @@ class ImmersiveActivity : AppSystemActivity() {
                   if (currentPet != null) {
                     PetInfoPanel(
                         petName = currentPet!!,
+                        firebaseManager = firebaseManager,
                         onClose = {
                           currentPet = null
                           currentPetEntity?.destroy()

@@ -108,9 +108,12 @@ fun OptionsPanel(onSelectPet: (String) -> Unit) {
 @Composable
 fun PetInfoPanel(
     petName: String,
+    firebaseManager: FirebaseManager,
     onClose: () -> Unit
 ) {
   var petStats by remember { mutableStateOf(PetStats()) }
+  var isLoading by remember { mutableStateOf(true) }
+  var saveCounter by remember { mutableStateOf(0) }
 
   val pets: List<Pet> = listOf(
       Pet("Cat", "🐱", "A playful feline friend", "Curious"),
@@ -123,8 +126,26 @@ fun PetInfoPanel(
 
   val pet = pets.find { it.name == petName } ?: return
 
-  // Simulate stat decay over time (Tamagotchi-style)
+  // Load saved stats from Firebase on pet selection
   LaunchedEffect(petName) {
+    isLoading = true
+    firebaseManager.loadPetStats(petName) { savedStats ->
+      petStats = savedStats ?: PetStats()
+      isLoading = false
+    }
+  }
+
+  // Save stats to Firebase when they change (debounced)
+  LaunchedEffect(saveCounter) {
+    if (saveCounter > 0) {
+      delay(1000) // Debounce: wait 1 second before saving
+      firebaseManager.savePetStats(petName, petStats)
+    }
+  }
+
+  // Simulate stat decay over time (Tamagotchi-style)
+  LaunchedEffect(petName, isLoading) {
+    if (isLoading) return@LaunchedEffect
     while (true) {
       delay(5000) // Every 5 seconds
       petStats = petStats.copy(
@@ -132,6 +153,7 @@ fun PetInfoPanel(
           happiness = max(0f, petStats.happiness - 0.03f),
           energy = max(0f, petStats.energy - 0.04f)
       )
+      saveCounter++ // Trigger save after decay
     }
   }
 
@@ -148,8 +170,15 @@ fun PetInfoPanel(
       PetInfoScreen(
           pet = pet,
           stats = petStats,
-          onStatsUpdate = { newStats -> petStats = newStats },
-          onBack = onClose
+          onStatsUpdate = { newStats ->
+            petStats = newStats
+            saveCounter++ // Trigger save on care action
+          },
+          onBack = {
+            // Save before closing
+            firebaseManager.savePetStats(petName, petStats)
+            onClose()
+          }
       )
     }
   }
