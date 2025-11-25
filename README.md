@@ -38,6 +38,12 @@ Choose from 6 adorable 3D pets:
 - **Fish** 🐠 - Calm
 - **Hamster** 🐹 - Playful
 
+### ✨ Custom Pet Creation
+Create your own pet using the Quest passthrough camera:
+- **Take a Photo** - Capture anything through the Quest's passthrough camera
+- **AI Background Removal** - Powered by Replicate's bria/remove-background model
+- **Instant Pet** - Your custom creation becomes a 3D pet in MR
+
 ### 🎨 3D Visualization
 - Animated 3D pet models that spin and dance
 - Glowing pedestal for ambient lighting
@@ -59,6 +65,7 @@ Choose from 6 adorable 3D pets:
 - **Platform**: Meta Quest (Mixed Reality)
 - **SDK**: Meta Spatial SDK
 - **Backend**: Firebase Realtime Database
+- **AI**: Replicate API (bria/remove-background model)
 - **Language**: Kotlin
 - **UI Framework**: Jetpack Compose with Meta Spatial UISet
 - **3D Models**: glTF/GLB format
@@ -72,13 +79,16 @@ app/
 │   ├── java/com/cybergarden/metapetz/
 │   │   ├── ImmersiveActivity.kt       # Main activity, 3D rendering
 │   │   ├── OptionsPanelLayout.kt      # UI components, gamification logic
-│   │   └── FirebaseManager.kt         # Cloud persistence with Firebase
+│   │   ├── FirebaseManager.kt         # Cloud persistence with Firebase
+│   │   ├── ReplicateManager.kt        # AI background removal API
+│   │   └── PhotoCaptureManager.kt     # Quest passthrough camera capture
 │   ├── assets/
 │   │   ├── models/                    # 3D pet models and pedestals
 │   │   └── scenes/                    # Meta Spatial Editor scenes
 │   └── res/
 │       └── layout/                    # XML layouts
 ├── google-services.json               # Firebase configuration
+local.properties                       # API keys (gitignored)
 ```
 
 ## Building & Running
@@ -91,11 +101,27 @@ app/
 ### Build Steps
 1. Clone the repository
 2. Open project in Android Studio
-3. Connect Meta Quest device or start simulator
-4. Build and run:
+3. Set up API keys (see below)
+4. Connect Meta Quest device or start simulator
+5. Build and run:
    ```bash
    ./gradlew assembleDebug
    ```
+
+### API Keys Setup
+To enable the custom pet creation feature, you need to add your Replicate API token to `local.properties`:
+
+```properties
+# Add this to your local.properties file (already gitignored)
+REPLICATE_API_TOKEN=your_replicate_api_token_here
+```
+
+**Getting a Replicate API Token:**
+1. Sign up at [replicate.com](https://replicate.com)
+2. Go to Account Settings → API Tokens
+3. Create a new token and copy it to `local.properties`
+
+> **Note:** The `local.properties` file is gitignored and will not be committed. Each developer needs to add their own API token.
 
 ### Development
 Edit the scene using Meta Spatial Editor:
