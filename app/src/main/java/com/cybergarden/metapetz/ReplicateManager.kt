@@ -17,13 +17,16 @@ import java.net.URL
 import java.util.concurrent.TimeUnit
 
 /**
- * Manages Replicate API calls for background removal.
- * Uses bria/remove-background model.
+ * Manages Replicate API calls for background removal and 3D generation.
+ * Uses bria/remove-background and firtoz/trellis models.
  */
 class ReplicateManager(private val apiToken: String) {
 
     private val TAG = "ReplicateManager"
     private val BASE_URL = "https://api.replicate.com/v1"
+
+    // Trellis model for image-to-3D conversion
+    private val TRELLIS_MODEL_VERSION = "firtoz/trellis:e8f6c45206993f297372f5436b90350817bd9b4a0d52d2a76df50c1c8afa2b3c"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -93,6 +96,131 @@ class ReplicateManager(private val apiToken: String) {
             Log.e(TAG, "Error removing background: ${e.message}", e)
             return@withContext null
         }
+    }
+
+    /**
+     * Generate a 3D model from an image using Trellis model.
+     * @param imageUrl URL of the image (with background removed works best)
+     * @return URL of the generated GLB 3D model, or null on failure
+     */
+    suspend fun generateModel3D(imageUrl: String): String? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Starting 3D model generation for: ${imageUrl.take(100)}...")
+
+            // Create prediction request using version format
+            val requestJson = JSONObject().apply {
+                put("version", TRELLIS_MODEL_VERSION.split(":").last())
+                put("input", JSONObject().apply {
+                    put("image", imageUrl)
+                    // Optional parameters for Trellis
+                    put("ss_sampling_steps", 12)
+                    put("slat_sampling_steps", 12)
+                })
+            }
+
+            Log.d(TAG, "Sending 3D generation request to Replicate API...")
+            val request = Request.Builder()
+                .url("$BASE_URL/predictions")
+                .addHeader("Authorization", "Bearer $apiToken")
+                .addHeader("Content-Type", "application/json")
+                .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string()
+
+            Log.d(TAG, "3D Gen Response code: ${response.code}")
+            Log.d(TAG, "3D Gen Response body: ${responseBody?.take(500)}")
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "3D API error: ${response.code} - $responseBody")
+                return@withContext null
+            }
+
+            val json = JSONObject(responseBody ?: "{}")
+            val status = json.optString("status")
+            val predictionId = json.optString("id")
+
+            Log.d(TAG, "3D Generation status: $status, id: $predictionId")
+
+            // 3D generation takes time, need to poll for result
+            if (status == "starting" || status == "processing") {
+                return@withContext pollFor3DResult(predictionId)
+            }
+
+            if (status == "succeeded") {
+                return@withContext extract3DModelUrl(json)
+            }
+
+            Log.e(TAG, "Unexpected 3D status: $status")
+            return@withContext null
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error generating 3D model: ${e.message}", e)
+            return@withContext null
+        }
+    }
+
+    /**
+     * Poll for 3D model generation result (takes longer than background removal)
+     */
+    private suspend fun pollFor3DResult(predictionId: String): String? = withContext(Dispatchers.IO) {
+        repeat(60) { attempt -> // Max 60 attempts (2 minutes for 3D generation)
+            delay(2000) // Wait 2 seconds between polls
+
+            try {
+                val request = Request.Builder()
+                    .url("$BASE_URL/predictions/$predictionId")
+                    .addHeader("Authorization", "Bearer $apiToken")
+                    .get()
+                    .build()
+
+                val response = client.newCall(request).execute()
+                val responseBody = response.body?.string()
+                val json = JSONObject(responseBody ?: "{}")
+                val status = json.optString("status")
+
+                Log.d(TAG, "3D Poll attempt ${attempt + 1}: status=$status")
+
+                when (status) {
+                    "succeeded" -> {
+                        return@withContext extract3DModelUrl(json)
+                    }
+                    "failed", "canceled" -> {
+                        Log.e(TAG, "3D Prediction $status: ${json.optString("error")}")
+                        return@withContext null
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "3D Polling error", e)
+            }
+        }
+
+        Log.e(TAG, "3D generation polling timeout")
+        return@withContext null
+    }
+
+    /**
+     * Extract the GLB model URL from Trellis output
+     */
+    private fun extract3DModelUrl(json: JSONObject): String? {
+        // Trellis outputs: { "glb": "url", "video": "url" }
+        val output = json.optJSONObject("output")
+        if (output != null) {
+            val glbUrl = output.optString("glb")
+            if (glbUrl.isNotEmpty()) {
+                Log.d(TAG, "3D model GLB URL: $glbUrl")
+                return glbUrl
+            }
+        }
+        // Try direct output string (different output format)
+        val directOutput = json.optString("output")
+        if (directOutput.isNotEmpty() && directOutput.endsWith(".glb")) {
+            Log.d(TAG, "3D model direct URL: $directOutput")
+            return directOutput
+        }
+        Log.e(TAG, "Could not extract GLB URL from response: ${json.toString().take(500)}")
+        return null
     }
 
     /**

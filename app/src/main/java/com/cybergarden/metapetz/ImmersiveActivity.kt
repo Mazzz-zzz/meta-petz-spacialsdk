@@ -215,9 +215,11 @@ class ImmersiveActivity : AppSystemActivity() {
     photoCaptureManager.capturePhoto(callback)
   }
 
-  fun selectCustomPet(imageUrl: String) {
-    customPetImageUrl = imageUrl
+  fun selectCustomPet(glbUrl: String) {
+    customPetImageUrl = glbUrl
     currentPet = "Custom"
+
+    Log.d(TAG, "Loading custom 3D pet from: $glbUrl")
 
     // Cancel previous spinning animation
     spinningJob?.cancel()
@@ -249,41 +251,29 @@ class ImmersiveActivity : AppSystemActivity() {
             )
         )
 
-        // For custom pet, use a default model as placeholder
-        // In a full implementation, you'd create a textured quad with the image
-        val xFlipRadians = PI.toFloat()
-        val initialRotation = Quaternion(
-            kotlin.math.sin(xFlipRadians / 2).toFloat(),
-            0f,
-            0f,
-            kotlin.math.cos(xFlipRadians / 2).toFloat()
-        )
+        // Initial rotation: no flip needed for Trellis-generated models
+        val initialRotation = Quaternion()
 
-        // Use cat model as placeholder for custom pet
-        // TODO: Create textured quad with custom image
+        // Load the custom 3D model from the GLB URL
+        // Meta Spatial SDK supports loading from network URLs via NetworkedAssetLoader
         currentPetEntity = Entity.create(
             listOf(
-                Mesh("apk:///models/cat.glb".toUri()),
+                Mesh(glbUrl.toUri()),
                 Transform(
                     Pose(
                         Vector3(0f, 0.2f, 0.2f),
                         initialRotation
                     )
                 ),
-                Scale(Vector3(0.2f, 0.2f, 0.2f)),
-                TransformParent(panel),
-                Animated(
-                    startTime = System.currentTimeMillis(),
-                    playbackState = PlaybackState.PLAYING,
-                    playbackType = PlaybackType.LOOP,
-                    track = 0
-                )
+                Scale(Vector3(0.15f, 0.15f, 0.15f)), // Slightly smaller for custom models
+                TransformParent(panel)
             )
         )
 
+        Log.d(TAG, "Custom 3D pet entity created successfully")
         startSpinning()
       } catch (e: Exception) {
-        // Error creating custom pet
+        Log.e(TAG, "Error creating custom pet: ${e.message}", e)
       }
     }
   }

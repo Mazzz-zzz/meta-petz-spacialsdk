@@ -334,8 +334,10 @@ fun CustomPetCreationScreen(
   var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
   var isCapturing by remember { mutableStateOf(false) }
   var isProcessing by remember { mutableStateOf(false) }
+  var isGenerating3D by remember { mutableStateOf(false) }
   var processedImageUrl by remember { mutableStateOf<String?>(null) }
   var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var glbModelUrl by remember { mutableStateOf<String?>(null) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var statusMessage by remember { mutableStateOf<String?>(null) }
 
@@ -381,7 +383,8 @@ fun CustomPetCreationScreen(
         Text(
             text = "1. Point at something and take a photo\n" +
                    "2. AI will remove the background\n" +
-                   "3. Your custom pet will appear in MR!",
+                   "3. AI will generate a 3D model\n" +
+                   "4. Your custom 3D pet appears in MR!",
             fontSize = 14.sp,
             color = SpatialColor.white90,
             lineHeight = 22.sp
@@ -504,6 +507,7 @@ fun CustomPetCreationScreen(
                   capturedBitmap = null
                   processedImageUrl = null
                   processedBitmap = null
+                  glbModelUrl = null
                   errorMessage = null
                   statusMessage = null
                 },
@@ -578,7 +582,7 @@ fun CustomPetCreationScreen(
       )
     }
 
-    // Preview of processed image
+    // Preview of processed image and 3D generation
     processedBitmap?.let { bitmap ->
       Spacer(modifier = Modifier.height(20.dp))
 
@@ -588,7 +592,7 @@ fun CustomPetCreationScreen(
             modifier = Modifier.padding(16.dp)
         ) {
           Text(
-              text = "Background Removed!",
+              text = if (glbModelUrl != null) "3D Pet Ready!" else "Background Removed!",
               fontSize = 16.sp,
               fontWeight = FontWeight.Bold,
               color = Color.White
@@ -600,7 +604,7 @@ fun CustomPetCreationScreen(
                   .size(150.dp)
                   .clip(RoundedCornerShape(12.dp))
                   .background(Color(0x33FFFFFF))
-                  .border(2.dp, Color(0xFF4CAF50), RoundedCornerShape(12.dp)),
+                  .border(2.dp, if (glbModelUrl != null) Color(0xFF2196F3) else Color(0xFF4CAF50), RoundedCornerShape(12.dp)),
               contentAlignment = Alignment.Center
           ) {
             Image(
@@ -613,19 +617,65 @@ fun CustomPetCreationScreen(
 
           Spacer(modifier = Modifier.height(16.dp))
 
-          // Use this pet button
-          PrimaryButton(
-              label = "Use This Pet",
-              expanded = true,
-              onClick = { processedImageUrl?.let { onPetCreated(it) } },
-              leading = {
-                Icon(
-                    imageVector = Icons.Filled.Check,
-                    contentDescription = "Confirm",
-                    modifier = Modifier.size(20.dp)
-                )
-              }
-          )
+          if (glbModelUrl == null) {
+            // Generate 3D button
+            PrimaryButton(
+                label = if (isGenerating3D) "Generating 3D..." else "Generate 3D Pet",
+                expanded = true,
+                onClick = {
+                  if (!isGenerating3D && processedImageUrl != null) {
+                    isGenerating3D = true
+                    errorMessage = null
+                    statusMessage = "Generating 3D model... This may take 1-2 minutes."
+                    scope.launch {
+                      try {
+                        val glbUrl = replicateManager.generateModel3D(processedImageUrl!!)
+                        if (glbUrl != null) {
+                          glbModelUrl = glbUrl
+                          statusMessage = "3D model generated! Ready to use."
+                        } else {
+                          errorMessage = "Failed to generate 3D model. Try again."
+                          statusMessage = null
+                        }
+                      } catch (e: Exception) {
+                        errorMessage = "Error: ${e.message}"
+                        statusMessage = null
+                      }
+                      isGenerating3D = false
+                    }
+                  }
+                },
+                leading = {
+                  if (isGenerating3D) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                  } else {
+                    Icon(
+                        imageVector = Icons.Filled.Build,
+                        contentDescription = "Generate 3D",
+                        modifier = Modifier.size(20.dp)
+                    )
+                  }
+                }
+            )
+          } else {
+            // Use this 3D pet button
+            PrimaryButton(
+                label = "Use This 3D Pet",
+                expanded = true,
+                onClick = { glbModelUrl?.let { onPetCreated(it) } },
+                leading = {
+                  Icon(
+                      imageVector = Icons.Filled.Check,
+                      contentDescription = "Confirm",
+                      modifier = Modifier.size(20.dp)
+                  )
+                }
+            )
+          }
         }
       }
     }
