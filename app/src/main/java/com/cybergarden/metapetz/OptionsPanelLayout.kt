@@ -1,12 +1,17 @@
 package com.cybergarden.metapetz
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
@@ -15,13 +20,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,6 +46,7 @@ import com.meta.spatial.uiset.theme.SpatialTheme
 import com.meta.spatial.uiset.theme.darkSpatialColorScheme
 import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.max
 
 const val OPTIONS_PANEL_WIDTH = 0.85f
@@ -73,7 +83,14 @@ fun OptionsPanelPreview() {
 }
 
 @Composable
-fun OptionsPanel(onSelectPet: (String) -> Unit) {
+fun OptionsPanel(
+    onSelectPet: (String) -> Unit,
+    onCreateCustomPet: ((String) -> Unit)? = null,
+    replicateManager: ReplicateManager? = null,
+    onCapturePhoto: ((callback: (Bitmap?) -> Unit) -> Unit)? = null
+) {
+  var showCustomPetCreation by remember { mutableStateOf(false) }
+
   val pets: List<Pet> = listOf(
       Pet("Cat", "🐱", "A playful feline friend", "Curious"),
       Pet("Dog", "🐶", "A loyal canine companion", "Loyal"),
@@ -93,13 +110,28 @@ fun OptionsPanel(onSelectPet: (String) -> Unit) {
         verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      // Always show Pet Selection Screen in options panel
-      PetSelectionScreen(
-          pets = pets,
-          onSelectPet = { pet ->
-            onSelectPet(pet.name)
-          }
-      )
+      if (showCustomPetCreation && replicateManager != null && onCapturePhoto != null) {
+        CustomPetCreationScreen(
+            replicateManager = replicateManager,
+            onCapturePhoto = onCapturePhoto,
+            onBack = { showCustomPetCreation = false },
+            onPetCreated = { imageUrl ->
+              onCreateCustomPet?.invoke(imageUrl)
+              showCustomPetCreation = false
+            }
+        )
+      } else {
+        // Show Pet Selection Screen
+        PetSelectionScreen(
+            pets = pets,
+            onSelectPet = { pet ->
+              onSelectPet(pet.name)
+            },
+            onCustomPetClick = if (replicateManager != null && onCapturePhoto != null) {
+              { showCustomPetCreation = true }
+            } else null
+        )
+      }
     }
   }
 }
@@ -122,6 +154,7 @@ fun PetInfoPanel(
       Pet("Bird", "🐦", "A chirping feathered friend", "Energetic"),
       Pet("Fish", "🐠", "A swimming aquatic pal", "Calm"),
       Pet("Hamster", "🐹", "A tiny furry buddy", "Playful"),
+      Pet("Custom", "✨", "Your custom AI pet", "Unique"),
   )
 
   val pet = pets.find { it.name == petName } ?: return
@@ -187,7 +220,8 @@ fun PetInfoPanel(
 @Composable
 fun PetSelectionScreen(
     pets: List<Pet>,
-    onSelectPet: (Pet) -> Unit
+    onSelectPet: (Pet) -> Unit,
+    onCustomPetClick: (() -> Unit)? = null
 ) {
   val scrollState = rememberScrollState()
 
@@ -248,6 +282,350 @@ fun PetSelectionScreen(
           if (rowPets.size == 1) {
             Spacer(modifier = Modifier.weight(1f))
           }
+        }
+      }
+
+      // Custom Pet Card
+      if (onCustomPetClick != null) {
+        Spacer(modifier = Modifier.height(8.dp))
+        PrimaryCard(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onCustomPetClick
+        ) {
+          Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.Center,
+              modifier = Modifier.fillMaxWidth().padding(20.dp)
+          ) {
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = "Create Custom Pet",
+                tint = Color(0xFF9C27B0),
+                modifier = Modifier.size(48.dp)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+              Text(
+                  text = "Create Custom Pet",
+                  fontSize = 20.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = Color.White
+              )
+              Text(
+                  text = "Use your own photo with AI background removal",
+                  fontSize = 12.sp,
+                  color = SpatialColor.white90
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+fun CustomPetCreationScreen(
+    replicateManager: ReplicateManager,
+    onCapturePhoto: (callback: (Bitmap?) -> Unit) -> Unit,
+    onBack: () -> Unit,
+    onPetCreated: (String) -> Unit
+) {
+  var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var isCapturing by remember { mutableStateOf(false) }
+  var isProcessing by remember { mutableStateOf(false) }
+  var processedImageUrl by remember { mutableStateOf<String?>(null) }
+  var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var errorMessage by remember { mutableStateOf<String?>(null) }
+  var statusMessage by remember { mutableStateOf<String?>(null) }
+
+  val scope = rememberCoroutineScope()
+  val scrollState = rememberScrollState()
+
+  Column(
+      modifier = Modifier.fillMaxSize()
+          .verticalScroll(scrollState),
+      verticalArrangement = Arrangement.Top
+  ) {
+    // Header with back button
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+      SecondaryButton(
+          label = "← Back",
+          onClick = onBack
+      )
+      Text(
+          text = "Custom Pet",
+          fontSize = 24.sp,
+          fontWeight = FontWeight.Bold,
+          color = Color.White
+      )
+      Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
+    }
+
+    Spacer(modifier = Modifier.height(24.dp))
+
+    // Instructions
+    SecondaryCard(modifier = Modifier.fillMaxWidth()) {
+      Column(modifier = Modifier.padding(16.dp)) {
+        Text(
+            text = "Create Your Own Pet",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "1. Point at something and take a photo\n" +
+                   "2. AI will remove the background\n" +
+                   "3. Your custom pet will appear in MR!",
+            fontSize = 14.sp,
+            color = SpatialColor.white90,
+            lineHeight = 22.sp
+        )
+      }
+    }
+
+    Spacer(modifier = Modifier.height(20.dp))
+
+    // Camera capture area
+    if (capturedBitmap == null) {
+      // Show capture button when no photo taken yet
+      SecondaryCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(24.dp)
+        ) {
+          // Camera icon placeholder
+          Box(
+              modifier = Modifier
+                  .size(120.dp)
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0x33FFFFFF))
+                  .border(2.dp, Color(0xFF9C27B0), RoundedCornerShape(12.dp)),
+              contentAlignment = Alignment.Center
+          ) {
+            if (isCapturing) {
+              CircularProgressIndicator(color = Color(0xFF9C27B0))
+            } else {
+              Icon(
+                  imageVector = Icons.Filled.Add,
+                  contentDescription = "Camera",
+                  tint = Color(0xFF9C27B0),
+                  modifier = Modifier.size(48.dp)
+              )
+            }
+          }
+
+          Spacer(modifier = Modifier.height(16.dp))
+
+          PrimaryButton(
+              label = if (isCapturing) "Capturing..." else "Take Photo",
+              expanded = true,
+              onClick = {
+                if (!isCapturing) {
+                  isCapturing = true
+                  errorMessage = null
+                  statusMessage = "Capturing from passthrough camera..."
+                  onCapturePhoto { bitmap ->
+                    isCapturing = false
+                    if (bitmap != null) {
+                      capturedBitmap = bitmap
+                      statusMessage = "Photo captured! Ready to process."
+                    } else {
+                      errorMessage = "Failed to capture photo. Please try again."
+                      statusMessage = null
+                    }
+                  }
+                }
+              },
+              leading = {
+                if (isCapturing) {
+                  CircularProgressIndicator(
+                      modifier = Modifier.size(20.dp),
+                      color = Color.White,
+                      strokeWidth = 2.dp
+                  )
+                } else {
+                  Icon(
+                      imageVector = Icons.Filled.Add,
+                      contentDescription = "Capture",
+                      modifier = Modifier.size(20.dp)
+                  )
+                }
+              }
+          )
+        }
+      }
+    } else {
+      // Show captured photo preview
+      SecondaryCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(16.dp)
+        ) {
+          Text(
+              text = "Captured Photo",
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold,
+              color = Color.White
+          )
+          Spacer(modifier = Modifier.height(12.dp))
+
+          Box(
+              modifier = Modifier
+                  .size(150.dp)
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0x33FFFFFF))
+                  .border(2.dp, Color(0xFF9C27B0), RoundedCornerShape(12.dp)),
+              contentAlignment = Alignment.Center
+          ) {
+            Image(
+                bitmap = capturedBitmap!!.asImageBitmap(),
+                contentDescription = "Captured Photo",
+                modifier = Modifier.fillMaxSize().padding(8.dp),
+                contentScale = ContentScale.Fit
+            )
+          }
+
+          Spacer(modifier = Modifier.height(16.dp))
+
+          // Retake and Process buttons
+          Row(
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
+              modifier = Modifier.fillMaxWidth()
+          ) {
+            SecondaryButton(
+                label = "Retake",
+                onClick = {
+                  capturedBitmap = null
+                  processedImageUrl = null
+                  processedBitmap = null
+                  errorMessage = null
+                  statusMessage = null
+                },
+                modifier = Modifier.weight(1f)
+            )
+            PrimaryButton(
+                label = if (isProcessing) "Processing..." else "Remove BG",
+                onClick = {
+                  if (!isProcessing && capturedBitmap != null) {
+                    isProcessing = true
+                    errorMessage = null
+                    statusMessage = "Removing background with AI..."
+                    scope.launch {
+                      try {
+                        // Convert bitmap to data URL
+                        val dataUrl = replicateManager.bitmapToDataUrl(capturedBitmap!!)
+                        // Process with Replicate
+                        val result = replicateManager.removeBackground(dataUrl)
+                        if (result != null) {
+                          processedImageUrl = result
+                          processedBitmap = replicateManager.downloadImage(result)
+                          statusMessage = "Background removed! Ready to use."
+                        } else {
+                          errorMessage = "Failed to remove background. Try again."
+                          statusMessage = null
+                        }
+                      } catch (e: Exception) {
+                        errorMessage = "Error: ${e.message}"
+                        statusMessage = null
+                      }
+                      isProcessing = false
+                    }
+                  }
+                },
+                modifier = Modifier.weight(1f),
+                leading = {
+                  if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                  }
+                }
+            )
+          }
+        }
+      }
+    }
+
+    // Status Message
+    statusMessage?.let { status ->
+      Spacer(modifier = Modifier.height(12.dp))
+      Text(
+          text = status,
+          color = Color(0xFF4CAF50),
+          fontSize = 14.sp,
+          textAlign = TextAlign.Center,
+          modifier = Modifier.fillMaxWidth()
+      )
+    }
+
+    // Error Message
+    errorMessage?.let { error ->
+      Spacer(modifier = Modifier.height(12.dp))
+      Text(
+          text = error,
+          color = Color(0xFFF44336),
+          fontSize = 14.sp,
+          textAlign = TextAlign.Center,
+          modifier = Modifier.fillMaxWidth()
+      )
+    }
+
+    // Preview of processed image
+    processedBitmap?.let { bitmap ->
+      Spacer(modifier = Modifier.height(20.dp))
+
+      SecondaryCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(16.dp)
+        ) {
+          Text(
+              text = "Background Removed!",
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold,
+              color = Color.White
+          )
+          Spacer(modifier = Modifier.height(12.dp))
+
+          Box(
+              modifier = Modifier
+                  .size(150.dp)
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0x33FFFFFF))
+                  .border(2.dp, Color(0xFF4CAF50), RoundedCornerShape(12.dp)),
+              contentAlignment = Alignment.Center
+          ) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Custom Pet Preview",
+                modifier = Modifier.fillMaxSize().padding(8.dp),
+                contentScale = ContentScale.Fit
+            )
+          }
+
+          Spacer(modifier = Modifier.height(16.dp))
+
+          // Use this pet button
+          PrimaryButton(
+              label = "Use This Pet",
+              expanded = true,
+              onClick = { processedImageUrl?.let { onPetCreated(it) } },
+              leading = {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = "Confirm",
+                    modifier = Modifier.size(20.dp)
+                )
+              }
+          )
         }
       }
     }

@@ -1,10 +1,15 @@
 package com.cybergarden.metapetz
 
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.webkit.WebView
 import android.widget.TextView
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
@@ -68,10 +73,27 @@ class ImmersiveActivity : AppSystemActivity() {
   private var pedestalEntity: Entity? = null
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
+  private var customPetImageUrl: String? = null
 
   // Firebase Manager for cloud persistence
   lateinit var firebaseManager: FirebaseManager
     private set
+
+  // Replicate Manager for AI background removal
+  lateinit var replicateManager: ReplicateManager
+    private set
+
+  // Photo Capture Manager for passthrough camera
+  lateinit var photoCaptureManager: PhotoCaptureManager
+    private set
+
+  private var pendingCameraCallback: ((Bitmap?) -> Unit)? = null
+  private var cameraPermissionGranted = false
+
+  companion object {
+    private const val TAG = "ImmersiveActivity"
+    private const val CAMERA_PERMISSION_REQUEST = 1001
+  }
 
   // Pet model file paths in assets
   private val petModels = mapOf(
@@ -109,6 +131,13 @@ class ImmersiveActivity : AppSystemActivity() {
     firebaseManager = FirebaseManager(applicationContext)
     firebaseManager.updateLastActive()
 
+    // Initialize Replicate Manager for AI background removal
+    replicateManager = ReplicateManager(ReplicateManager.DEFAULT_API_TOKEN)
+
+    // Initialize Photo Capture Manager for passthrough camera
+    photoCaptureManager = PhotoCaptureManager(applicationContext)
+    checkAndRequestCameraPermission()
+
     // Enable MR mode
     systemManager.findSystem<LocomotionSystem>().enableLocomotion(false)
     scene.enablePassthrough(true)
@@ -137,8 +166,131 @@ class ImmersiveActivity : AppSystemActivity() {
         }
   }
 
+  private fun checkAndRequestCameraPermission() {
+    val permission = PhotoCaptureManager.PERMISSION
+    if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
+      cameraPermissionGranted = true
+      initializeCamera()
+    } else {
+      ActivityCompat.requestPermissions(this, arrayOf(permission), CAMERA_PERMISSION_REQUEST)
+    }
+  }
+
+  override fun onRequestPermissionsResult(
+      requestCode: Int,
+      permissions: Array<out String>,
+      grantResults: IntArray
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == CAMERA_PERMISSION_REQUEST) {
+      if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        cameraPermissionGranted = true
+        initializeCamera()
+        // If there was a pending callback, execute it now
+        pendingCameraCallback?.let { callback ->
+          capturePhoto(callback)
+          pendingCameraCallback = null
+        }
+      } else {
+        Log.e(TAG, "Camera permission denied")
+        pendingCameraCallback?.invoke(null)
+        pendingCameraCallback = null
+      }
+    }
+  }
+
+  private fun initializeCamera() {
+    if (cameraPermissionGranted) {
+      val success = photoCaptureManager.initialize()
+      Log.d(TAG, "Camera initialized: $success")
+    }
+  }
+
+  fun capturePhoto(callback: (Bitmap?) -> Unit) {
+    if (!cameraPermissionGranted) {
+      pendingCameraCallback = callback
+      checkAndRequestCameraPermission()
+      return
+    }
+    photoCaptureManager.capturePhoto(callback)
+  }
+
+  fun selectCustomPet(imageUrl: String) {
+    customPetImageUrl = imageUrl
+    currentPet = "Custom"
+
+    // Cancel previous spinning animation
+    spinningJob?.cancel()
+    spinningJob = null
+
+    // Remove previous pet and pedestal if they exist
+    currentPetEntity?.destroy()
+    currentPetEntity = null
+    pedestalEntity?.destroy()
+    pedestalEntity = null
+
+    activityScope.launch {
+      try {
+        // Get the panel entity to attach to
+        val panel = panelEntity ?: Entity.nullEntity()
+
+        // Create glowing pedestal
+        pedestalEntity = Entity.create(
+            listOf(
+                Mesh("apk:///models/pedestal_glowing.glb".toUri()),
+                Transform(
+                    Pose(
+                        Vector3(0f, 0.0f, 0.2f),
+                        Quaternion()
+                    )
+                ),
+                Scale(Vector3(0.25f, 0.1f, 0.25f)),
+                TransformParent(panel)
+            )
+        )
+
+        // For custom pet, use a default model as placeholder
+        // In a full implementation, you'd create a textured quad with the image
+        val xFlipRadians = PI.toFloat()
+        val initialRotation = Quaternion(
+            kotlin.math.sin(xFlipRadians / 2).toFloat(),
+            0f,
+            0f,
+            kotlin.math.cos(xFlipRadians / 2).toFloat()
+        )
+
+        // Use cat model as placeholder for custom pet
+        // TODO: Create textured quad with custom image
+        currentPetEntity = Entity.create(
+            listOf(
+                Mesh("apk:///models/cat.glb".toUri()),
+                Transform(
+                    Pose(
+                        Vector3(0f, 0.2f, 0.2f),
+                        initialRotation
+                    )
+                ),
+                Scale(Vector3(0.2f, 0.2f, 0.2f)),
+                TransformParent(panel),
+                Animated(
+                    startTime = System.currentTimeMillis(),
+                    playbackState = PlaybackState.PLAYING,
+                    playbackType = PlaybackType.LOOP,
+                    track = 0
+                )
+            )
+        )
+
+        startSpinning()
+      } catch (e: Exception) {
+        // Error creating custom pet
+      }
+    }
+  }
+
   fun selectPet(petName: String) {
     currentPet = petName
+    customPetImageUrl = null
 
     // Cancel previous spinning animation
     spinningJob?.cancel()
@@ -331,7 +483,12 @@ class ImmersiveActivity : AppSystemActivity() {
             composeViewCreator = { _, context ->
               ComposeView(context).apply {
                 setContent {
-                  OptionsPanel(onSelectPet = ::selectPet)
+                  OptionsPanel(
+                      onSelectPet = ::selectPet,
+                      onCreateCustomPet = ::selectCustomPet,
+                      replicateManager = replicateManager,
+                      onCapturePhoto = ::capturePhoto
+                  )
                 }
               }
             },
@@ -349,6 +506,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   override fun onSpatialShutdown() {
     spinningJob?.cancel()
+    photoCaptureManager.dispose()
     super.onSpatialShutdown()
   }
 
