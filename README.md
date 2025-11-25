@@ -48,10 +48,17 @@ Choose from 6 adorable 3D pets:
 - **Pet Selection Panel** - Scrollable grid of pet cards
 - **Pet Info Panel** - Real-time stats, care actions, and pet display
 
+### ☁️ Cloud Save with Firebase
+- **Persistent Pet Stats** - Your pet's progress saves automatically to the cloud
+- **Cross-Session Persistence** - Stats are restored when you return to the app
+- **Auto-Save** - Stats save on every care action and during stat decay
+- **Unique User ID** - Each device gets a unique identifier for data isolation
+
 ## Technology Stack
 
 - **Platform**: Meta Quest (Mixed Reality)
 - **SDK**: Meta Spatial SDK
+- **Backend**: Firebase Realtime Database
 - **Language**: Kotlin
 - **UI Framework**: Jetpack Compose with Meta Spatial UISet
 - **3D Models**: glTF/GLB format
@@ -64,12 +71,14 @@ app/
 ├── src/main/
 │   ├── java/com/cybergarden/metapetz/
 │   │   ├── ImmersiveActivity.kt       # Main activity, 3D rendering
-│   │   └── OptionsPanelLayout.kt      # UI components, gamification logic
+│   │   ├── OptionsPanelLayout.kt      # UI components, gamification logic
+│   │   └── FirebaseManager.kt         # Cloud persistence with Firebase
 │   ├── assets/
 │   │   ├── models/                    # 3D pet models and pedestals
 │   │   └── scenes/                    # Meta Spatial Editor scenes
 │   └── res/
 │       └── layout/                    # XML layouts
+├── google-services.json               # Firebase configuration
 ```
 
 ## Building & Running
@@ -92,6 +101,56 @@ app/
 Edit the scene using Meta Spatial Editor:
 ```
 app/scenes/Main.metaspatial
+```
+
+### Firebase Setup
+The app uses Firebase Realtime Database for cloud persistence. To set up your own Firebase project:
+
+1. **Create Firebase Project**
+   - Go to [Firebase Console](https://console.firebase.google.com)
+   - Create a new project or use existing one
+
+2. **Add Android App**
+   - In Project Settings, add an Android app
+   - Package name: `com.cybergarden.metapetz`
+   - Download `google-services.json` and place in `app/` folder
+
+3. **Enable Realtime Database**
+   - Go to Build → Realtime Database
+   - Create database (choose your region)
+   - Set rules for development:
+     ```json
+     {
+       "rules": {
+         ".read": true,
+         ".write": true
+       }
+     }
+     ```
+
+4. **Update Database URL** (if using non-US region)
+   - In `FirebaseManager.kt`, update the database URL:
+     ```kotlin
+     private val db = FirebaseDatabase.getInstance("https://YOUR-PROJECT-ID.REGION.firebasedatabase.app")
+     ```
+
+### Firebase Data Structure
+```
+users/
+  {userId}/
+    createdAt: timestamp
+    lastActive: timestamp
+    deviceId: string
+    pets/
+      {petName}/
+        hunger: float
+        happiness: float
+        health: float
+        energy: float
+        level: int
+        xp: int
+        xpToNextLevel: int
+        lastUpdated: timestamp
 ```
 
 ## Gameplay Loop
@@ -134,6 +193,7 @@ Meta collects telemetry data from the Spatial SDK Gradle Plugin to help improve 
 Built with:
 - Meta Spatial SDK
 - Meta Spatial UISet components
+- Firebase Realtime Database
 - Jetpack Compose
 - Kotlin Coroutines
 
