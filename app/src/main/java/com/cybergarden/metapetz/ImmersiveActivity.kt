@@ -54,6 +54,8 @@ import com.meta.spatial.toolkit.Animated
 import com.meta.spatial.toolkit.PlaybackState
 import com.meta.spatial.toolkit.PlaybackType
 import com.meta.spatial.core.Query
+import com.meta.spatial.core.Vector2
+import com.meta.spatial.toolkit.PlayerBodyAttachmentSystem
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -253,8 +255,14 @@ class ImmersiveActivity : AppSystemActivity() {
             )
         )
 
-        // Initial rotation: no flip needed for Trellis-generated models
-        val initialRotation = Quaternion()
+        // Initial rotation: 180° around X-axis to flip upright (same as bundled pets)
+        val xFlipRadians = PI.toFloat()
+        val initialRotation = Quaternion(
+            kotlin.math.sin(xFlipRadians / 2).toFloat(),
+            0f,
+            0f,
+            kotlin.math.cos(xFlipRadians / 2).toFloat()
+        )
 
         // Load the custom 3D model from the GLB URL
         // Meta Spatial SDK supports loading from network URLs via NetworkedAssetLoader
@@ -379,17 +387,11 @@ class ImmersiveActivity : AppSystemActivity() {
           // Quaternion for Y-axis rotation (spinning)
           val qy = Quaternion(0f, kotlin.math.sin(yRotRadians / 2), 0f, kotlin.math.cos(yRotRadians / 2))
 
-          // Calculate final rotation based on pet type
-          val rotation = if (customPetMode) {
-            // Custom pets (Trellis-generated): no X-axis flip needed
-            qy
-          } else {
-            // Bundled asset pets: need 180° X-axis flip to orient upright
-            val xFlipRadians = PI.toFloat()
-            val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
-            // Combine rotations: first flip, then spin (qy * qx)
-            multiplyQuaternions(qy, qx)
-          }
+          // All pets need 180° X-axis flip to orient upright
+          val xFlipRadians = PI.toFloat()
+          val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
+          // Combine rotations: first flip, then spin (qy * qx)
+          val rotation = multiplyQuaternions(qy, qx)
 
           // Dancing animation: bouncing up and down with side-to-side sway
           time += 0.016f // Increment time (16ms frame time)

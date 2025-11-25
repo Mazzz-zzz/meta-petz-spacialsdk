@@ -51,6 +51,8 @@ import kotlin.math.max
 
 const val OPTIONS_PANEL_WIDTH = 0.85f
 const val OPTIONS_PANEL_HEIGHT = 0.75f
+const val PHOTO_MODAL_WIDTH = 0.7f
+const val PHOTO_MODAL_HEIGHT = 0.85f
 
 data class PetStats(
     val hunger: Float = 1.0f,        // 0.0 to 1.0 (1.0 = full)
@@ -89,7 +91,7 @@ fun OptionsPanel(
     replicateManager: ReplicateManager? = null,
     onCapturePhoto: ((callback: (Bitmap?) -> Unit) -> Unit)? = null
 ) {
-  var showCustomPetCreation by remember { mutableStateOf(false) }
+  var showCustomPetScreen by remember { mutableStateOf(false) }
 
   val pets: List<Pet> = listOf(
       Pet("Cat", "🐱", "A playful feline friend", "Curious"),
@@ -110,14 +112,15 @@ fun OptionsPanel(
         verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      if (showCustomPetCreation && replicateManager != null && onCapturePhoto != null) {
-        CustomPetCreationScreen(
+      if (showCustomPetScreen && replicateManager != null && onCapturePhoto != null) {
+        // Show Custom Pet Creation Screen
+        PhotoCaptureContent(
             replicateManager = replicateManager,
             onCapturePhoto = onCapturePhoto,
-            onBack = { showCustomPetCreation = false },
-            onPetCreated = { imageUrl ->
-              onCreateCustomPet?.invoke(imageUrl)
-              showCustomPetCreation = false
+            onClose = { showCustomPetScreen = false },
+            onPetCreated = { glbUrl ->
+              onCreateCustomPet?.invoke(glbUrl)
+              showCustomPetScreen = false
             }
         )
       } else {
@@ -128,7 +131,7 @@ fun OptionsPanel(
               onSelectPet(pet.name)
             },
             onCustomPetClick = if (replicateManager != null && onCapturePhoto != null) {
-              { showCustomPetCreation = true }
+              { showCustomPetScreen = true }
             } else null
         )
       }
@@ -324,11 +327,42 @@ fun PetSelectionScreen(
   }
 }
 
+/**
+ * Photo Capture Modal - A standalone modal for creating custom pets
+ * This is spawned as a separate panel in front of the user
+ */
 @Composable
-fun CustomPetCreationScreen(
+fun PhotoCaptureModal(
     replicateManager: ReplicateManager,
     onCapturePhoto: (callback: (Bitmap?) -> Unit) -> Unit,
-    onBack: () -> Unit,
+    onClose: () -> Unit,
+    onPetCreated: (String) -> Unit
+) {
+  SpatialTheme(colorScheme = getPanelTheme()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(SpatialTheme.shapes.large)
+            .background(brush = LocalColorScheme.current.panel)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Top,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      PhotoCaptureContent(
+          replicateManager = replicateManager,
+          onCapturePhoto = onCapturePhoto,
+          onClose = onClose,
+          onPetCreated = onPetCreated
+      )
+    }
+  }
+}
+
+@Composable
+fun PhotoCaptureContent(
+    replicateManager: ReplicateManager,
+    onCapturePhoto: (callback: (Bitmap?) -> Unit) -> Unit,
+    onClose: () -> Unit,
     onPetCreated: (String) -> Unit
 ) {
   var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -350,21 +384,21 @@ fun CustomPetCreationScreen(
           .verticalScroll(scrollState),
       verticalArrangement = Arrangement.Top
   ) {
-    // Header with back button
+    // Header with close button
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
       SecondaryButton(
-          label = "← Back",
-          onClick = onBack
+          label = "✕ Close",
+          onClick = onClose
       )
       Text(
-          text = "Custom Pet",
-          fontSize = 24.sp,
+          text = "Create Custom Pet",
+          fontSize = 20.sp,
           fontWeight = FontWeight.Bold,
-          color = Color.White
+          color = Color.Black
       )
       Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
     }
@@ -378,17 +412,24 @@ fun CustomPetCreationScreen(
             text = "Create Your Own Pet",
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White
+            color = Color.Black
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "1. Point at something and take a photo\n" +
-                   "2. AI will remove the background\n" +
-                   "3. AI will generate a 3D model\n" +
+            text = "1. Center your subject in view\n" +
+                   "2. Take a photo (uses left eye camera)\n" +
+                   "3. AI removes background & creates 3D model\n" +
                    "4. Your custom 3D pet appears in MR!",
             fontSize = 14.sp,
-            color = SpatialColor.white90,
+            color = Color.Black.copy(alpha = 0.8f),
             lineHeight = 22.sp
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Tip: Subject should be centered - capture uses left eye view",
+            fontSize = 12.sp,
+            color = Color(0xFFB8860B),
+            fontWeight = FontWeight.Medium
         )
       }
     }
@@ -475,7 +516,7 @@ fun CustomPetCreationScreen(
               text = "Captured Photo",
               fontSize = 16.sp,
               fontWeight = FontWeight.Bold,
-              color = Color.White
+              color = Color.Black
           )
           Spacer(modifier = Modifier.height(12.dp))
 
@@ -596,7 +637,7 @@ fun CustomPetCreationScreen(
               text = if (glbModelUrl != null) "3D Pet Ready!" else "Background Removed!",
               fontSize = 16.sp,
               fontWeight = FontWeight.Bold,
-              color = Color.White
+              color = Color.Black
           )
           Spacer(modifier = Modifier.height(12.dp))
 
