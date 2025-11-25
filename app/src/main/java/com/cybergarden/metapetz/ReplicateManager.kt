@@ -178,7 +178,7 @@ class ReplicateManager(private val apiToken: String) {
     }
 
     companion object {
-        // Default API token - replace with your own or use BuildConfig
-        const val DEFAULT_API_TOKEN = "YOUR_API_TOKEN_HERE"
+        // API token loaded from BuildConfig (set in local.properties)
+        val DEFAULT_API_TOKEN: String = BuildConfig.REPLICATE_API_TOKEN
     }
 }

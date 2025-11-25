@@ -1,9 +1,18 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.jetbrains.kotlin.android)
   alias(libs.plugins.meta.spatial.plugin)
   alias(libs.plugins.jetbrains.kotlin.plugin.compose)
   alias(libs.plugins.google.services)
+}
+
+// Load local.properties for API keys
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+  localProperties.load(localPropertiesFile.inputStream())
 }
 
 android {
@@ -24,6 +33,9 @@ android {
 
     // Update the ndkVersion to the right version for your app
     // ndkVersion = "27.0.12077973"
+
+    // API Keys from local.properties
+    buildConfigField("String", "REPLICATE_API_TOKEN", "\"${localProperties.getProperty("REPLICATE_API_TOKEN", "")}\"")
   }
 
   packaging { resources.excludes.add("META-INF/LICENSE") }
