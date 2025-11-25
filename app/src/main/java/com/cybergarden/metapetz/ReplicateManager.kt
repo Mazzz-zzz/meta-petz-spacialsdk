@@ -1,5 +1,6 @@
 package com.cybergarden.metapetz
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
@@ -13,17 +14,24 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
  * Manages Replicate API calls for background removal and 3D generation.
  * Uses bria/remove-background and firtoz/trellis models.
  */
-class ReplicateManager(private val apiToken: String) {
+class ReplicateManager(
+    private val apiToken: String,
+    private val context: Context? = null
+) {
 
     private val TAG = "ReplicateManager"
     private val BASE_URL = "https://api.replicate.com/v1"
+    private val CACHE_DIR = "custom_pets"
 
     // Trellis model for image-to-3D conversion
     private val TRELLIS_MODEL_VERSION = "firtoz/trellis:e8f6c45206993f297372f5436b90350817bd9b4a0d52d2a76df50c1c8afa2b3c"
@@ -33,6 +41,15 @@ class ReplicateManager(private val apiToken: String) {
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
+
+    // Cache directory for downloaded GLB models
+    private val cacheDir: File? by lazy {
+        context?.let {
+            File(it.cacheDir, CACHE_DIR).also { dir ->
+                if (!dir.exists()) dir.mkdirs()
+            }
+        }
+    }
 
     /**
      * Remove background from an image using Replicate's bria/remove-background model.
@@ -101,20 +118,32 @@ class ReplicateManager(private val apiToken: String) {
     /**
      * Generate a 3D model from an image using Trellis model.
      * @param imageUrl URL of the image (with background removed works best)
+     * @param onProgress Optional callback for progress updates (0-100)
      * @return URL of the generated GLB 3D model, or null on failure
      */
-    suspend fun generateModel3D(imageUrl: String): String? = withContext(Dispatchers.IO) {
+    suspend fun generateModel3D(
+        imageUrl: String,
+        onProgress: ((Int) -> Unit)? = null
+    ): String? = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "Starting 3D model generation for: ${imageUrl.take(100)}...")
 
             // Create prediction request using version format
+            // Trellis expects "images" array, not single "image"
+            val imagesArray = org.json.JSONArray().apply {
+                put(imageUrl)
+            }
+
             val requestJson = JSONObject().apply {
                 put("version", TRELLIS_MODEL_VERSION.split(":").last())
                 put("input", JSONObject().apply {
-                    put("image", imageUrl)
-                    // Optional parameters for Trellis
-                    put("ss_sampling_steps", 12)
-                    put("slat_sampling_steps", 12)
+                    put("images", imagesArray)
+                    // Trellis parameters
+                    put("texture_size", 1024)
+                    put("mesh_simplify", 0.9)
+                    put("generate_model", true)
+                    put("save_gaussian_ply", false) // We don't need the PLY file
+                    put("ss_sampling_steps", 38)
                 })
             }
 
@@ -144,8 +173,9 @@ class ReplicateManager(private val apiToken: String) {
             Log.d(TAG, "3D Generation status: $status, id: $predictionId")
 
             // 3D generation takes time, need to poll for result
+            onProgress?.invoke(5) // Initial progress
             if (status == "starting" || status == "processing") {
-                return@withContext pollFor3DResult(predictionId)
+                return@withContext pollFor3DResult(predictionId, onProgress)
             }
 
             if (status == "succeeded") {
@@ -164,9 +194,17 @@ class ReplicateManager(private val apiToken: String) {
     /**
      * Poll for 3D model generation result (takes longer than background removal)
      */
-    private suspend fun pollFor3DResult(predictionId: String): String? = withContext(Dispatchers.IO) {
-        repeat(60) { attempt -> // Max 60 attempts (2 minutes for 3D generation)
+    private suspend fun pollFor3DResult(
+        predictionId: String,
+        onProgress: ((Int) -> Unit)? = null
+    ): String? = withContext(Dispatchers.IO) {
+        val maxAttempts = 60 // Max 60 attempts (2 minutes for 3D generation)
+        repeat(maxAttempts) { attempt ->
             delay(2000) // Wait 2 seconds between polls
+
+            // Calculate progress: 5% initial + up to 90% during polling (final 5% for download)
+            val progressPercent = 5 + ((attempt.toFloat() / maxAttempts) * 90).toInt()
+            onProgress?.invoke(progressPercent)
 
             try {
                 val request = Request.Builder()
@@ -180,10 +218,11 @@ class ReplicateManager(private val apiToken: String) {
                 val json = JSONObject(responseBody ?: "{}")
                 val status = json.optString("status")
 
-                Log.d(TAG, "3D Poll attempt ${attempt + 1}: status=$status")
+                Log.d(TAG, "3D Poll attempt ${attempt + 1}: status=$status, progress=$progressPercent%")
 
                 when (status) {
                     "succeeded" -> {
+                        onProgress?.invoke(100)
                         return@withContext extract3DModelUrl(json)
                     }
                     "failed", "canceled" -> {
@@ -202,24 +241,56 @@ class ReplicateManager(private val apiToken: String) {
 
     /**
      * Extract the GLB model URL from Trellis output
+     * Trellis can return output in different formats:
+     * - Array of objects: [{"gaussian_ply": "...", "model_file": "...glb", "render_video": "..."}]
+     * - Object: {"glb": "url", "video": "url"}
+     * - Direct string URL
      */
     private fun extract3DModelUrl(json: JSONObject): String? {
-        // Trellis outputs: { "glb": "url", "video": "url" }
-        val output = json.optJSONObject("output")
-        if (output != null) {
+        val output = json.opt("output")
+        Log.d(TAG, "Extracting GLB from output type: ${output?.javaClass?.simpleName}")
+
+        // Try as JSONArray (Trellis returns array when using "images" array input)
+        if (output is org.json.JSONArray && output.length() > 0) {
+            val firstResult = output.optJSONObject(0)
+            if (firstResult != null) {
+                // Look for "model_file" which contains the GLB
+                val modelFile = firstResult.optString("model_file")
+                if (modelFile.isNotEmpty() && modelFile.endsWith(".glb")) {
+                    Log.d(TAG, "3D model GLB URL from array: $modelFile")
+                    return modelFile
+                }
+                // Fallback to "glb" key
+                val glbUrl = firstResult.optString("glb")
+                if (glbUrl.isNotEmpty()) {
+                    Log.d(TAG, "3D model GLB URL: $glbUrl")
+                    return glbUrl
+                }
+            }
+        }
+
+        // Try as JSONObject
+        if (output is JSONObject) {
             val glbUrl = output.optString("glb")
             if (glbUrl.isNotEmpty()) {
                 Log.d(TAG, "3D model GLB URL: $glbUrl")
                 return glbUrl
             }
+            val modelFile = output.optString("model_file")
+            if (modelFile.isNotEmpty() && modelFile.endsWith(".glb")) {
+                Log.d(TAG, "3D model GLB URL from model_file: $modelFile")
+                return modelFile
+            }
         }
+
         // Try direct output string (different output format)
         val directOutput = json.optString("output")
         if (directOutput.isNotEmpty() && directOutput.endsWith(".glb")) {
             Log.d(TAG, "3D model direct URL: $directOutput")
             return directOutput
         }
-        Log.e(TAG, "Could not extract GLB URL from response: ${json.toString().take(500)}")
+
+        Log.e(TAG, "Could not extract GLB URL from response: ${json.toString().take(1000)}")
         return null
     }
 
@@ -303,6 +374,83 @@ class ReplicateManager(private val apiToken: String) {
             Log.e(TAG, "Error downloading image", e)
             return@withContext null
         }
+    }
+
+    /**
+     * Download a GLB model from URL and cache it locally.
+     * Returns the local file URI if successful, or the original URL if caching fails.
+     * @param glbUrl URL of the GLB model to download
+     * @return Local file URI (file://...) if cached, or original URL
+     */
+    suspend fun downloadAndCacheGlb(glbUrl: String): String = withContext(Dispatchers.IO) {
+        if (cacheDir == null) {
+            Log.w(TAG, "No cache directory available, using remote URL")
+            return@withContext glbUrl
+        }
+
+        try {
+            // Generate a unique filename based on URL hash
+            val hash = glbUrl.md5Hash()
+            val cachedFile = File(cacheDir, "pet_$hash.glb")
+
+            // Check if already cached
+            if (cachedFile.exists()) {
+                Log.d(TAG, "GLB model found in cache: ${cachedFile.absolutePath}")
+                return@withContext "file://${cachedFile.absolutePath}"
+            }
+
+            // Download the file
+            Log.d(TAG, "Downloading GLB model to cache...")
+            val request = Request.Builder()
+                .url(glbUrl)
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Failed to download GLB: ${response.code}")
+                return@withContext glbUrl
+            }
+
+            // Save to cache
+            response.body?.byteStream()?.use { inputStream ->
+                FileOutputStream(cachedFile).use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+
+            Log.d(TAG, "GLB model cached: ${cachedFile.absolutePath} (${cachedFile.length() / 1024} KB)")
+            return@withContext "file://${cachedFile.absolutePath}"
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error caching GLB model: ${e.message}", e)
+            return@withContext glbUrl
+        }
+    }
+
+    /**
+     * Get list of cached custom pet model files
+     */
+    fun getCachedModels(): List<File> {
+        return cacheDir?.listFiles { file -> file.extension == "glb" }?.toList() ?: emptyList()
+    }
+
+    /**
+     * Clear all cached GLB models
+     */
+    fun clearCache() {
+        cacheDir?.listFiles()?.forEach { file ->
+            file.delete()
+        }
+        Log.d(TAG, "GLB cache cleared")
+    }
+
+    /**
+     * Extension function to generate MD5 hash of a string
+     */
+    private fun String.md5Hash(): String {
+        val md = MessageDigest.getInstance("MD5")
+        val digest = md.digest(this.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     companion object {

@@ -74,6 +74,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
   private var customPetImageUrl: String? = null
+  private var isCustomPet = false // Track if current pet is a custom 3D model (different rotation)
 
   // Firebase Manager for cloud persistence
   lateinit var firebaseManager: FirebaseManager
@@ -131,8 +132,8 @@ class ImmersiveActivity : AppSystemActivity() {
     firebaseManager = FirebaseManager(applicationContext)
     firebaseManager.updateLastActive()
 
-    // Initialize Replicate Manager for AI background removal
-    replicateManager = ReplicateManager(ReplicateManager.DEFAULT_API_TOKEN)
+    // Initialize Replicate Manager for AI background removal and 3D generation
+    replicateManager = ReplicateManager(ReplicateManager.DEFAULT_API_TOKEN, applicationContext)
 
     // Initialize Photo Capture Manager for passthrough camera
     photoCaptureManager = PhotoCaptureManager(applicationContext)
@@ -218,6 +219,7 @@ class ImmersiveActivity : AppSystemActivity() {
   fun selectCustomPet(glbUrl: String) {
     customPetImageUrl = glbUrl
     currentPet = "Custom"
+    isCustomPet = true // Custom pets use different rotation
 
     Log.d(TAG, "Loading custom 3D pet from: $glbUrl")
 
@@ -281,6 +283,7 @@ class ImmersiveActivity : AppSystemActivity() {
   fun selectPet(petName: String) {
     currentPet = petName
     customPetImageUrl = null
+    isCustomPet = false // Bundled pets need X-axis flip
 
     // Cancel previous spinning animation
     spinningJob?.cancel()
@@ -360,6 +363,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   private fun startSpinning() {
     val entity = currentPetEntity ?: return
+    val customPetMode = isCustomPet // Capture current value
 
     spinningJob = activityScope.launch {
       var angle = 0f
@@ -372,18 +376,20 @@ class ImmersiveActivity : AppSystemActivity() {
           angle = (angle + rotationSpeed) % 360f
           val yRotRadians = angle * PI.toFloat() / 180f
 
-          // Flip model upright (180° around X-axis) and combine with Y-axis spin
-          // X-axis flip: 180 degrees = PI radians
-          val xFlipRadians = PI.toFloat()
-
-          // Quaternion for 180° rotation around X-axis (to flip upright)
-          val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
-
           // Quaternion for Y-axis rotation (spinning)
           val qy = Quaternion(0f, kotlin.math.sin(yRotRadians / 2), 0f, kotlin.math.cos(yRotRadians / 2))
 
-          // Combine rotations: first flip, then spin (qy * qx)
-          val rotation = multiplyQuaternions(qy, qx)
+          // Calculate final rotation based on pet type
+          val rotation = if (customPetMode) {
+            // Custom pets (Trellis-generated): no X-axis flip needed
+            qy
+          } else {
+            // Bundled asset pets: need 180° X-axis flip to orient upright
+            val xFlipRadians = PI.toFloat()
+            val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
+            // Combine rotations: first flip, then spin (qy * qx)
+            multiplyQuaternions(qy, qx)
+          }
 
           // Dancing animation: bouncing up and down with side-to-side sway
           time += 0.016f // Increment time (16ms frame time)

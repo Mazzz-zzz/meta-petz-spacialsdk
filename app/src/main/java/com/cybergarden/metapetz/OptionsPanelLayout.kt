@@ -335,6 +335,7 @@ fun CustomPetCreationScreen(
   var isCapturing by remember { mutableStateOf(false) }
   var isProcessing by remember { mutableStateOf(false) }
   var isGenerating3D by remember { mutableStateOf(false) }
+  var generationProgress by remember { mutableStateOf(0) }
   var processedImageUrl by remember { mutableStateOf<String?>(null) }
   var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
   var glbModelUrl by remember { mutableStateOf<String?>(null) }
@@ -618,18 +619,37 @@ fun CustomPetCreationScreen(
           Spacer(modifier = Modifier.height(16.dp))
 
           if (glbModelUrl == null) {
+            // Show progress bar when generating
+            if (isGenerating3D) {
+              Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                LinearProgressIndicator(
+                    progress = { generationProgress / 100f },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = Color(0xFF2196F3),
+                    trackColor = Color(0x33FFFFFF)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+              }
+            }
             // Generate 3D button
             PrimaryButton(
-                label = if (isGenerating3D) "Generating 3D..." else "Generate 3D Pet",
+                label = if (isGenerating3D) "Generating... $generationProgress%" else "Generate 3D Pet",
                 expanded = true,
                 onClick = {
                   if (!isGenerating3D && processedImageUrl != null) {
                     isGenerating3D = true
+                    generationProgress = 0
                     errorMessage = null
                     statusMessage = "Generating 3D model... This may take 1-2 minutes."
                     scope.launch {
                       try {
-                        val glbUrl = replicateManager.generateModel3D(processedImageUrl!!)
+                        val glbUrl = replicateManager.generateModel3D(processedImageUrl!!) { progress ->
+                          generationProgress = progress
+                          statusMessage = "Generating 3D model... $progress%"
+                        }
                         if (glbUrl != null) {
                           glbModelUrl = glbUrl
                           statusMessage = "3D model generated! Ready to use."
@@ -642,6 +662,7 @@ fun CustomPetCreationScreen(
                         statusMessage = null
                       }
                       isGenerating3D = false
+                      generationProgress = 0
                     }
                   }
                 },
@@ -663,16 +684,35 @@ fun CustomPetCreationScreen(
             )
           } else {
             // Use this 3D pet button
+            var isCaching by remember { mutableStateOf(false) }
             PrimaryButton(
-                label = "Use This 3D Pet",
+                label = if (isCaching) "Loading..." else "Use This 3D Pet",
                 expanded = true,
-                onClick = { glbModelUrl?.let { onPetCreated(it) } },
+                onClick = {
+                  if (!isCaching) {
+                    isCaching = true
+                    scope.launch {
+                      // Cache the GLB model locally for faster loading
+                      val cachedUrl = replicateManager.downloadAndCacheGlb(glbModelUrl!!)
+                      onPetCreated(cachedUrl)
+                      isCaching = false
+                    }
+                  }
+                },
                 leading = {
-                  Icon(
-                      imageVector = Icons.Filled.Check,
-                      contentDescription = "Confirm",
-                      modifier = Modifier.size(20.dp)
-                  )
+                  if (isCaching) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                  } else {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = "Confirm",
+                        modifier = Modifier.size(20.dp)
+                    )
+                  }
                 }
             )
           }
