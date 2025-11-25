@@ -153,6 +153,9 @@ class ImmersiveActivity : AppSystemActivity() {
   override fun onSceneReady() {
     super.onSceneReady()
 
+    // Enable recentering when user holds Meta button
+    scene.setReferenceSpace(com.meta.spatial.runtime.ReferenceSpace.LOCAL_FLOOR)
+
     scene.setViewOrigin(0.0f, 0.0f, 2.0f, 180.0f)
 
     // Configure bright lighting to illuminate the pet
