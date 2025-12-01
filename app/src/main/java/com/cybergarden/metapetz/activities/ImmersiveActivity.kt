@@ -49,6 +49,7 @@ import com.meta.spatial.runtime.NetworkedAssetLoader
 import com.meta.spatial.runtime.SceneAudioAsset
 import com.meta.spatial.runtime.SceneAudioPlayer
 import com.meta.spatial.toolkit.AppSystemActivity
+import com.meta.spatial.toolkit.Box
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
 import com.meta.spatial.toolkit.PanelRegistration
 import com.meta.spatial.toolkit.PanelStyleOptions
@@ -66,6 +67,7 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.toolkit.Mesh
+import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Panel
 import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Transform
@@ -277,6 +279,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Start head tracking for the photo capture modal
     startHeadTracking()
+
+    // Add a simple physics floor to catch dynamic objects (like the bone)
+    createPhysicsFloor()
   }
 
   /**
@@ -709,39 +714,42 @@ class ImmersiveActivity : AppSystemActivity() {
    * Randomizes a lateral offset and places it slightly forward of the head, clamped to floor.
    */
   private fun spawnBoneToy() {
-    val head = getHeadEntity()
-    val headTransform = head?.getComponent<Transform>()?.transform
+    val rightHand = getRightHandEntity()
+    val handTransform = rightHand?.getComponent<Transform>()?.transform
+        ?: getHeadEntity()?.getComponent<Transform>()?.transform
 
-    if (headTransform == null) {
-      Log.w(TAG, "Cannot spawn bone - no head transform")
+    if (handTransform == null) {
+      Log.w(TAG, "Cannot spawn bone - no hand/head transform")
       return
     }
 
-    val forward = rotateVector(headTransform.q, Vector3(0f, 0f, -1f))
-    val lateral = (Random.nextFloat() - 0.5f) * 0.6f // +/-0.3m sideways
-    val forwardDist = 0.9f
+    val forward = rotateVector(handTransform.q, Vector3(0f, 0f, 1f))
+    val forwardDist = 0.25f
 
     val pos = Vector3(
-        headTransform.t.x + forward.x * forwardDist + lateral,
-        floorHeight() + 0.05f, // lift slightly above floor to avoid z-fighting
-        headTransform.t.z + forward.z * forwardDist
+        handTransform.t.x + forward.x * forwardDist,
+        floorHeight() + 0.1f, // rest on floor
+        handTransform.t.z + forward.z * forwardDist
     )
 
     Entity.create(
         listOf(
-            Mesh("apk:///models/bonew.glb".toUri()),
+            Mesh("apk:///models/bonew.glb".toUri(), hittable = MeshCollision.NoCollision),
             Transform(Pose(pos, Quaternion())),
             Scale(Vector3(0.3f, 0.3f, 0.3f)),
             Visible(true),
             Physics().apply {
               state = PhysicsState.DYNAMIC
+              shape = "box"
+              dimensions = Vector3(0.3f, 0.1f, 0.6f) // approximate bone bounds
+              restitution = 0.2f
             }
         )
     )
 
     boneSoundPlayer.play(pos, 0.8f, false)
 
-    Log.d(TAG, "Spawned bone toy at $pos (forward=$forward, lateralOffset=$lateral)")
+    Log.d(TAG, "Spawned bone toy at $pos (forward=$forward)")
   }
 
   private fun rotateVector(q: Quaternion, v: Vector3): Vector3 {
@@ -882,5 +890,19 @@ class ImmersiveActivity : AppSystemActivity() {
           keyName = "example_key_name",
       )
     }
+  }
+  private fun createPhysicsFloor() {
+    val floorY = floorHeight() - 0.02f
+    Entity.create(
+        listOf(
+            Box(Vector3(10f, 0.04f, 10f)), // large thin box as collider
+            Transform(Pose(Vector3(0f, floorY, 0f))),
+            Physics().apply {
+              state = PhysicsState.KINEMATIC
+              shape = "box"
+              dimensions = Vector3(10f, 0.04f, 10f)
+            }
+        )
+    )
   }
 }
