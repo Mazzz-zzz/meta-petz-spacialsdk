@@ -1,4 +1,4 @@
-package com.cybergarden.metapetz
+package com.cybergarden.metapetz.ui
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
@@ -35,6 +35,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cybergarden.metapetz.services.FirebaseManager
+import com.cybergarden.metapetz.services.PhotoCaptureManager
+import com.cybergarden.metapetz.services.ReplicateManager
 import com.meta.spatial.toolkit.PanelConstants
 import com.meta.spatial.uiset.button.PrimaryButton
 import com.meta.spatial.uiset.button.SecondaryButton

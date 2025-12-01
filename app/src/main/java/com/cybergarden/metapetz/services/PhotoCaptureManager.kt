@@ -1,4 +1,4 @@
-package com.cybergarden.metapetz
+package com.cybergarden.metapetz.services
 
 import android.annotation.SuppressLint
 import android.content.Context

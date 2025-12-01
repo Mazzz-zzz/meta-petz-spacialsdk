@@ -1,8 +1,9 @@
-package com.cybergarden.metapetz
+package com.cybergarden.metapetz.services
 
 import android.content.Context
 import android.provider.Settings
 import android.util.Log
+import com.cybergarden.metapetz.ui.PetStats
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase

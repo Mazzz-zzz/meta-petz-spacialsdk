@@ -1,4 +1,4 @@
-package com.cybergarden.metapetz
+package com.cybergarden.metapetz.activities
 
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
@@ -19,6 +19,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
+import com.cybergarden.metapetz.BuildConfig
+import com.cybergarden.metapetz.R
+import com.cybergarden.metapetz.ecs.PetLocomotion
+import com.cybergarden.metapetz.services.FirebaseManager
+import com.cybergarden.metapetz.services.PhotoCaptureManager
+import com.cybergarden.metapetz.services.ReplicateManager
+import com.cybergarden.metapetz.ui.OPTIONS_PANEL_HEIGHT
+import com.cybergarden.metapetz.ui.OPTIONS_PANEL_WIDTH
+import com.cybergarden.metapetz.ui.OptionsPanel
+import com.cybergarden.metapetz.ui.PHOTO_MODAL_HEIGHT
+import com.cybergarden.metapetz.ui.PHOTO_MODAL_WIDTH
+import com.cybergarden.metapetz.ui.PetInfoPanel
+import com.cybergarden.metapetz.ui.PhotoCaptureModal
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
@@ -127,7 +140,7 @@ class ImmersiveActivity : AppSystemActivity() {
   // Pet model file paths in assets
   private val petModels = mapOf(
       "Cat" to "apk:///models/cat.glb",
-      "Dog" to "apk:///models/dog.glb",
+      "Dog" to "apk:///models/metadog.glb",
       "Bunny" to "apk:///models/bunny.glb",
       "Bird" to "apk:///models/bird.glb",
       "Fish" to "apk:///models/fish.glb",

@@ -1,4 +1,6 @@
 data:
   tabs:
     - Composition
-  current_tab: Composition
+    - Composition2
+    - Composition1
+  current_tab: Composition1
