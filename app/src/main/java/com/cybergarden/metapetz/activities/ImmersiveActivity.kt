@@ -1080,7 +1080,10 @@ class ImmersiveActivity : AppSystemActivity() {
                 // Capture current world position and velocity before destroying
                 val worldPos = handPose.t
                 val worldRot = handPose.q
-                val throwVel = vel
+                // Multiply velocity for more distance and add upward boost
+                val multiplier = 3f
+                val upwardBoost = 1.5f
+                val throwVel = Vector3(vel.x * multiplier, vel.y * multiplier + upwardBoost, vel.z * multiplier)
 
                 // Stop sampling first
                 stopBoneSampling()
