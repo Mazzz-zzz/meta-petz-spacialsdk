@@ -54,6 +54,10 @@
     android:required="false"
   />
   <uses-permission android:name="com.oculus.permission.RENDER_MODEL" />
+  <!-- Scene/Room awareness for MRUK raycasting -->
+  <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
+  <uses-permission android:name="com.oculus.permission.USE_SCENE" />
+  <uses-feature android:name="com.oculus.feature.BOUNDED_SCENE" android:required="false" />
   <!-- Volume Control -->
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
   <application android:allowBackup="false" android:label="MetaPetz">
