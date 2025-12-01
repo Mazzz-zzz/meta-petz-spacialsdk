@@ -42,6 +42,9 @@ import com.meta.spatial.debugtools.HotReloadFeature
 import com.meta.spatial.okhttp3.OkHttpAssetFetcher
 import com.meta.spatial.ovrmetrics.OVRMetricsDataModel
 import com.meta.spatial.ovrmetrics.OVRMetricsFeature
+import com.meta.spatial.physics.Physics
+import com.meta.spatial.physics.PhysicsFeature
+import com.meta.spatial.physics.PhysicsState
 import com.meta.spatial.runtime.NetworkedAssetLoader
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
@@ -64,6 +67,7 @@ import com.meta.spatial.toolkit.Panel
 import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.TransformParent
+import com.meta.spatial.toolkit.Visible
 import com.meta.spatial.toolkit.Animated
 import com.meta.spatial.toolkit.PlaybackState
 import com.meta.spatial.toolkit.PlaybackType
@@ -78,6 +82,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.PI
+import kotlin.random.Random
 
 class ImmersiveActivity : AppSystemActivity() {
   private val activityScope = CoroutineScope(Dispatchers.Main)
@@ -102,11 +107,15 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "Pet started walking")
       }
       onWalkEnd = {
-        // Resume spinning/dancing when walking ends
-        startSpinning()
-        Log.d(TAG, "Pet finished walking")
+        // Pet stays at destination with wag animation (handled in PetLocomotion)
+        Log.d(TAG, "Pet finished walking - staying at destination")
       }
     }
+  }
+
+  private fun floorHeight(): Float {
+    // Use LOCAL_FLOOR origin to keep drops on floor plane
+    return 0f
   }
 
   // Firebase Manager for cloud persistence (lazy so available during registerPanels)
@@ -153,6 +162,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
     val features =
         mutableListOf<SpatialFeature>(
+            PhysicsFeature(spatial),
             VRFeature(this),
             IsdkFeature(this, spatial, systemManager),  // Enable hand tracking and controller interactions
             ComposeFeature(),
@@ -594,12 +604,12 @@ class ImmersiveActivity : AppSystemActivity() {
                   ),
                   Scale(Vector3(0.2f, 0.2f, 0.2f)),
                   TransformParent(panel),
-                  // Play built-in GLB animations if they exist (track 0 = first animation)
+                  // Play wag animation at spawn
                   Animated(
                       startTime = System.currentTimeMillis(),
                       playbackState = PlaybackState.PLAYING,
                       playbackType = PlaybackType.LOOP,
-                      track = 0
+                      track = PetLocomotion.ANIM_WAG
                   )
               )
           )
@@ -683,6 +693,62 @@ class ImmersiveActivity : AppSystemActivity() {
     )
   }
 
+  /**
+   * Spawn a physics-enabled bone near the player.
+   * Randomizes a lateral offset and places it slightly forward of the head, clamped to floor.
+   */
+  private fun spawnBoneToy() {
+    val head = getHeadEntity()
+    val headTransform = head?.getComponent<Transform>()?.transform
+
+    if (headTransform == null) {
+      Log.w(TAG, "Cannot spawn bone - no head transform")
+      return
+    }
+
+    val forward = rotateVector(headTransform.q, Vector3(0f, 0f, -1f))
+    val lateral = (Random.nextFloat() - 0.5f) * 0.6f // +/-0.3m sideways
+    val forwardDist = 0.9f
+
+    val pos = Vector3(
+        headTransform.t.x + forward.x * forwardDist + lateral,
+        floorHeight() + 0.05f, // lift slightly above floor to avoid z-fighting
+        headTransform.t.z + forward.z * forwardDist
+    )
+
+    Entity.create(
+        listOf(
+            Mesh("apk:///models/bonew.glb".toUri()),
+            Transform(Pose(pos, Quaternion())),
+            Scale(Vector3(0.3f, 0.3f, 0.3f)),
+            Visible(true),
+            Physics().apply {
+              state = PhysicsState.DYNAMIC
+            }
+        )
+    )
+
+    Log.d(TAG, "Spawned bone toy at $pos (forward=$forward, lateralOffset=$lateral)")
+  }
+
+  private fun rotateVector(q: Quaternion, v: Vector3): Vector3 {
+    val qx = q.x
+    val qy = q.y
+    val qz = q.z
+    val qw = q.w
+
+    val ix = qw * v.x + qy * v.z - qz * v.y
+    val iy = qw * v.y + qz * v.x - qx * v.z
+    val iz = qw * v.z + qx * v.y - qy * v.x
+    val iw = -qx * v.x - qy * v.y - qz * v.z
+
+    return Vector3(
+        ix * qw + iw * -qx + iy * -qz - iz * -qy,
+        iy * qw + iw * -qy + iz * -qx - ix * -qz,
+        iz * qw + iw * -qz + ix * -qy - iy * -qx
+    )
+  }
+
   override fun registerPanels(): List<PanelRegistration> {
     return listOf(
         // Registering Pet Info Panel (shows stats when pet is selected)
@@ -733,7 +799,8 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSelectPet = ::selectPet,
                       onCreateCustomPet = ::selectCustomPet,
                       replicateManager = replicateManager,
-                      onCapturePhoto = ::capturePhoto
+                      onCapturePhoto = ::capturePhoto,
+                      onSpawnBone = ::spawnBoneToy
                   )
                 }
               }

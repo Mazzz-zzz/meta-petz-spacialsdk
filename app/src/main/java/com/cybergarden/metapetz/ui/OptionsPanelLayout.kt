@@ -85,7 +85,7 @@ fun getPanelTheme(): SpatialColorScheme =
     heightDp = (PanelConstants.DEFAULT_DP_PER_METER * OPTIONS_PANEL_HEIGHT).toInt(),
 )
 fun OptionsPanelPreview() {
-  OptionsPanel(onSelectPet = {})
+  OptionsPanel(onSelectPet = {}, onSpawnBone = {})
 }
 
 @Composable
@@ -93,7 +93,8 @@ fun OptionsPanel(
     onSelectPet: (String) -> Unit,
     onCreateCustomPet: ((String) -> Unit)? = null,
     replicateManager: ReplicateManager? = null,
-    onCapturePhoto: ((callback: (Bitmap?) -> Unit) -> Unit)? = null
+    onCapturePhoto: ((callback: (Bitmap?) -> Unit) -> Unit)? = null,
+    onSpawnBone: (() -> Unit)? = null
 ) {
   var showCustomPetScreen by remember { mutableStateOf(false) }
 
@@ -106,16 +107,24 @@ fun OptionsPanel(
       Pet("Hamster", "🐹", "A tiny furry buddy", "Playful"),
   )
 
-  SpatialTheme(colorScheme = getPanelTheme()) {
-    Column(
-        modifier =
-            Modifier.fillMaxSize()
-                .clip(SpatialTheme.shapes.large)
+      SpatialTheme(colorScheme = getPanelTheme()) {
+        Column(
+            modifier =
+                Modifier.fillMaxSize()
+                    .clip(SpatialTheme.shapes.large)
                 .background(brush = LocalColorScheme.current.panel)
                 .padding(32.dp),
         verticalArrangement = Arrangement.Top,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          if (onSpawnBone != null) {
+            SecondaryButton(
+                modifier = Modifier.fillMaxWidth(),
+                label = "Spawn Bone Toy",
+                onClick = { onSpawnBone() }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+          }
       if (showCustomPetScreen && replicateManager != null && onCapturePhoto != null) {
         // Show Custom Pet Creation Screen
         PhotoCaptureContent(

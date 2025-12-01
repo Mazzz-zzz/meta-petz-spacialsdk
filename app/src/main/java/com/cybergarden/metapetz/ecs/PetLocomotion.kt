@@ -29,10 +29,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.math.PI
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -171,17 +167,10 @@ class PetLocomotion(
 
                 val duration = (distance / walkSpeed * 1000).toLong().coerceAtLeast(100)
 
-                // Calculate facing direction (XZ plane only)
-                val dirX = dx / distance
-                val dirZ = dz / distance
+                // Direction vector to target for lookRotationAroundY
+                val direction = Vector3(dx, 0f, dz)
 
-                // Calculate Y-axis rotation to face movement direction
-                // atan2(x, z) gives angle from +Z axis toward +X axis
-                // Add PI offset because most GLB models face -Z (toward camera) by default
-                val modelForwardOffset = PI.toFloat() // 180° - adjust if model faces different direction
-                val facingAngle = atan2(dirX, dirZ) + modelForwardOffset
-
-                Log.d(TAG, "Walking from $startPos to $target, distance: $distance, duration: ${duration}ms, facing: ${Math.toDegrees(facingAngle.toDouble())}°")
+                Log.d(TAG, "Walking from $startPos to $target, distance: $distance, duration: ${duration}ms")
 
                 val startTime = System.currentTimeMillis()
 
@@ -196,32 +185,13 @@ class PetLocomotion(
                         startPos.z + dz * progress
                     )
 
-                    // Build rotation: Y-axis rotation for facing + X-axis flip for model orientation
-                    // Step 1: Y-axis rotation to face movement direction
-                    val yRotation = Quaternion(
-                        0f,
-                        sin(facingAngle / 2).toFloat(),
-                        0f,
-                        cos(facingAngle / 2).toFloat()
-                    )
-
-                    // Step 2: X-axis 180° flip to orient model upright (most GLB models need this)
-                    val xFlipAngle = PI.toFloat()
-                    val xFlip = Quaternion(
-                        sin(xFlipAngle / 2).toFloat(),
-                        0f,
-                        0f,
-                        cos(xFlipAngle / 2).toFloat()
-                    )
-
-                    // Combine: first apply xFlip, then yRotation
-                    // This makes the pet face forward in movement direction while staying upright
-                    val finalRotation = multiplyQuaternions(yRotation, xFlip)
+                    // Use lookRotationAroundY to face movement direction (like AnimationsSample DroneSystem)
+                    val facingRotation = Quaternion.lookRotationAroundY(direction)
 
                     // Update transform
                     val newTransform = pet.getComponent<Transform>()
                     newTransform.transform.t = newPos
-                    newTransform.transform.q = finalRotation
+                    newTransform.transform.q = facingRotation
                     pet.setComponent(newTransform)
 
                     if (progress >= 1f) break
@@ -308,17 +278,6 @@ class PetLocomotion(
         pointingSystem = null
         petEntity = null
         panelEntity = null
-    }
-
-    // ========== Math Utilities ==========
-
-    private fun multiplyQuaternions(q1: Quaternion, q2: Quaternion): Quaternion {
-        return Quaternion(
-            q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
-            q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
-            q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
-            q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z
-        )
     }
 }
 
