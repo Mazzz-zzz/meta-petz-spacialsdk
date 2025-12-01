@@ -76,6 +76,23 @@ class ImmersiveActivity : AppSystemActivity() {
   private var customPetImageUrl: String? = null
   private var isCustomPet = false // Track if current pet is a custom 3D model (different rotation)
 
+  // Pet locomotion system for point-to-move functionality
+  private val petLocomotion: PetLocomotion by lazy {
+    PetLocomotion(activityScope, floorY = 0f, walkSpeed = 0.5f).apply {
+      onWalkStart = {
+        // Stop spinning/dancing when walking starts
+        spinningJob?.cancel()
+        spinningJob = null
+        Log.d(TAG, "Pet started walking")
+      }
+      onWalkEnd = {
+        // Resume spinning/dancing when walking ends
+        startSpinning()
+        Log.d(TAG, "Pet finished walking")
+      }
+    }
+  }
+
   // Firebase Manager for cloud persistence (lazy so available during registerPanels)
   val firebaseManager: FirebaseManager by lazy {
     FirebaseManager(applicationContext).also { it.updateLastActive() }
@@ -136,6 +153,10 @@ class ImmersiveActivity : AppSystemActivity() {
     // Enable MR mode
     systemManager.findSystem<LocomotionSystem>().enableLocomotion(false)
     scene.enablePassthrough(true)
+
+    // Register the point-to-move system for pet locomotion
+    systemManager.registerSystem(petLocomotion.createPointingSystem())
+    Log.d(TAG, "Point-to-move system registered")
 
     loadGLXF()
   }
@@ -423,6 +444,10 @@ class ImmersiveActivity : AppSystemActivity() {
         )
 
         Log.d(TAG, "Custom 3D pet entity created successfully")
+
+        // Update locomotion system with new pet entity
+        petLocomotion.setPetEntity(currentPetEntity, panel)
+
         startSpinning()
       } catch (e: Exception) {
         Log.e(TAG, "Error creating custom pet: ${e.message}", e)
@@ -501,6 +526,9 @@ class ImmersiveActivity : AppSystemActivity() {
                   )
               )
           )
+
+          // Update locomotion system with new pet entity
+          petLocomotion.setPetEntity(currentPetEntity, panel)
 
           // Start spinning animation
           startSpinning()
@@ -592,6 +620,7 @@ class ImmersiveActivity : AppSystemActivity() {
                         firebaseManager = firebaseManager,
                         onClose = {
                           currentPet = null
+                          petLocomotion.setPetEntity(null, null) // Clear locomotion
                           currentPetEntity?.destroy()
                           currentPetEntity = null
                           pedestalEntity?.destroy()
@@ -683,6 +712,7 @@ class ImmersiveActivity : AppSystemActivity() {
   override fun onSpatialShutdown() {
     spinningJob?.cancel()
     headTrackingJob?.cancel()
+    petLocomotion.cleanup()
     photoCaptureManager.dispose()
     super.onSpatialShutdown()
   }
