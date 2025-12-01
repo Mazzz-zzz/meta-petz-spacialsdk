@@ -25,13 +25,13 @@ import com.cybergarden.metapetz.ecs.PetLocomotion
 import com.cybergarden.metapetz.services.FirebaseManager
 import com.cybergarden.metapetz.services.PhotoCaptureManager
 import com.cybergarden.metapetz.services.ReplicateManager
-import com.cybergarden.metapetz.ui.OPTIONS_PANEL_HEIGHT
-import com.cybergarden.metapetz.ui.OPTIONS_PANEL_WIDTH
 import com.cybergarden.metapetz.ui.OptionsPanel
-import com.cybergarden.metapetz.ui.PHOTO_MODAL_HEIGHT
-import com.cybergarden.metapetz.ui.PHOTO_MODAL_WIDTH
 import com.cybergarden.metapetz.ui.PetInfoPanel
 import com.cybergarden.metapetz.ui.PhotoCaptureModal
+import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
+import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_WIDTH
+import com.cybergarden.metapetz.ui.theme.PHOTO_MODAL_HEIGHT
+import com.cybergarden.metapetz.ui.theme.PHOTO_MODAL_WIDTH
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
@@ -48,6 +48,9 @@ import com.meta.spatial.physics.PhysicsState
 import com.meta.spatial.runtime.NetworkedAssetLoader
 import com.meta.spatial.runtime.SceneAudioAsset
 import com.meta.spatial.runtime.SceneAudioPlayer
+import com.meta.spatial.runtime.SceneObject
+import com.meta.spatial.runtime.HitInfo
+import com.meta.spatial.runtime.InputListener
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.Box
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
@@ -59,6 +62,10 @@ import com.meta.spatial.toolkit.Audio
 import com.meta.spatial.vr.LocomotionSystem
 import com.meta.spatial.vr.VRFeature
 import com.meta.spatial.isdk.IsdkFeature
+import com.meta.spatial.isdk.IsdkGrabbable
+import com.meta.spatial.isdk.IsdkInputListenerSystem
+import com.meta.spatial.runtime.PointerEventType
+import com.meta.spatial.runtime.SemanticType
 import com.meta.spatial.mruk.MRUKFeature
 import com.meta.spatial.mruk.MRUKLoadDeviceResult
 import com.meta.spatial.mruk.MRUKStartEnvrionmentRaycasterResult
@@ -73,6 +80,7 @@ import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.TransformParent
 import com.meta.spatial.toolkit.Visible
+import com.meta.spatial.toolkit.Hittable
 import com.meta.spatial.toolkit.Animated
 import com.meta.spatial.toolkit.PlaybackState
 import com.meta.spatial.toolkit.PlaybackType
@@ -101,6 +109,11 @@ class ImmersiveActivity : AppSystemActivity() {
   private var headTrackingJob: Job? = null
   private var customPetImageUrl: String? = null
   private var isCustomPet = false // Track if current pet is a custom 3D model (different rotation)
+  private var boneEntity: Entity? = null
+  private var boneHand: Entity? = null
+  private var boneSampleJob: Job? = null
+  private var lastBonePos: Vector3? = null
+  private var lastBoneSampleNs: Long = 0L
 
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
@@ -108,6 +121,12 @@ class ImmersiveActivity : AppSystemActivity() {
   }
   private val boneSoundPlayer: SceneAudioPlayer by lazy {
     SceneAudioPlayer(scene, boneSound)
+  }
+  private val boneFastSound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/bone_hit.wav") // reuse placeholder
+  }
+  private val boneFastPlayer: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, boneFastSound)
   }
 
   // Pet locomotion system for point-to-move functionality
@@ -196,6 +215,9 @@ class ImmersiveActivity : AppSystemActivity() {
         File(applicationContext.getCacheDir().canonicalPath),
         OkHttpAssetFetcher(),
     )
+
+    // Register grabbable component for ISDK grabbing
+    componentManager.registerComponent<IsdkGrabbable>(IsdkGrabbable.Companion)
     checkAndRequestCameraPermission()
     checkAndRequestScenePermission()
 
@@ -282,6 +304,102 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Add a simple physics floor to catch dynamic objects (like the bone)
     createPhysicsFloor()
+
+    // Grabbable handler: keeps physics while held and restores on release
+    val inputSystem = systemManager.tryFindSystem<IsdkInputListenerSystem>()
+    if (inputSystem == null) {
+      Log.w(TAG, "IsdkInputListenerSystem not found - bone grabbing disabled")
+    } else {
+      Log.d(
+          TAG,
+          "PointerEventType ids hover=${PointerEventType.Hover.id} unhover=${PointerEventType.Unhover.id} select=${PointerEventType.Select.id} unselect=${PointerEventType.Unselect.id}"
+      )
+      inputSystem.setInputListener(
+          object : InputListener {
+            private val selectCounts = mutableMapOf<Long, Int>()
+            private val savedStates = mutableMapOf<Entity, PhysicsState>()
+
+            private fun isGrabbablePhysics(ent: Entity): Boolean =
+                ent.hasComponent<IsdkGrabbable>() && ent.hasComponent<Physics>()
+
+            override fun onPointerEvent(
+                receiver: SceneObject,
+                hitInfo: HitInfo,
+                type: Int,
+                sourceOfInput: Entity,
+                scrollInfo: Vector2,
+                semanticType: Int,
+            ) {
+              val ent = receiver.entity ?: return
+              if (!isGrabbablePhysics(ent)) return
+
+              Log.d(TAG, "Bone pointer event type=$type semantic=$semanticType id=${ent.id}")
+
+              val isSelectType = type == PointerEventType.Select.id || type == 4 // some builds report 4
+              val isUnselectType = type == PointerEventType.Unselect.id || type == 0 // some builds report 0
+
+              when {
+                type == PointerEventType.Hover.id -> {
+                  val scale = ent.getComponent<Scale>().scale
+                  val newScale = Vector3(scale.x + 0.02f, scale.y + 0.02f, scale.z + 0.02f)
+                  ent.setComponent(Scale(newScale))
+                  Log.d(TAG, "Bone hover enter id=${ent.id}")
+                }
+                type == PointerEventType.Unhover.id -> {
+                  val scale = ent.getComponent<Scale>().scale
+                  val newScale = Vector3(scale.x - 0.02f, scale.y - 0.02f, scale.z - 0.02f)
+                  ent.setComponent(Scale(newScale))
+                  Log.d(TAG, "Bone hover exit id=${ent.id}")
+                }
+                isSelectType -> {
+                  val count = (selectCounts[ent.id] ?: 0) + 1
+                  selectCounts[ent.id] = count
+                  if (count == 1) {
+                    // Only allow our bone to be grabbed
+                    if (boneEntity != null && ent != boneEntity) {
+                      Log.d(TAG, "Ignoring grab on non-bone entity id=${ent.id}")
+                      return
+                    } else {
+                      boneEntity = ent
+                    }
+
+                    val physics = ent.getComponent<Physics>()
+                    if (!savedStates.contains(ent)) {
+                      savedStates[ent] =
+                          if (physics.state == PhysicsState.KINEMATIC) PhysicsState.DYNAMIC
+                          else physics.state
+                    }
+                    physics.state = PhysicsState.KINEMATIC
+                    ent.setComponent(physics)
+
+                    // Parent to hand for stable grab
+                    val handEntity = if (sourceOfInput == Entity.nullEntity()) getRightHandEntity() else sourceOfInput
+                    attachToHand(ent, handEntity)
+                    startBoneSampling(ent, handEntity)
+                    Log.d(TAG, "Bone grabbed id=${ent.id}, hand=${handEntity?.id}")
+                  }
+                }
+                isUnselectType -> {
+                  val count = (selectCounts[ent.id] ?: 0) - 1
+                  selectCounts[ent.id] = count
+                  if (count <= 0) {
+                    val physics = ent.getComponent<Physics>()
+                    physics.state = savedStates.remove(ent) ?: PhysicsState.DYNAMIC
+                    ent.setComponent(physics)
+                    detachFromHand(ent)
+                    selectCounts.remove(ent.id)
+                    if (ent == boneEntity) boneEntity = null
+                    stopBoneSampling()
+
+                    Log.d(TAG, "Bone released id=${ent.id}")
+                  }
+                }
+              }
+            }
+          }
+      )
+      Log.d(TAG, "IsdkInputListenerSystem listener registered for bone grab")
+    }
   }
 
   /**
@@ -714,42 +832,56 @@ class ImmersiveActivity : AppSystemActivity() {
    * Randomizes a lateral offset and places it slightly forward of the head, clamped to floor.
    */
   private fun spawnBoneToy() {
-    val rightHand = getRightHandEntity()
-    val handTransform = rightHand?.getComponent<Transform>()?.transform
-        ?: getHeadEntity()?.getComponent<Transform>()?.transform
+    Log.d(TAG, "SpawnBoneToy invoked")
+    val hand = getRightHandEntity() ?: getLeftHandEntity() ?: getHeadEntity()
+    val handTransform = hand?.getComponent<Transform>()?.transform
 
     if (handTransform == null) {
       Log.w(TAG, "Cannot spawn bone - no hand/head transform")
       return
     }
 
-    val forward = rotateVector(handTransform.q, Vector3(0f, 0f, 1f))
-    val forwardDist = 0.25f
+    try {
+      // Only one bone at a time
+      boneSampleJob?.cancel()
+      boneEntity?.destroy()
+      boneEntity = null
+      boneHand = null
+      lastBonePos = null
+      lastBoneSampleNs = 0L
 
-    val pos = Vector3(
-        handTransform.t.x + forward.x * forwardDist,
-        floorHeight() + 0.1f, // rest on floor
-        handTransform.t.z + forward.z * forwardDist
-    )
+      // Spawn slightly forward in local hand space and parent to hand so it starts equipped
+      val localOffset = Vector3(0f, 0f, 0.08f)
+      val pose = Pose(localOffset, Quaternion())
 
-    Entity.create(
-        listOf(
-            Mesh("apk:///models/bonew.glb".toUri(), hittable = MeshCollision.NoCollision),
-            Transform(Pose(pos, Quaternion())),
-            Scale(Vector3(0.3f, 0.3f, 0.3f)),
-            Visible(true),
-            Physics().apply {
-              state = PhysicsState.DYNAMIC
-              shape = "box"
-              dimensions = Vector3(0.3f, 0.1f, 0.6f) // approximate bone bounds
-              restitution = 0.2f
-            }
-        )
-    )
+      val entity = Entity.create(
+          listOf(
+              Mesh("apk:///models/bonew.glb".toUri(), hittable = MeshCollision.LineTest),
+              Transform(pose),
+              Scale(Vector3(0.2f, 0.2f, 0.2f)),
+              Visible(true),
+              Hittable(MeshCollision.LineTest),
+              // Box collider for touch grab support (ray + touch grabs)
+              Box(Vector3(0.2f, 0.06f, 0.35f)),
+              IsdkGrabbable(),
+              Physics().apply {
+                state = PhysicsState.KINEMATIC // start attached to hand; will be set to dynamic on release
+                shape = "box"
+                dimensions = Vector3(0.2f, 0.06f, 0.35f)
+                restitution = 0.2f
+              }
+          )
+      )
+      boneEntity = entity
 
-    boneSoundPlayer.play(pos, 0.8f, false)
+      attachToHand(entity, hand)
 
-    Log.d(TAG, "Spawned bone toy at $pos (forward=$forward)")
+      boneSoundPlayer.play(handTransform.t, 0.8f, false)
+
+      Log.d(TAG, "Spawned bone toy attached to hand=${hand.id} (physDims=Vector3(0.2,0.06,0.35))")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to spawn bone toy: ${e.message}", e)
+    }
   }
 
   private fun rotateVector(q: Quaternion, v: Vector3): Vector3 {
@@ -769,6 +901,9 @@ class ImmersiveActivity : AppSystemActivity() {
         iz * qw + iw * -qz + ix * -qy - iy * -qx
     )
   }
+  private fun vectorDiff(a: Vector3, b: Vector3): Vector3 = Vector3(a.x - b.x, a.y - b.y, a.z - b.z)
+  private fun vectorScale(v: Vector3, s: Float): Vector3 = Vector3(v.x * s, v.y * s, v.z * s)
+  private fun vectorLength(v: Vector3): Float = kotlin.math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
 
   override fun registerPanels(): List<PanelRegistration> {
     return listOf(
@@ -905,4 +1040,116 @@ class ImmersiveActivity : AppSystemActivity() {
         )
     )
   }
+  private fun attachToHand(ent: Entity, hand: Entity?) {
+    val parent = hand ?: return
+    if (parent == Entity.nullEntity()) return
+    ent.setComponent(TransformParent(parent))
+  }
+
+  private fun detachFromHand(ent: Entity) {
+    ent.setComponent(TransformParent(Entity.nullEntity()))
+  }
+
+  private fun startBoneSampling(ent: Entity, hand: Entity?) {
+    if (hand == null || hand == Entity.nullEntity()) return
+    boneHand = hand
+    lastBonePos = hand.tryGetComponent<Transform>()?.transform?.t
+    lastBoneSampleNs = System.nanoTime()
+
+    boneSampleJob?.cancel()
+    boneSampleJob = activityScope.launch {
+      while (isActive) {
+        try {
+          val h = boneHand
+          if (h == null || h == Entity.nullEntity()) {
+            delay(30)
+            continue
+          }
+          val handPose = h.tryGetComponent<Transform>()?.transform
+          val prevPos = lastBonePos
+          val prevTime = lastBoneSampleNs
+          val now = System.nanoTime()
+          if (handPose != null && prevPos != null && prevTime != 0L) {
+            val dt = (now - prevTime) / 1_000_000_000.0f
+            if (dt > 0f) {
+              val delta = vectorDiff(handPose.t, prevPos)
+              val vel = vectorScale(delta, 1f / dt)
+              Log.d(TAG, "Bone velocity sample dt=$dt vel=$vel")
+              val speed = vectorLength(vel)
+              if (speed > 1f) {
+                // Capture current world position and velocity before destroying
+                val worldPos = handPose.t
+                val worldRot = handPose.q
+                val throwVel = vel
+
+                // Stop sampling first
+                stopBoneSampling()
+
+                // Destroy the held bone completely
+                boneEntity?.destroy()
+                boneEntity = null
+
+                // Play sound at release position
+                boneFastPlayer.play(worldPos, 0.6f, false)
+
+                // Spawn a fresh dynamic bone at the release position with velocity
+                spawnThrownBone(worldPos, worldRot, throwVel)
+
+                Log.d(TAG, "Bone thrown at speed=$speed vel=$throwVel pos=$worldPos")
+                break
+              }
+              lastBonePos = handPose.t
+              lastBoneSampleNs = now
+            }
+          } else {
+            lastBonePos = handPose?.t ?: lastBonePos
+            lastBoneSampleNs = if (handPose != null) now else lastBoneSampleNs
+          }
+          delay(30)
+        } catch (e: Exception) {
+          Log.e(TAG, "Bone sample error: ${e.message}")
+          delay(30)
+        }
+      }
+    }
+  }
+
+  /**
+   * Spawn a new bone at given world position/rotation with initial velocity (for throwing).
+   * This bone is NOT attached to the hand - it's fully dynamic from the start.
+   */
+  private fun spawnThrownBone(position: Vector3, rotation: Quaternion, velocity: Vector3) {
+    try {
+      val entity = Entity.create(
+          listOf(
+              Mesh("apk:///models/bonew.glb".toUri(), hittable = MeshCollision.LineTest),
+              Transform(Pose(position, rotation)),
+              Scale(Vector3(0.2f, 0.2f, 0.2f)),
+              Visible(true),
+              Hittable(MeshCollision.LineTest),
+              Box(Vector3(0.2f, 0.06f, 0.35f)),
+              Physics().apply {
+                state = PhysicsState.DYNAMIC
+                shape = "box"
+                dimensions = Vector3(0.2f, 0.06f, 0.35f)
+                restitution = 0.4f
+                linearVelocity = velocity
+              }
+          )
+      )
+      // Don't track this as boneEntity - it's a free-flying bone
+      Log.d(TAG, "Spawned thrown bone at pos=$position vel=$velocity id=${entity.id}")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to spawn thrown bone: ${e.message}", e)
+    }
+  }
+
+  private fun stopBoneSampling() {
+    boneSampleJob?.cancel()
+    boneSampleJob = null
+    boneHand = null
+    lastBonePos = null
+    lastBoneSampleNs = 0L
+  }
+
 }
