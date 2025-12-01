@@ -1,83 +1,54 @@
 package com.cybergarden.metapetz.ui
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cybergarden.metapetz.model.DEFAULT_PETS
+import com.cybergarden.metapetz.model.CUSTOM_PET
+import com.cybergarden.metapetz.model.Pet
+import com.cybergarden.metapetz.model.PetStats
 import com.cybergarden.metapetz.services.FirebaseManager
-import com.cybergarden.metapetz.services.PhotoCaptureManager
 import com.cybergarden.metapetz.services.ReplicateManager
+import com.cybergarden.metapetz.ui.layouts.PetInfoLayout
+import com.cybergarden.metapetz.ui.layouts.PetSelectionLayout
+import com.cybergarden.metapetz.ui.layouts.PhotoCaptureLayout
+import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
+import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_WIDTH
+import com.cybergarden.metapetz.ui.theme.PHOTO_MODAL_HEIGHT
+import com.cybergarden.metapetz.ui.theme.PHOTO_MODAL_WIDTH
+import com.cybergarden.metapetz.ui.theme.getPanelTheme
 import com.meta.spatial.toolkit.PanelConstants
-import com.meta.spatial.uiset.button.PrimaryButton
 import com.meta.spatial.uiset.button.SecondaryButton
-import com.meta.spatial.uiset.card.PrimaryCard
 import com.meta.spatial.uiset.card.SecondaryCard
 import com.meta.spatial.uiset.theme.LocalColorScheme
 import com.meta.spatial.uiset.theme.SpatialColor
-import com.meta.spatial.uiset.theme.SpatialColorScheme
 import com.meta.spatial.uiset.theme.SpatialTheme
-import com.meta.spatial.uiset.theme.darkSpatialColorScheme
-import com.meta.spatial.uiset.theme.lightSpatialColorScheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
-
-const val OPTIONS_PANEL_WIDTH = 0.85f
-const val OPTIONS_PANEL_HEIGHT = 0.75f
-const val PHOTO_MODAL_WIDTH = 0.7f
-const val PHOTO_MODAL_HEIGHT = 0.85f
-
-data class PetStats(
-    val hunger: Float = 1.0f,        // 0.0 to 1.0 (1.0 = full)
-    val happiness: Float = 1.0f,     // 0.0 to 1.0 (1.0 = very happy)
-    val health: Float = 1.0f,        // 0.0 to 1.0 (1.0 = healthy)
-    val energy: Float = 1.0f,        // 0.0 to 1.0 (1.0 = energized)
-    val level: Int = 1,              // Pet level
-    val xp: Int = 0,                 // Experience points
-    val xpToNextLevel: Int = 100     // XP needed for next level
-)
-
-data class Pet(
-    val name: String,
-    val emoji: String,
-    val description: String,
-    val trait: String = "Playful"
-)
-
-@Composable
-fun getPanelTheme(): SpatialColorScheme =
-    if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
 
 @Composable
 @Preview(
@@ -85,7 +56,7 @@ fun getPanelTheme(): SpatialColorScheme =
     heightDp = (PanelConstants.DEFAULT_DP_PER_METER * OPTIONS_PANEL_HEIGHT).toInt(),
 )
 fun OptionsPanelPreview() {
-  OptionsPanel(onSelectPet = {})
+    OptionsPanel(onSelectPet = {}, onSpawnBone = {})
 }
 
 @Composable
@@ -93,242 +64,130 @@ fun OptionsPanel(
     onSelectPet: (String) -> Unit,
     onCreateCustomPet: ((String) -> Unit)? = null,
     replicateManager: ReplicateManager? = null,
-    onCapturePhoto: ((callback: (Bitmap?) -> Unit) -> Unit)? = null
+    onCapturePhoto: ((callback: (Bitmap?) -> Unit) -> Unit)? = null,
+    onSpawnBone: (() -> Unit)? = null
 ) {
-  var showCustomPetScreen by remember { mutableStateOf(false) }
+    var showCustomPetScreen by remember { mutableStateOf(false) }
 
-  val pets: List<Pet> = listOf(
-      Pet("Cat", "🐱", "A playful feline friend", "Curious"),
-      Pet("Dog", "🐶", "A loyal canine companion", "Loyal"),
-      Pet("Bunny", "🐰", "A cute hopping rabbit", "Gentle"),
-      Pet("Bird", "🐦", "A chirping feathered friend", "Energetic"),
-      Pet("Fish", "🐠", "A swimming aquatic pal", "Calm"),
-      Pet("Hamster", "🐹", "A tiny furry buddy", "Playful"),
-  )
-
-  SpatialTheme(colorScheme = getPanelTheme()) {
-    Column(
-        modifier =
-            Modifier.fillMaxSize()
+    SpatialTheme(colorScheme = getPanelTheme()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
                 .clip(SpatialTheme.shapes.large)
                 .background(brush = LocalColorScheme.current.panel)
                 .padding(32.dp),
-        verticalArrangement = Arrangement.Top,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-      if (showCustomPetScreen && replicateManager != null && onCapturePhoto != null) {
-        // Show Custom Pet Creation Screen
-        PhotoCaptureContent(
-            replicateManager = replicateManager,
-            onCapturePhoto = onCapturePhoto,
-            onClose = { showCustomPetScreen = false },
-            onPetCreated = { glbUrl ->
-              onCreateCustomPet?.invoke(glbUrl)
-              showCustomPetScreen = false
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // Spawn Bone button
+            if (onSpawnBone != null) {
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Spawn Bone Toy",
+                    onClick = {
+                        Log.d("OptionsPanel", "Spawn Bone button pressed")
+                        onSpawnBone()
+                    }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
             }
-        )
-      } else {
-        // Show Pet Selection Screen
-        PetSelectionScreen(
-            pets = pets,
-            onSelectPet = { pet ->
-              onSelectPet(pet.name)
-            },
-            onCustomPetClick = if (replicateManager != null && onCapturePhoto != null) {
-              { showCustomPetScreen = true }
-            } else null
-        )
-      }
+
+            if (showCustomPetScreen && replicateManager != null && onCapturePhoto != null) {
+                // Show Custom Pet Creation Screen
+                PhotoCaptureLayout(
+                    replicateManager = replicateManager,
+                    onCapturePhoto = onCapturePhoto,
+                    onClose = { showCustomPetScreen = false },
+                    onPetCreated = { glbUrl ->
+                        onCreateCustomPet?.invoke(glbUrl)
+                        showCustomPetScreen = false
+                    }
+                )
+            } else {
+                // Show Pet Selection Screen
+                PetSelectionLayout(
+                    pets = DEFAULT_PETS,
+                    onSelectPet = { pet ->
+                        onSelectPet(pet.name)
+                    },
+                    onCustomPetClick = if (replicateManager != null && onCapturePhoto != null) {
+                        { showCustomPetScreen = true }
+                    } else null
+                )
+            }
+        }
     }
-  }
 }
 
-// Separate composable for the Pet Info Panel
 @Composable
 fun PetInfoPanel(
     petName: String,
     firebaseManager: FirebaseManager,
     onClose: () -> Unit
 ) {
-  var petStats by remember { mutableStateOf(PetStats()) }
-  var isLoading by remember { mutableStateOf(true) }
-  var saveCounter by remember { mutableStateOf(0) }
+    var petStats by remember { mutableStateOf(PetStats()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var saveCounter by remember { mutableStateOf(0) }
 
-  val pets: List<Pet> = listOf(
-      Pet("Cat", "🐱", "A playful feline friend", "Curious"),
-      Pet("Dog", "🐶", "A loyal canine companion", "Loyal"),
-      Pet("Bunny", "🐰", "A cute hopping rabbit", "Gentle"),
-      Pet("Bird", "🐦", "A chirping feathered friend", "Energetic"),
-      Pet("Fish", "🐠", "A swimming aquatic pal", "Calm"),
-      Pet("Hamster", "🐹", "A tiny furry buddy", "Playful"),
-      Pet("Custom", "✨", "Your custom AI pet", "Unique"),
-  )
+    val allPets = DEFAULT_PETS + CUSTOM_PET
+    val pet = allPets.find { it.name == petName } ?: return
 
-  val pet = pets.find { it.name == petName } ?: return
-
-  // Load saved stats from Firebase on pet selection
-  LaunchedEffect(petName) {
-    isLoading = true
-    firebaseManager.loadPetStats(petName) { savedStats ->
-      petStats = savedStats ?: PetStats()
-      isLoading = false
+    // Load saved stats from Firebase on pet selection
+    LaunchedEffect(petName) {
+        isLoading = true
+        firebaseManager.loadPetStats(petName) { savedStats ->
+            petStats = savedStats ?: PetStats()
+            isLoading = false
+        }
     }
-  }
 
-  // Save stats to Firebase when they change (debounced)
-  LaunchedEffect(saveCounter) {
-    if (saveCounter > 0) {
-      delay(1000) // Debounce: wait 1 second before saving
-      firebaseManager.savePetStats(petName, petStats)
+    // Save stats to Firebase when they change (debounced)
+    LaunchedEffect(saveCounter) {
+        if (saveCounter > 0) {
+            delay(1000) // Debounce: wait 1 second before saving
+            firebaseManager.savePetStats(petName, petStats)
+        }
     }
-  }
 
-  // Simulate stat decay over time (Tamagotchi-style)
-  LaunchedEffect(petName, isLoading) {
-    if (isLoading) return@LaunchedEffect
-    while (true) {
-      delay(5000) // Every 5 seconds
-      petStats = petStats.copy(
-          hunger = max(0f, petStats.hunger - 0.05f),
-          happiness = max(0f, petStats.happiness - 0.03f),
-          energy = max(0f, petStats.energy - 0.04f)
-      )
-      saveCounter++ // Trigger save after decay
+    // Simulate stat decay over time (Tamagotchi-style)
+    LaunchedEffect(petName, isLoading) {
+        if (isLoading) return@LaunchedEffect
+        while (true) {
+            delay(5000) // Every 5 seconds
+            petStats = petStats.copy(
+                hunger = max(0f, petStats.hunger - 0.05f),
+                happiness = max(0f, petStats.happiness - 0.03f),
+                energy = max(0f, petStats.energy - 0.04f)
+            )
+            saveCounter++ // Trigger save after decay
+        }
     }
-  }
 
-  SpatialTheme(colorScheme = getPanelTheme()) {
-    Column(
-        modifier =
-            Modifier.fillMaxSize()
+    SpatialTheme(colorScheme = getPanelTheme()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
                 .clip(SpatialTheme.shapes.large)
                 .background(brush = LocalColorScheme.current.panel)
                 .padding(32.dp),
-        verticalArrangement = Arrangement.Top,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-      PetInfoScreen(
-          pet = pet,
-          stats = petStats,
-          onStatsUpdate = { newStats ->
-            petStats = newStats
-            saveCounter++ // Trigger save on care action
-          },
-          onBack = {
-            // Save before closing
-            firebaseManager.savePetStats(petName, petStats)
-            onClose()
-          }
-      )
-    }
-  }
-}
-
-@Composable
-fun PetSelectionScreen(
-    pets: List<Pet>,
-    onSelectPet: (Pet) -> Unit,
-    onCustomPetClick: (() -> Unit)? = null
-) {
-  val scrollState = rememberScrollState()
-
-  Column(
-      modifier = Modifier.fillMaxSize()
-          .verticalScroll(scrollState),
-      verticalArrangement = Arrangement.Top
-  ) {
-    // Header
-    Text(
-        text = "Choose Your MetaPetz",
-        fontSize = 28.sp,
-        fontWeight = FontWeight.Bold,
-        color = Color.White,
-        modifier = Modifier.padding(bottom = 24.dp)
-    )
-
-    // Pet cards in 2 columns
-    Column(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-      pets.chunked(2).forEach { rowPets ->
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.fillMaxWidth()
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-          rowPets.forEach { pet ->
-            PrimaryCard(
-                modifier = Modifier.weight(1f),
-                onClick = { onSelectPet(pet) }
-            ) {
-              Column(
-                  horizontalAlignment = Alignment.CenterHorizontally,
-                  modifier = Modifier.padding(16.dp)
-              ) {
-                Text(
-                    text = pet.emoji,
-                    fontSize = 48.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                Text(
-                    text = pet.name,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Text(
-                    text = pet.trait,
-                    fontSize = 14.sp,
-                    color = SpatialColor.white90,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-              }
-            }
-          }
-          // Fill empty space if odd number of pets
-          if (rowPets.size == 1) {
-            Spacer(modifier = Modifier.weight(1f))
-          }
-        }
-      }
-
-      // Custom Pet Card
-      if (onCustomPetClick != null) {
-        Spacer(modifier = Modifier.height(8.dp))
-        PrimaryCard(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onCustomPetClick
-        ) {
-          Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.Center,
-              modifier = Modifier.fillMaxWidth().padding(20.dp)
-          ) {
-            Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = "Create Custom Pet",
-                tint = Color(0xFF9C27B0),
-                modifier = Modifier.size(48.dp)
+            PetInfoLayout(
+                pet = pet,
+                stats = petStats,
+                onStatsUpdate = { newStats ->
+                    petStats = newStats
+                    saveCounter++ // Trigger save on care action
+                },
+                onBack = {
+                    // Save before closing
+                    firebaseManager.savePetStats(petName, petStats)
+                    onClose()
+                }
             )
-            Spacer(modifier = Modifier.width(16.dp))
-            Column {
-              Text(
-                  text = "Create Custom Pet",
-                  fontSize = 20.sp,
-                  fontWeight = FontWeight.Bold,
-                  color = Color.White
-              )
-              Text(
-                  text = "Use your own photo with AI background removal",
-                  fontSize = 12.sp,
-                  color = SpatialColor.white90
-              )
-            }
-          }
         }
-      }
     }
-  }
 }
 
 /**
@@ -343,25 +202,25 @@ fun PhotoCaptureModal(
     onPetCreated: (String) -> Unit,
     onRegisterPinchCallback: (((() -> Unit)?) -> Unit)? = null
 ) {
-  SpatialTheme(colorScheme = getPanelTheme()) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .clip(SpatialTheme.shapes.large)
-            .background(brush = LocalColorScheme.current.panel)
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Top,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-      ViewfinderContent(
-          replicateManager = replicateManager,
-          onCapturePhoto = onCapturePhoto,
-          onClose = onClose,
-          onPetCreated = onPetCreated,
-          onRegisterPinchCallback = onRegisterPinchCallback
-      )
+    SpatialTheme(colorScheme = getPanelTheme()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(SpatialTheme.shapes.large)
+                .background(brush = LocalColorScheme.current.panel)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            ViewfinderContent(
+                replicateManager = replicateManager,
+                onCapturePhoto = onCapturePhoto,
+                onClose = onClose,
+                onPetCreated = onPetCreated,
+                onRegisterPinchCallback = onRegisterPinchCallback
+            )
+        }
     }
-  }
 }
 
 /**
@@ -375,851 +234,198 @@ fun ViewfinderContent(
     onPetCreated: (String) -> Unit,
     onRegisterPinchCallback: (((() -> Unit)?) -> Unit)? = null
 ) {
-  var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-  var isCapturing by remember { mutableStateOf(false) }
-  var isProcessing by remember { mutableStateOf(false) }
-  var isGenerating3D by remember { mutableStateOf(false) }
-  var generationProgress by remember { mutableStateOf(0) }
-  var processedImageUrl by remember { mutableStateOf<String?>(null) }
-  var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-  var glbModelUrl by remember { mutableStateOf<String?>(null) }
-  var statusMessage by remember { mutableStateOf("Point at your subject") }
+    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isCapturing by remember { mutableStateOf(false) }
+    var isProcessing by remember { mutableStateOf(false) }
+    var isGenerating3D by remember { mutableStateOf(false) }
+    var generationProgress by remember { mutableStateOf(0) }
+    var processedImageUrl by remember { mutableStateOf<String?>(null) }
+    var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var glbModelUrl by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf("Point at your subject") }
 
-  val scope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
 
-  // Register pinch callback for photo capture
-  LaunchedEffect(Unit) {
-    onRegisterPinchCallback?.invoke {
-      if (!isCapturing && capturedBitmap == null) {
-        isCapturing = true
-        statusMessage = "Capturing..."
-        onCapturePhoto { bitmap ->
-          isCapturing = false
-          if (bitmap != null) {
-            capturedBitmap = bitmap
-            statusMessage = "Photo captured! Processing..."
-            // Auto-start background removal
-            scope.launch {
-              try {
-                val dataUrl = replicateManager.bitmapToDataUrl(bitmap)
-                isProcessing = true
-                val result = replicateManager.removeBackground(dataUrl)
-                if (result != null) {
-                  processedImageUrl = result
-                  processedBitmap = replicateManager.downloadImage(result)
-                  statusMessage = "Generating 3D model..."
-                  // Auto-start 3D generation
-                  isGenerating3D = true
-                  val glbUrl = replicateManager.generateModel3D(result) { progress ->
-                    generationProgress = progress
-                    statusMessage = "Creating 3D pet... $progress%"
-                  }
-                  if (glbUrl != null) {
-                    glbModelUrl = glbUrl
-                    statusMessage = "3D pet ready! Pinch to use it"
-                  } else {
-                    statusMessage = "Failed to generate 3D. Pinch to retry."
-                  }
-                  isGenerating3D = false
-                }
-                isProcessing = false
-              } catch (e: Exception) {
-                statusMessage = "Error: ${e.message}"
-                isProcessing = false
-                isGenerating3D = false
-              }
-            }
-          } else {
-            statusMessage = "Capture failed. Try again."
-          }
-        }
-      } else if (glbModelUrl != null) {
-        // Pinch again to use the 3D pet
-        scope.launch {
-          statusMessage = "Loading pet..."
-          val cachedUrl = replicateManager.downloadAndCacheGlb(glbModelUrl!!)
-          onPetCreated(cachedUrl)
-          onClose()
-        }
-      }
-    }
-  }
-
-  // Cleanup callback on dispose
-  DisposableEffect(Unit) {
-    onDispose {
-      onRegisterPinchCallback?.invoke(null)
-    }
-  }
-
-  Column(
-      modifier = Modifier.fillMaxSize(),
-      verticalArrangement = Arrangement.SpaceBetween,
-      horizontalAlignment = Alignment.CenterHorizontally
-  ) {
-    // Header
-    Text(
-        text = "Custom Pet Camera",
-        fontSize = 22.sp,
-        fontWeight = FontWeight.Bold,
-        color = Color.White
-    )
-
-    Spacer(modifier = Modifier.height(16.dp))
-
-    // Viewfinder area
-    Box(
-        modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0x22FFFFFF))
-            .border(3.dp, Color(0xFF9C27B0), RoundedCornerShape(16.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-      if (capturedBitmap != null) {
-        // Show captured/processed image
-        val displayBitmap = processedBitmap ?: capturedBitmap
-        Image(
-            bitmap = displayBitmap!!.asImageBitmap(),
-            contentDescription = "Captured",
-            modifier = Modifier.fillMaxSize().padding(8.dp),
-            contentScale = ContentScale.Fit
-        )
-        // Overlay progress indicator
-        if (isProcessing || isGenerating3D) {
-          Box(
-              modifier = Modifier.fillMaxSize().background(Color(0x88000000)),
-              contentAlignment = Alignment.Center
-          ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-              CircularProgressIndicator(color = Color(0xFF9C27B0))
-              Spacer(modifier = Modifier.height(8.dp))
-              Text(
-                  text = if (isGenerating3D) "$generationProgress%" else "Processing...",
-                  color = Color.White,
-                  fontSize = 16.sp
-              )
-            }
-          }
-        }
-      } else {
-        // Empty viewfinder
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-          Icon(
-              imageVector = Icons.Filled.Add,
-              contentDescription = "Camera",
-              tint = Color(0xFF9C27B0).copy(alpha = 0.5f),
-              modifier = Modifier.size(64.dp)
-          )
-          if (isCapturing) {
-            Spacer(modifier = Modifier.height(8.dp))
-            CircularProgressIndicator(color = Color(0xFF9C27B0))
-          }
-        }
-      }
-    }
-
-    Spacer(modifier = Modifier.height(16.dp))
-
-    // Status message
-    Text(
-        text = statusMessage,
-        fontSize = 16.sp,
-        fontWeight = FontWeight.Medium,
-        color = Color.White,
-        textAlign = TextAlign.Center
-    )
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // Gesture hint
-    SecondaryCard(modifier = Modifier.fillMaxWidth()) {
-      Row(
-          modifier = Modifier.padding(16.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.Center
-      ) {
-        Text(
-            text = "👌",
-            fontSize = 32.sp
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
-          Text(
-              text = if (glbModelUrl != null) "Pinch to use pet" else "Pinch to capture",
-              fontSize = 16.sp,
-              fontWeight = FontWeight.Bold,
-              color = Color.White
-          )
-          Text(
-              text = "Use your right hand",
-              fontSize = 12.sp,
-              color = SpatialColor.white90
-          )
-        }
-      }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    // Close button (palm up also closes)
-    SecondaryButton(
-        label = "Close (or 🖐️ palm up)",
-        onClick = onClose
-    )
-  }
-}
-
-@Composable
-fun PhotoCaptureContent(
-    replicateManager: ReplicateManager,
-    onCapturePhoto: (callback: (Bitmap?) -> Unit) -> Unit,
-    onClose: () -> Unit,
-    onPetCreated: (String) -> Unit
-) {
-  var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-  var isCapturing by remember { mutableStateOf(false) }
-  var isProcessing by remember { mutableStateOf(false) }
-  var isGenerating3D by remember { mutableStateOf(false) }
-  var generationProgress by remember { mutableStateOf(0) }
-  var processedImageUrl by remember { mutableStateOf<String?>(null) }
-  var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-  var glbModelUrl by remember { mutableStateOf<String?>(null) }
-  var errorMessage by remember { mutableStateOf<String?>(null) }
-  var statusMessage by remember { mutableStateOf<String?>(null) }
-
-  val scope = rememberCoroutineScope()
-  val scrollState = rememberScrollState()
-
-  Column(
-      modifier = Modifier.fillMaxSize()
-          .verticalScroll(scrollState),
-      verticalArrangement = Arrangement.Top
-  ) {
-    // Header with close button
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-      SecondaryButton(
-          label = "✕ Close",
-          onClick = onClose
-      )
-      Text(
-          text = "Create Custom Pet",
-          fontSize = 20.sp,
-          fontWeight = FontWeight.Bold,
-          color = Color.Black
-      )
-      Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
-    }
-
-    Spacer(modifier = Modifier.height(24.dp))
-
-    // Instructions
-    SecondaryCard(modifier = Modifier.fillMaxWidth()) {
-      Column(modifier = Modifier.padding(16.dp)) {
-        Text(
-            text = "Create Your Own Pet",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.Black
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "1. Center your subject in view\n" +
-                   "2. Take a photo (uses left eye camera)\n" +
-                   "3. AI removes background & creates 3D model\n" +
-                   "4. Your custom 3D pet appears in MR!",
-            fontSize = 14.sp,
-            color = Color.Black.copy(alpha = 0.8f),
-            lineHeight = 22.sp
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "Tip: Subject should be centered - capture uses left eye view",
-            fontSize = 12.sp,
-            color = Color(0xFFB8860B),
-            fontWeight = FontWeight.Medium
-        )
-      }
-    }
-
-    Spacer(modifier = Modifier.height(20.dp))
-
-    // Camera capture area
-    if (capturedBitmap == null) {
-      // Show capture button when no photo taken yet
-      SecondaryCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(24.dp)
-        ) {
-          // Camera icon placeholder
-          Box(
-              modifier = Modifier
-                  .size(120.dp)
-                  .clip(RoundedCornerShape(12.dp))
-                  .background(Color(0x33FFFFFF))
-                  .border(2.dp, Color(0xFF9C27B0), RoundedCornerShape(12.dp)),
-              contentAlignment = Alignment.Center
-          ) {
-            if (isCapturing) {
-              CircularProgressIndicator(color = Color(0xFF9C27B0))
-            } else {
-              Icon(
-                  imageVector = Icons.Filled.Add,
-                  contentDescription = "Camera",
-                  tint = Color(0xFF9C27B0),
-                  modifier = Modifier.size(48.dp)
-              )
-            }
-          }
-
-          Spacer(modifier = Modifier.height(16.dp))
-
-          PrimaryButton(
-              label = if (isCapturing) "Capturing..." else "Take Photo",
-              expanded = true,
-              onClick = {
-                if (!isCapturing) {
-                  isCapturing = true
-                  errorMessage = null
-                  statusMessage = "Capturing from passthrough camera..."
-                  onCapturePhoto { bitmap ->
+    // Register pinch callback for photo capture
+    LaunchedEffect(Unit) {
+        onRegisterPinchCallback?.invoke {
+            if (!isCapturing && capturedBitmap == null) {
+                isCapturing = true
+                statusMessage = "Capturing..."
+                onCapturePhoto { bitmap ->
                     isCapturing = false
                     if (bitmap != null) {
-                      capturedBitmap = bitmap
-                      statusMessage = "Photo captured! Ready to process."
+                        capturedBitmap = bitmap
+                        statusMessage = "Photo captured! Processing..."
+                        // Auto-start background removal
+                        GlobalScope.launch(Dispatchers.Main) {
+                            try {
+                                val dataUrl = replicateManager.bitmapToDataUrl(bitmap)
+                                isProcessing = true
+                                val result = replicateManager.removeBackground(dataUrl)
+                                if (result != null) {
+                                    processedImageUrl = result
+                                    processedBitmap = replicateManager.downloadImage(result)
+                                    statusMessage = "Generating 3D model..."
+                                    // Auto-start 3D generation
+                                    isGenerating3D = true
+                                    val glbUrl = replicateManager.generateModel3D(result) { progress ->
+                                        generationProgress = progress
+                                        statusMessage = "Creating 3D pet... $progress%"
+                                    }
+                                    if (glbUrl != null) {
+                                        glbModelUrl = glbUrl
+                                        statusMessage = "3D pet ready! Pinch to use it"
+                                    } else {
+                                        statusMessage = "Failed to generate 3D. Pinch to retry."
+                                    }
+                                    isGenerating3D = false
+                                }
+                                isProcessing = false
+                            } catch (e: Exception) {
+                                statusMessage = "Error: ${e.message}"
+                                isProcessing = false
+                                isGenerating3D = false
+                            }
+                        }
                     } else {
-                      errorMessage = "Failed to capture photo. Please try again."
-                      statusMessage = null
+                        statusMessage = "Capture failed. Try again."
                     }
-                  }
                 }
-              },
-              leading = {
-                if (isCapturing) {
-                  CircularProgressIndicator(
-                      modifier = Modifier.size(20.dp),
-                      color = Color.White,
-                      strokeWidth = 2.dp
-                  )
-                } else {
-                  Icon(
-                      imageVector = Icons.Filled.Add,
-                      contentDescription = "Capture",
-                      modifier = Modifier.size(20.dp)
-                  )
+            } else if (glbModelUrl != null) {
+                // Pinch again to use the 3D pet
+                GlobalScope.launch(Dispatchers.Main) {
+                    statusMessage = "Loading pet..."
+                    val cachedUrl = replicateManager.downloadAndCacheGlb(glbModelUrl!!)
+                    onPetCreated(cachedUrl)
+                    onClose()
                 }
-              }
-          )
+            }
         }
-      }
-    } else {
-      // Show captured photo preview
-      SecondaryCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(16.dp)
-        ) {
-          Text(
-              text = "Captured Photo",
-              fontSize = 16.sp,
-              fontWeight = FontWeight.Bold,
-              color = Color.Black
-          )
-          Spacer(modifier = Modifier.height(12.dp))
+    }
 
-          Box(
-              modifier = Modifier
-                  .size(150.dp)
-                  .clip(RoundedCornerShape(12.dp))
-                  .background(Color(0x33FFFFFF))
-                  .border(2.dp, Color(0xFF9C27B0), RoundedCornerShape(12.dp)),
-              contentAlignment = Alignment.Center
-          ) {
-            Image(
-                bitmap = capturedBitmap!!.asImageBitmap(),
-                contentDescription = "Captured Photo",
-                modifier = Modifier.fillMaxSize().padding(8.dp),
-                contentScale = ContentScale.Fit
-            )
-          }
-
-          Spacer(modifier = Modifier.height(16.dp))
-
-          // Retake and Process buttons
-          Row(
-              horizontalArrangement = Arrangement.spacedBy(12.dp),
-              modifier = Modifier.fillMaxWidth()
-          ) {
-            SecondaryButton(
-                label = "Retake",
-                onClick = {
-                  capturedBitmap = null
-                  processedImageUrl = null
-                  processedBitmap = null
-                  glbModelUrl = null
-                  errorMessage = null
-                  statusMessage = null
-                },
-                modifier = Modifier.weight(1f)
-            )
-            PrimaryButton(
-                label = if (isProcessing) "Processing..." else "Remove BG",
-                onClick = {
-                  if (!isProcessing && capturedBitmap != null) {
-                    isProcessing = true
-                    errorMessage = null
-                    statusMessage = "Removing background with AI..."
-                    scope.launch {
-                      try {
-                        // Convert bitmap to data URL
-                        val dataUrl = replicateManager.bitmapToDataUrl(capturedBitmap!!)
-                        // Process with Replicate
-                        val result = replicateManager.removeBackground(dataUrl)
-                        if (result != null) {
-                          processedImageUrl = result
-                          processedBitmap = replicateManager.downloadImage(result)
-                          statusMessage = "Background removed! Ready to use."
-                        } else {
-                          errorMessage = "Failed to remove background. Try again."
-                          statusMessage = null
-                        }
-                      } catch (e: Exception) {
-                        errorMessage = "Error: ${e.message}"
-                        statusMessage = null
-                      }
-                      isProcessing = false
-                    }
-                  }
-                },
-                modifier = Modifier.weight(1f),
-                leading = {
-                  if (isProcessing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                  }
-                }
-            )
-          }
+    // Cleanup callback on dispose
+    DisposableEffect(Unit) {
+        onDispose {
+            onRegisterPinchCallback?.invoke(null)
         }
-      }
     }
 
-    // Status Message
-    statusMessage?.let { status ->
-      Spacer(modifier = Modifier.height(12.dp))
-      Text(
-          text = status,
-          color = Color(0xFF4CAF50),
-          fontSize = 14.sp,
-          textAlign = TextAlign.Center,
-          modifier = Modifier.fillMaxWidth()
-      )
-    }
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.SpaceBetween,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Header
+        Text(
+            text = "Custom Pet Camera",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
 
-    // Error Message
-    errorMessage?.let { error ->
-      Spacer(modifier = Modifier.height(12.dp))
-      Text(
-          text = error,
-          color = Color(0xFFF44336),
-          fontSize = 14.sp,
-          textAlign = TextAlign.Center,
-          modifier = Modifier.fillMaxWidth()
-      )
-    }
+        Spacer(modifier = Modifier.height(16.dp))
 
-    // Preview of processed image and 3D generation
-    processedBitmap?.let { bitmap ->
-      Spacer(modifier = Modifier.height(20.dp))
-
-      SecondaryCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(16.dp)
+        // Viewfinder area
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0x22FFFFFF))
+                .border(3.dp, Color(0xFF9C27B0), RoundedCornerShape(16.dp)),
+            contentAlignment = Alignment.Center
         ) {
-          Text(
-              text = if (glbModelUrl != null) "3D Pet Ready!" else "Background Removed!",
-              fontSize = 16.sp,
-              fontWeight = FontWeight.Bold,
-              color = Color.Black
-          )
-          Spacer(modifier = Modifier.height(12.dp))
-
-          Box(
-              modifier = Modifier
-                  .size(150.dp)
-                  .clip(RoundedCornerShape(12.dp))
-                  .background(Color(0x33FFFFFF))
-                  .border(2.dp, if (glbModelUrl != null) Color(0xFF2196F3) else Color(0xFF4CAF50), RoundedCornerShape(12.dp)),
-              contentAlignment = Alignment.Center
-          ) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "Custom Pet Preview",
-                modifier = Modifier.fillMaxSize().padding(8.dp),
-                contentScale = ContentScale.Fit
-            )
-          }
-
-          Spacer(modifier = Modifier.height(16.dp))
-
-          if (glbModelUrl == null) {
-            // Show progress bar when generating
-            if (isGenerating3D) {
-              Column(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalAlignment = Alignment.CenterHorizontally
-              ) {
-                LinearProgressIndicator(
-                    progress = { generationProgress / 100f },
-                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
-                    color = Color(0xFF2196F3),
-                    trackColor = Color(0x33FFFFFF)
+            if (capturedBitmap != null) {
+                // Show captured/processed image
+                val displayBitmap = processedBitmap ?: capturedBitmap
+                Image(
+                    bitmap = displayBitmap!!.asImageBitmap(),
+                    contentDescription = "Captured",
+                    modifier = Modifier.fillMaxSize().padding(8.dp),
+                    contentScale = ContentScale.Fit
                 )
-                Spacer(modifier = Modifier.height(8.dp))
-              }
+                // Overlay progress indicator
+                if (isProcessing || isGenerating3D) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(Color(0x88000000)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Color(0xFF9C27B0))
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = if (isGenerating3D) "$generationProgress%" else "Processing...",
+                                color = Color.White,
+                                fontSize = 16.sp
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Empty viewfinder
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Camera",
+                        tint = Color(0xFF9C27B0).copy(alpha = 0.5f),
+                        modifier = Modifier.size(64.dp)
+                    )
+                    if (isCapturing) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        CircularProgressIndicator(color = Color(0xFF9C27B0))
+                    }
+                }
             }
-            // Generate 3D button
-            PrimaryButton(
-                label = if (isGenerating3D) "Generating... $generationProgress%" else "Generate 3D Pet",
-                expanded = true,
-                onClick = {
-                  if (!isGenerating3D && processedImageUrl != null) {
-                    isGenerating3D = true
-                    generationProgress = 0
-                    errorMessage = null
-                    statusMessage = "Generating 3D model... This may take 1-2 minutes."
-                    scope.launch {
-                      try {
-                        val glbUrl = replicateManager.generateModel3D(processedImageUrl!!) { progress ->
-                          generationProgress = progress
-                          statusMessage = "Generating 3D model... $progress%"
-                        }
-                        if (glbUrl != null) {
-                          glbModelUrl = glbUrl
-                          statusMessage = "3D model generated! Ready to use."
-                        } else {
-                          errorMessage = "Failed to generate 3D model. Try again."
-                          statusMessage = null
-                        }
-                      } catch (e: Exception) {
-                        errorMessage = "Error: ${e.message}"
-                        statusMessage = null
-                      }
-                      isGenerating3D = false
-                      generationProgress = 0
-                    }
-                  }
-                },
-                leading = {
-                  if (isGenerating3D) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                  } else {
-                    Icon(
-                        imageVector = Icons.Filled.Build,
-                        contentDescription = "Generate 3D",
-                        modifier = Modifier.size(20.dp)
-                    )
-                  }
-                }
-            )
-          } else {
-            // Use this 3D pet button
-            var isCaching by remember { mutableStateOf(false) }
-            PrimaryButton(
-                label = if (isCaching) "Loading..." else "Use This 3D Pet",
-                expanded = true,
-                onClick = {
-                  if (!isCaching) {
-                    isCaching = true
-                    scope.launch {
-                      // Cache the GLB model locally for faster loading
-                      val cachedUrl = replicateManager.downloadAndCacheGlb(glbModelUrl!!)
-                      onPetCreated(cachedUrl)
-                      isCaching = false
-                    }
-                  }
-                },
-                leading = {
-                  if (isCaching) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                  } else {
-                    Icon(
-                        imageVector = Icons.Filled.Check,
-                        contentDescription = "Confirm",
-                        modifier = Modifier.size(20.dp)
-                    )
-                  }
-                }
-            )
-          }
         }
-      }
-    }
-  }
-}
 
-@Composable
-fun PetInfoScreen(
-    pet: Pet,
-    stats: PetStats,
-    onStatsUpdate: (PetStats) -> Unit,
-    onBack: () -> Unit
-) {
-  val scrollState = rememberScrollState()
+        Spacer(modifier = Modifier.height(16.dp))
 
-  Column(
-      modifier = Modifier.fillMaxSize()
-          .verticalScroll(scrollState),
-      verticalArrangement = Arrangement.Top
-  ) {
-    // Header with back button
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-      SecondaryButton(
-          label = "← Back",
-          onClick = onBack
-      )
-      Column(horizontalAlignment = Alignment.End) {
+        // Status message
         Text(
-            text = "Level ${stats.level}",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = SpatialColor.white90
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Text(
-              text = "${stats.xp}/${stats.xpToNextLevel} XP",
-              fontSize = 12.sp,
-              color = SpatialColor.white90
-          )
-        }
-      }
-    }
-
-    Spacer(modifier = Modifier.height(16.dp))
-
-    // Pet display with name
-    SecondaryCard(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-      Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
-          modifier = Modifier.fillMaxWidth().padding(20.dp)
-      ) {
-        Text(
-            text = pet.emoji,
-            fontSize = 64.sp
-        )
-        Text(
-            text = pet.name,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
-            modifier = Modifier.padding(top = 8.dp)
-        )
-        Text(
-            text = getMoodText(stats),
+            text = statusMessage,
             fontSize = 16.sp,
-            color = getMoodColor(stats),
-            modifier = Modifier.padding(top = 4.dp)
+            fontWeight = FontWeight.Medium,
+            color = Color.White,
+            textAlign = TextAlign.Center
         )
-      }
-    }
 
-    Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-    // Stats Display
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-      StatBar("Hunger", stats.hunger, Icons.Filled.ShoppingCart, getStatColor(stats.hunger))
-      StatBar("Happiness", stats.happiness, Icons.Filled.Face, getStatColor(stats.happiness))
-      StatBar("Health", stats.health, Icons.Filled.Favorite, getStatColor(stats.health))
-      StatBar("Energy", stats.energy, Icons.Filled.Star, getStatColor(stats.energy))
-    }
-
-    Spacer(modifier = Modifier.height(20.dp))
-
-    // Care Actions
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-      Row(
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-          modifier = Modifier.fillMaxWidth()
-      ) {
-        CareActionButton(
-            label = "Feed",
-            icon = Icons.Filled.ShoppingCart,
-            modifier = Modifier.weight(1f),
-            onClick = {
-              onStatsUpdate(stats.copy(
-                  hunger = (stats.hunger + 0.3f).coerceIn(0f, 1f),
-                  xp = stats.xp + 10
-              ))
+        // Gesture hint
+        SecondaryCard(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "\uD83D\uDC4C",
+                    fontSize = 32.sp
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = if (glbModelUrl != null) "Pinch to use pet" else "Pinch to capture",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Use your right hand",
+                        fontSize = 12.sp,
+                        color = SpatialColor.white90
+                    )
+                }
             }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Close button
+        SecondaryButton(
+            label = "Close (or \uD83D\uDD90 palm up)",
+            onClick = onClose
         )
-        CareActionButton(
-            label = "Play",
-            icon = Icons.Filled.Refresh,
-            modifier = Modifier.weight(1f),
-            onClick = {
-              onStatsUpdate(stats.copy(
-                  happiness = (stats.happiness + 0.3f).coerceIn(0f, 1f),
-                  energy = (stats.energy - 0.1f).coerceIn(0f, 1f),
-                  xp = stats.xp + 15
-              ))
-            }
-        )
-      }
-      Row(
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-          modifier = Modifier.fillMaxWidth()
-      ) {
-        CareActionButton(
-            label = "Clean",
-            icon = Icons.Filled.Check,
-            modifier = Modifier.weight(1f),
-            onClick = {
-              onStatsUpdate(stats.copy(
-                  health = (stats.health + 0.2f).coerceIn(0f, 1f),
-                  xp = stats.xp + 10
-              ))
-            }
-        )
-        CareActionButton(
-            label = "Rest",
-            icon = Icons.Filled.Place,
-            modifier = Modifier.weight(1f),
-            onClick = {
-              onStatsUpdate(stats.copy(
-                  energy = (stats.energy + 0.4f).coerceIn(0f, 1f),
-                  xp = stats.xp + 5
-              ))
-            }
-        )
-      }
     }
-  }
-}
-
-@Composable
-fun StatBar(
-    label: String,
-    value: Float,
-    icon: ImageVector,
-    color: Color
-) {
-  Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(12.dp)
-  ) {
-    Icon(
-        imageVector = icon,
-        contentDescription = label,
-        tint = color,
-        modifier = Modifier.size(24.dp)
-    )
-    Column(modifier = Modifier.weight(1f)) {
-      Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween
-      ) {
-        Text(
-            text = label,
-            fontSize = 14.sp,
-            color = SpatialColor.white90,
-            fontWeight = FontWeight.Medium
-        )
-        Text(
-            text = "${(value * 100).toInt()}%",
-            fontSize = 14.sp,
-            color = SpatialColor.white90
-        )
-      }
-      Spacer(modifier = Modifier.height(4.dp))
-      LinearProgressIndicator(
-          progress = { value },
-          modifier = Modifier.fillMaxWidth().height(8.dp).clip(SpatialTheme.shapes.small),
-          color = color,
-          trackColor = SpatialColor.white20
-      )
-    }
-  }
-}
-
-@Composable
-fun CareActionButton(
-    label: String,
-    icon: ImageVector,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-  PrimaryButton(
-      label = label,
-      expanded = true,
-      onClick = onClick,
-      modifier = modifier,
-      leading = {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            modifier = Modifier.size(20.dp)
-        )
-      }
-  )
-}
-
-fun getMoodText(stats: PetStats): String {
-  val avgStat = (stats.hunger + stats.happiness + stats.health + stats.energy) / 4
-  return when {
-    avgStat > 0.8f -> "Feeling Great! 😊"
-    avgStat > 0.6f -> "Doing Well 🙂"
-    avgStat > 0.4f -> "Needs Attention 😐"
-    avgStat > 0.2f -> "Not Happy 😟"
-    else -> "Critical! 😢"
-  }
-}
-
-fun getMoodColor(stats: PetStats): Color {
-  val avgStat = (stats.hunger + stats.happiness + stats.health + stats.energy) / 4
-  return when {
-    avgStat > 0.8f -> Color(0xFF4CAF50) // Green
-    avgStat > 0.6f -> Color(0xFF8BC34A) // Light Green
-    avgStat > 0.4f -> Color(0xFFFFC107) // Amber
-    avgStat > 0.2f -> Color(0xFFFF9800) // Orange
-    else -> Color(0xFFF44336) // Red
-  }
-}
-
-fun getStatColor(value: Float): Color {
-  return when {
-    value > 0.7f -> Color(0xFF4CAF50) // Green
-    value > 0.4f -> Color(0xFFFFC107) // Amber
-    else -> Color(0xFFF44336) // Red
-  }
 }
