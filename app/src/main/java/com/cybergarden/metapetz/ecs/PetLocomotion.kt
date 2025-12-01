@@ -21,6 +21,9 @@ import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Sphere
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
+import com.meta.spatial.toolkit.Animated
+import com.meta.spatial.toolkit.PlaybackState
+import com.meta.spatial.toolkit.PlaybackType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -56,6 +59,12 @@ class PetLocomotion(
 ) {
     companion object {
         private const val TAG = "PetLocomotion"
+
+        // Animation track indices (based on GLB animation order)
+        const val ANIM_IDLE = 0       // "sit"
+        const val ANIM_WALK = 1       // "walk " (GLB name has trailing space)
+        const val ANIM_WAG = 2        // "wag"
+        const val ANIM_WALKLOOP = 3   // "walkloop" (preferred for locomotion)
     }
 
     // Current pet entity to move
@@ -87,6 +96,28 @@ class PetLocomotion(
     }
 
     /**
+     * Play a specific animation on the pet entity
+     * @param track Animation track index (ANIM_WAG, ANIM_WALKLOOP, etc.)
+     * @param loop Whether to loop the animation
+     */
+    private fun playAnimation(track: Int, loop: Boolean = true) {
+        val pet = petEntity ?: return
+        try {
+            pet.setComponent(
+                Animated(
+                    startTime = System.currentTimeMillis(),
+                    playbackState = PlaybackState.PLAYING,
+                    playbackType = if (loop) PlaybackType.LOOP else PlaybackType.CLAMP,
+                    track = track
+                )
+            )
+            Log.d(TAG, "Playing animation track: $track, loop: $loop")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to play animation: ${e.message}")
+        }
+    }
+
+    /**
      * Get if pet is currently walking
      */
     fun isCurrentlyWalking(): Boolean = isWalking
@@ -115,6 +146,10 @@ class PetLocomotion(
 
         walkJob = scope.launch {
             isWalking = true
+
+            // Start walk animation
+            playAnimation(ANIM_WALKLOOP, loop = true)
+
             onWalkStart?.invoke()
 
             try {
@@ -142,7 +177,9 @@ class PetLocomotion(
 
                 // Calculate Y-axis rotation to face movement direction
                 // atan2(x, z) gives angle from +Z axis toward +X axis
-                val facingAngle = atan2(dirX, dirZ)
+                // Add PI offset because most GLB models face -Z (toward camera) by default
+                val modelForwardOffset = PI.toFloat() // 180° - adjust if model faces different direction
+                val facingAngle = atan2(dirX, dirZ) + modelForwardOffset
 
                 Log.d(TAG, "Walking from $startPos to $target, distance: $distance, duration: ${duration}ms, facing: ${Math.toDegrees(facingAngle.toDouble())}°")
 
@@ -197,6 +234,10 @@ class PetLocomotion(
                 Log.e(TAG, "Walk error: ${e.message}")
             } finally {
                 isWalking = false
+
+                // Return to idle animation (wag)
+                playAnimation(ANIM_WAG, loop = true)
+
                 onWalkEnd?.invoke()
             }
         }

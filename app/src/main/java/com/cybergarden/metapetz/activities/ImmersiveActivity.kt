@@ -140,7 +140,7 @@ class ImmersiveActivity : AppSystemActivity() {
   // Pet model file paths in assets
   private val petModels = mapOf(
       "Cat" to "apk:///models/cat.glb",
-      "Dog" to "apk:///models/dog.glb",
+      "Dog" to "apk:///models/metadog.glb",
       "Bunny" to "apk:///models/bunny.glb",
       "Bird" to "apk:///models/bird.glb",
       "Fish" to "apk:///models/fish.glb",
