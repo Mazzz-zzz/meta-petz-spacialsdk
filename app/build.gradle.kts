@@ -1,9 +1,18 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.jetbrains.kotlin.android)
   alias(libs.plugins.meta.spatial.plugin)
   alias(libs.plugins.jetbrains.kotlin.plugin.compose)
   alias(libs.plugins.google.services)
+}
+
+// Load local.properties for API keys
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+  localProperties.load(localPropertiesFile.inputStream())
 }
 
 android {
@@ -24,6 +33,9 @@ android {
 
     // Update the ndkVersion to the right version for your app
     // ndkVersion = "27.0.12077973"
+
+    // API Keys from local.properties
+    buildConfigField("String", "REPLICATE_API_TOKEN", "\"${localProperties.getProperty("REPLICATE_API_TOKEN", "")}\"")
   }
 
   packaging { resources.excludes.add("META-INF/LICENSE") }
@@ -90,6 +102,21 @@ dependencies {
   androidTestImplementation(libs.androidx.ui.test.junit4)
   debugImplementation(libs.androidx.ui.tooling)
   debugImplementation(libs.androidx.ui.test.manifest)
+
+  // Retrofit for Replicate API
+  implementation("com.squareup.retrofit2:retrofit:2.9.0")
+  implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+  implementation("com.squareup.okhttp3:okhttp:4.12.0")
+  implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+  // Coil for image loading in Compose
+  implementation("io.coil-kt:coil-compose:2.5.0")
+
+  // CameraX for photo capture
+  implementation("androidx.camera:camera-core:1.3.1")
+  implementation("androidx.camera:camera-camera2:1.3.1")
+  implementation("androidx.camera:camera-lifecycle:1.3.1")
+  implementation("androidx.camera:camera-view:1.3.1")
 }
 
 val projectDir = layout.projectDirectory
