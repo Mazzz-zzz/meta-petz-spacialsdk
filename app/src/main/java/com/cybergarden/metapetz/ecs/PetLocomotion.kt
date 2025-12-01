@@ -173,9 +173,16 @@ class PetLocomotion(
                 Log.d(TAG, "Walking from $startPos to $target, distance: $distance, duration: ${duration}ms")
 
                 val startTime = System.currentTimeMillis()
+                var prevTime = startTime
+                val smoothTime = 1f / 60f
+                val rotationSpeed = 0.15f // How fast to rotate (0-1, higher = faster)
 
                 while (isActive) {
-                    val elapsed = System.currentTimeMillis() - startTime
+                    val currentTime = System.currentTimeMillis()
+                    val deltaTime = (currentTime - prevTime) / 1000f
+                    prevTime = currentTime
+
+                    val elapsed = currentTime - startTime
                     val progress = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
 
                     // Interpolate position
@@ -185,13 +192,18 @@ class PetLocomotion(
                         startPos.z + dz * progress
                     )
 
-                    // Use lookRotationAroundY to face movement direction (like AnimationsSample DroneSystem)
-                    val facingRotation = Quaternion.lookRotationAroundY(direction)
+                    // Target rotation using lookRotationAroundY (like AnimationsSample DroneSystem)
+                    val targetRotation = Quaternion.lookRotationAroundY(direction)
+
+                    // Smooth rotation with slerp (like AnimationsSample DroneSystem)
+                    val newTransform = pet.getComponent<Transform>()
+                    val currentRotation = newTransform.transform.q
+                    val smoothFactor = smoothOver(deltaTime, rotationSpeed, smoothTime)
+                    val smoothedRotation = currentRotation.slerp(targetRotation, smoothFactor)
 
                     // Update transform
-                    val newTransform = pet.getComponent<Transform>()
                     newTransform.transform.t = newPos
-                    newTransform.transform.q = facingRotation
+                    newTransform.transform.q = smoothedRotation
                     pet.setComponent(newTransform)
 
                     if (progress >= 1f) break
@@ -278,6 +290,14 @@ class PetLocomotion(
         pointingSystem = null
         petEntity = null
         panelEntity = null
+    }
+
+    /**
+     * Frame-rate independent smoothing function (from AnimationsSample DroneSystem)
+     * Returns a smooth interpolation factor based on delta time
+     */
+    private fun smoothOver(dt: Float, convergenceFraction: Float, smoothTime: Float): Float {
+        return 1f - Math.pow(1.0 - convergenceFraction.toDouble(), (dt / smoothTime).toDouble()).toFloat()
     }
 }
 

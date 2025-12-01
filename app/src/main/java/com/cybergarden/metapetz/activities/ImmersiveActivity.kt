@@ -46,12 +46,15 @@ import com.meta.spatial.physics.Physics
 import com.meta.spatial.physics.PhysicsFeature
 import com.meta.spatial.physics.PhysicsState
 import com.meta.spatial.runtime.NetworkedAssetLoader
+import com.meta.spatial.runtime.SceneAudioAsset
+import com.meta.spatial.runtime.SceneAudioPlayer
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
 import com.meta.spatial.toolkit.PanelRegistration
 import com.meta.spatial.toolkit.PanelStyleOptions
 import com.meta.spatial.toolkit.QuadShapeOptions
 import com.meta.spatial.toolkit.UIPanelSettings
+import com.meta.spatial.toolkit.Audio
 import com.meta.spatial.vr.LocomotionSystem
 import com.meta.spatial.vr.VRFeature
 import com.meta.spatial.isdk.IsdkFeature
@@ -96,6 +99,14 @@ class ImmersiveActivity : AppSystemActivity() {
   private var headTrackingJob: Job? = null
   private var customPetImageUrl: String? = null
   private var isCustomPet = false // Track if current pet is a custom 3D model (different rotation)
+
+  // Audio
+  private val boneSound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/bone_hit.wav")
+  }
+  private val boneSoundPlayer: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, boneSound)
+  }
 
   // Pet locomotion system for point-to-move functionality
   private val petLocomotion: PetLocomotion by lazy {
@@ -727,6 +738,8 @@ class ImmersiveActivity : AppSystemActivity() {
             }
         )
     )
+
+    boneSoundPlayer.play(pos, 0.8f, false)
 
     Log.d(TAG, "Spawned bone toy at $pos (forward=$forward, lateralOffset=$lateral)")
   }
