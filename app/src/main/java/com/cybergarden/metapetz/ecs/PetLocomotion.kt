@@ -1,4 +1,4 @@
-package com.cybergarden.metapetz
+package com.cybergarden.metapetz.ecs
 
 import android.util.Log
 import com.meta.spatial.core.Color4

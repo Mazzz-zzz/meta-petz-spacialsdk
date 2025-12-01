@@ -1,10 +1,11 @@
-package com.cybergarden.metapetz
+package com.cybergarden.metapetz.services
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
+import com.cybergarden.metapetz.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
