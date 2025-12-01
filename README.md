@@ -50,6 +50,12 @@ Create your own pet using the Quest passthrough camera:
 - Smooth animations with bouncing and swaying
 - Mixed reality passthrough integration
 
+### 🦴 Bone Throwing Toy
+- **Spawn Bone** - Tap the button to spawn a bone attached to your hand
+- **Velocity-Based Throwing** - Move your hand fast (>1 m/s) to release and throw
+- **Physics Simulation** - Bone flies with realistic physics after release
+- **Boosted Throws** - Velocity is multiplied 3x with an upward boost for satisfying arcs
+
 ### 📱 Dual Panel Interface
 - **Pet Selection Panel** - Scrollable grid of pet cards
 - **Pet Info Panel** - Real-time stats, care actions, and pet display
