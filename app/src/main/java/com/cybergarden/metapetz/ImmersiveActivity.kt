@@ -39,6 +39,9 @@ import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.vr.LocomotionSystem
 import com.meta.spatial.vr.VRFeature
 import com.meta.spatial.isdk.IsdkFeature
+import com.meta.spatial.mruk.MRUKFeature
+import com.meta.spatial.mruk.MRUKLoadDeviceResult
+import com.meta.spatial.mruk.MRUKStartEnvrionmentRaycasterResult
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
@@ -114,7 +117,12 @@ class ImmersiveActivity : AppSystemActivity() {
   companion object {
     private const val TAG = "ImmersiveActivity"
     private const val CAMERA_PERMISSION_REQUEST = 1001
+    private const val SCENE_PERMISSION = "com.oculus.permission.USE_SCENE"
+    private const val SCENE_PERMISSION_REQUEST = 1002
   }
+
+  // MRUK Feature for scene-aware raycasting
+  private lateinit var mrukFeature: MRUKFeature
 
   // Pet model file paths in assets
   private val petModels = mapOf(
@@ -127,11 +135,15 @@ class ImmersiveActivity : AppSystemActivity() {
   )
 
   override fun registerFeatures(): List<SpatialFeature> {
+    // Initialize MRUK for scene-aware raycasting
+    mrukFeature = MRUKFeature(this, systemManager)
+
     val features =
         mutableListOf<SpatialFeature>(
             VRFeature(this),
             IsdkFeature(this, spatial, systemManager),  // Enable hand tracking and controller interactions
-            ComposeFeature()
+            ComposeFeature(),
+            mrukFeature  // Add MRUK for room/scene awareness
         )
     if (BuildConfig.DEBUG) {
       features.add(CastInputForwardFeature(this))
@@ -149,20 +161,62 @@ class ImmersiveActivity : AppSystemActivity() {
         OkHttpAssetFetcher(),
     )
     checkAndRequestCameraPermission()
+    checkAndRequestScenePermission()
 
     // Enable MR mode
     systemManager.findSystem<LocomotionSystem>().enableLocomotion(false)
     scene.enablePassthrough(true)
 
     // Register the point-to-move system for pet locomotion
-    systemManager.registerSystem(petLocomotion.createPointingSystem())
-    Log.d(TAG, "Point-to-move system registered")
+    // Uses MRUK raycastRoom - requires Space Setup to be completed
+    systemManager.registerSystem(petLocomotion.createPointingSystem(mrukFeature))
+    Log.d(TAG, "Point-to-move system registered with MRUK raycastRoom")
 
     loadGLXF()
   }
 
+  private fun checkAndRequestScenePermission() {
+    // Request USE_SCENE permission for MRUK raycasting
+    if (ContextCompat.checkSelfPermission(this, SCENE_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+      Log.d(TAG, "Requesting scene permission...")
+      ActivityCompat.requestPermissions(this, arrayOf(SCENE_PERMISSION), SCENE_PERMISSION_REQUEST)
+    } else {
+      Log.d(TAG, "Scene permission already granted - loading scene from device")
+      loadSceneFromDevice()
+    }
+  }
+
+  private fun loadSceneFromDevice() {
+    Log.d(TAG, "Loading scene from device for MRUK raycasting...")
+
+    mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
+      if (result == MRUKLoadDeviceResult.SUCCESS) {
+        Log.d(TAG, "Scene loaded successfully - MRUK raycasting ready")
+        val rooms = mrukFeature.rooms
+        Log.d(TAG, "Loaded ${rooms.size} room(s)")
+        rooms.forEachIndexed { index, room ->
+          Log.d(TAG, "Room $index has ${room.anchors.size} anchors")
+        }
+      } else {
+        Log.w(TAG, "Scene load result: $result - user may need to complete Space Setup")
+      }
+      if (error != null) {
+        Log.e(TAG, "Scene load error: ${error.message}", error)
+      }
+    }
+  }
+
   override fun onSceneReady() {
     super.onSceneReady()
+
+    // Start the environment raycaster for DEPTH mode (works without Space Setup)
+    // Must be called after spatial system is initialized (in onSceneReady)
+    val envRaycasterResult = mrukFeature.startEnvironmentRaycaster()
+    if (envRaycasterResult == MRUKStartEnvrionmentRaycasterResult.SUCCESS) {
+      Log.d(TAG, "Environment raycaster started successfully - DEPTH mode ready")
+    } else {
+      Log.w(TAG, "Environment raycaster failed to start: $envRaycasterResult")
+    }
 
     // Enable recentering when user holds Meta button
     scene.setReferenceSpace(com.meta.spatial.runtime.ReferenceSpace.LOCAL_FLOOR)
@@ -348,19 +402,29 @@ class ImmersiveActivity : AppSystemActivity() {
       grantResults: IntArray
   ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-    if (requestCode == CAMERA_PERMISSION_REQUEST) {
-      if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-        cameraPermissionGranted = true
-        initializeCamera()
-        // If there was a pending callback, execute it now
-        pendingCameraCallback?.let { callback ->
-          capturePhoto(callback)
+    when (requestCode) {
+      CAMERA_PERMISSION_REQUEST -> {
+        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+          cameraPermissionGranted = true
+          initializeCamera()
+          // If there was a pending callback, execute it now
+          pendingCameraCallback?.let { callback ->
+            capturePhoto(callback)
+            pendingCameraCallback = null
+          }
+        } else {
+          Log.e(TAG, "Camera permission denied")
+          pendingCameraCallback?.invoke(null)
           pendingCameraCallback = null
         }
-      } else {
-        Log.e(TAG, "Camera permission denied")
-        pendingCameraCallback?.invoke(null)
-        pendingCameraCallback = null
+      }
+      SCENE_PERMISSION_REQUEST -> {
+        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+          Log.d(TAG, "Scene permission granted - loading scene from device")
+          loadSceneFromDevice()
+        } else {
+          Log.w(TAG, "Scene permission denied - MRUK raycasting will not work")
+        }
       }
     }
   }
@@ -714,6 +778,7 @@ class ImmersiveActivity : AppSystemActivity() {
     headTrackingJob?.cancel()
     petLocomotion.cleanup()
     photoCaptureManager.dispose()
+    mrukFeature.stopEnvironmentRaycaster()
     super.onSpatialShutdown()
   }
 
