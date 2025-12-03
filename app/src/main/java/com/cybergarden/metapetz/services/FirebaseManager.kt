@@ -3,7 +3,8 @@ package com.cybergarden.metapetz.services
 import android.content.Context
 import android.provider.Settings
 import android.util.Log
-import com.cybergarden.metapetz.model.PetStats
+import com.cybergarden.metapetz.model.PetColors
+import com.cybergarden.metapetz.model.PetData
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
@@ -62,73 +63,6 @@ class FirebaseManager(private val context: Context) {
     }
 
     /**
-     * Save pet stats to Realtime Database
-     */
-    fun savePetStats(petName: String, stats: PetStats, onComplete: ((Boolean) -> Unit)? = null) {
-        val petData = mapOf(
-            "hunger" to stats.hunger.toDouble(),
-            "happiness" to stats.happiness.toDouble(),
-            "health" to stats.health.toDouble(),
-            "energy" to stats.energy.toDouble(),
-            "level" to stats.level,
-            "xp" to stats.xp,
-            "xpToNextLevel" to stats.xpToNextLevel,
-            "lastUpdated" to System.currentTimeMillis()
-        )
-
-        db.reference
-            .child("users")
-            .child(userId)
-            .child("pets")
-            .child(petName)
-            .setValue(petData)
-            .addOnSuccessListener {
-                Log.d(TAG, "Pet stats saved: $petName")
-                onComplete?.invoke(true)
-            }
-            .addOnFailureListener { e ->
-                Log.e(TAG, "Error saving pet stats", e)
-                onComplete?.invoke(false)
-            }
-    }
-
-    /**
-     * Load pet stats from Realtime Database
-     */
-    fun loadPetStats(petName: String, onResult: (PetStats?) -> Unit) {
-        db.reference
-            .child("users")
-            .child(userId)
-            .child("pets")
-            .child(petName)
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    if (snapshot.exists()) {
-                        val stats = PetStats(
-                            hunger = (snapshot.child("hunger").getValue(Double::class.java) ?: 1.0).toFloat(),
-                            happiness = (snapshot.child("happiness").getValue(Double::class.java) ?: 1.0).toFloat(),
-                            health = (snapshot.child("health").getValue(Double::class.java) ?: 1.0).toFloat(),
-                            energy = (snapshot.child("energy").getValue(Double::class.java) ?: 1.0).toFloat(),
-                            level = snapshot.child("level").getValue(Int::class.java) ?: 1,
-                            xp = snapshot.child("xp").getValue(Int::class.java) ?: 0,
-                            xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Int::class.java) ?: 100
-                        )
-                        Log.d(TAG, "Pet stats loaded: $petName")
-                        onResult(stats)
-                    } else {
-                        Log.d(TAG, "No saved stats for: $petName")
-                        onResult(null)
-                    }
-                }
-
-                override fun onCancelled(error: DatabaseError) {
-                    Log.e(TAG, "Error loading pet stats", error.toException())
-                    onResult(null)
-                }
-            })
-    }
-
-    /**
      * Update user's last active timestamp
      */
     fun updateLastActive() {
@@ -143,23 +77,53 @@ class FirebaseManager(private val context: Context) {
     }
 
     /**
-     * Get all saved pets for current user
+     * Get the first pet from a specific user (e.g., "demo") with full PetData
      */
-    fun getAllPets(onResult: (List<String>) -> Unit) {
+    fun getFirstPetFromUser(targetUserId: String, onResult: (PetData?) -> Unit) {
         db.reference
             .child("users")
-            .child(userId)
+            .child(targetUserId)
             .child("pets")
+            .limitToFirst(1)
             .addListenerForSingleValueEvent(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
-                    val petNames = snapshot.children.map { it.key ?: "" }.filter { it.isNotEmpty() }
-                    onResult(petNames)
+                    val firstPetSnapshot = snapshot.children.firstOrNull()
+                    if (firstPetSnapshot != null) {
+                        val petData = parsePetData(firstPetSnapshot)
+                        Log.d(TAG, "First pet from $targetUserId: ${petData.name}")
+                        onResult(petData)
+                    } else {
+                        Log.d(TAG, "No pets found for $targetUserId")
+                        onResult(null)
+                    }
                 }
 
                 override fun onCancelled(error: DatabaseError) {
-                    Log.e(TAG, "Error getting all pets", error.toException())
-                    onResult(emptyList())
+                    Log.e(TAG, "Error getting first pet from $targetUserId", error.toException())
+                    onResult(null)
                 }
             })
+    }
+
+    /**
+     * Parse a DataSnapshot into PetData
+     */
+    private fun parsePetData(snapshot: DataSnapshot): PetData {
+        val colorsSnapshot = snapshot.child("colors")
+        val colors = PetColors(
+            coat = colorsSnapshot.child("coat").getValue(String::class.java) ?: "#3A8DFF",
+            eye = colorsSnapshot.child("eye").getValue(String::class.java) ?: "#FFFFFF",
+            snout = colorsSnapshot.child("snout").getValue(String::class.java) ?: "#222222"
+        )
+
+        return PetData(
+            shortId = snapshot.child("shortId").getValue(String::class.java) ?: snapshot.key ?: "",
+            name = snapshot.child("name").getValue(String::class.java) ?: "Unknown",
+            description = snapshot.child("description").getValue(String::class.java) ?: "",
+            colors = colors,
+            level = snapshot.child("level").getValue(Int::class.java) ?: 1,
+            xp = snapshot.child("xp").getValue(Int::class.java) ?: 0,
+            xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Int::class.java) ?: 100
+        )
     }
 }

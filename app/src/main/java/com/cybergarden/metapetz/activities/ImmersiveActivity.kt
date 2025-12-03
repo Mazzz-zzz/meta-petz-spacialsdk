@@ -21,6 +21,7 @@ import androidx.core.net.toUri
 import com.cybergarden.metapetz.BuildConfig
 import com.cybergarden.metapetz.R
 import com.cybergarden.metapetz.ecs.PetLocomotion
+import com.cybergarden.metapetz.model.PetData
 import com.cybergarden.metapetz.services.FirebaseManager
 import com.cybergarden.metapetz.ui.OptionsPanel
 import com.cybergarden.metapetz.ui.PetInfoPanel
@@ -94,8 +95,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private val activityScope = CoroutineScope(Dispatchers.Main)
 
   private var currentPet by mutableStateOf<String?>(null)
+  private var currentPetData by mutableStateOf<PetData?>(null)
   private var currentPetEntity: Entity? = null
-  private var pedestalEntity: Entity? = null
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
   private var boneEntity: Entity? = null
@@ -418,18 +419,34 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
 
+  fun selectDemoPet(petData: PetData) {
+    // Use Dog model for demo pet, but with the actual PetData from Firebase
+    Log.d(TAG, "selectDemoPet called with: name=${petData.name}, desc=${petData.description}, level=${petData.level}, xp=${petData.xp}")
+    currentPet = "Dog"
+    currentPetData = petData
+    Log.d(TAG, "currentPetData set to: ${currentPetData?.name}")
+    spawnPetModel("Dog")
+  }
+
   fun selectPet(petName: String) {
     currentPet = petName
+    currentPetData = PetData(
+      name = petName,
+      description = "Your $petName companion",
+      level = 1,
+      xp = 0
+    )
+    spawnPetModel(petName)
+  }
 
+  private fun spawnPetModel(petName: String) {
     // Cancel previous spinning animation
     spinningJob?.cancel()
     spinningJob = null
 
-    // Remove previous pet and pedestal if they exist
+    // Remove previous pet if it exists
     currentPetEntity?.destroy()
     currentPetEntity = null
-    pedestalEntity?.destroy()
-    pedestalEntity = null
 
     // Load the new pet model from assets
     val modelPath = petModels[petName]
@@ -448,22 +465,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
           // Get the panel entity to attach to
           val panel = panelEntity ?: Entity.nullEntity()
-
-          // Create glowing pedestal to illuminate the pet
-          pedestalEntity = Entity.create(
-              listOf(
-                  Mesh("apk:///models/pedestal_glowing.glb".toUri()),
-                  Transform(
-                      Pose(
-                          // Position pedestal centered in front of panel
-                          Vector3(0f, 0.0f, 0.2f),
-                          Quaternion()
-                      )
-                  ),
-                  Scale(Vector3(0.25f, 0.1f, 0.25f)), // Scaled to provide good base
-                  TransformParent(panel)
-              )
-          )
 
           // Create pet entity with basic components
           currentPetEntity = Entity.create(
@@ -652,17 +653,15 @@ class ImmersiveActivity : AppSystemActivity() {
             composeViewCreator = { _, context ->
               ComposeView(context).apply {
                 setContent {
-                  if (currentPet != null) {
+                  if (currentPetData != null) {
                     PetInfoPanel(
-                        petName = currentPet!!,
-                        firebaseManager = firebaseManager,
+                        petData = currentPetData!!,
                         onClose = {
                           currentPet = null
+                          currentPetData = null
                           petLocomotion.setPetEntity(null, null) // Clear locomotion
                           currentPetEntity?.destroy()
                           currentPetEntity = null
-                          pedestalEntity?.destroy()
-                          pedestalEntity = null
                         }
                     )
                   } else {
@@ -692,7 +691,9 @@ class ImmersiveActivity : AppSystemActivity() {
                 setContent {
                   OptionsPanel(
                       onSelectPet = ::selectPet,
-                      onSpawnBone = ::spawnBoneToy
+                      onSelectDemoPet = ::selectDemoPet,
+                      onSpawnBone = ::spawnBoneToy,
+                      firebaseManager = firebaseManager
                   )
                 }
               }

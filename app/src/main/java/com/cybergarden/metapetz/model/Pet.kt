@@ -7,14 +7,23 @@ data class Pet(
     val trait: String = "Playful"
 )
 
-data class PetStats(
-    val hunger: Float = 1.0f,        // 0.0 to 1.0 (1.0 = full)
-    val happiness: Float = 1.0f,     // 0.0 to 1.0 (1.0 = very happy)
-    val health: Float = 1.0f,        // 0.0 to 1.0 (1.0 = healthy)
-    val energy: Float = 1.0f,        // 0.0 to 1.0 (1.0 = energized)
-    val level: Int = 1,              // Pet level
-    val xp: Int = 0,                 // Experience points
-    val xpToNextLevel: Int = 100     // XP needed for next level
+/**
+ * Pet data from Firebase - simplified schema
+ */
+data class PetData(
+    val shortId: String = "",
+    val name: String = "Unknown",
+    val description: String = "",
+    val colors: PetColors = PetColors(),
+    val level: Int = 1,
+    val xp: Int = 0,
+    val xpToNextLevel: Int = 100
+)
+
+data class PetColors(
+    val coat: String = "#3A8DFF",
+    val eye: String = "#FFFFFF",
+    val snout: String = "#222222"
 )
 
 // Predefined pets list
@@ -26,5 +35,3 @@ val DEFAULT_PETS = listOf(
     Pet("Fish", "\uD83D\uDC20", "A swimming aquatic pal", "Calm"),
     Pet("Hamster", "\uD83D\uDC39", "A tiny furry buddy", "Playful"),
 )
-
-val CUSTOM_PET = Pet("Custom", "\u2728", "Your custom AI pet", "Unique")
