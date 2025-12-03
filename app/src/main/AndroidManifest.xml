@@ -60,7 +60,7 @@
   <uses-feature android:name="com.oculus.feature.BOUNDED_SCENE" android:required="false" />
   <!-- Volume Control -->
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-  <application android:allowBackup="false" android:label="MetaPetz">
+  <application android:allowBackup="false" android:label="MetaPetz" android:icon="@drawable/ic_launcher">
     <meta-data
       android:name="com.oculus.supportedDevices"
       android:value="quest2|questpro|quest3"
