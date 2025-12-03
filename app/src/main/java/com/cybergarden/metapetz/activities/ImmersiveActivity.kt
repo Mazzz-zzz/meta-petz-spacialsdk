@@ -2,7 +2,6 @@ package com.cybergarden.metapetz.activities
 
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import androidx.core.app.ActivityCompat
@@ -23,19 +22,13 @@ import com.cybergarden.metapetz.BuildConfig
 import com.cybergarden.metapetz.R
 import com.cybergarden.metapetz.ecs.PetLocomotion
 import com.cybergarden.metapetz.services.FirebaseManager
-import com.cybergarden.metapetz.services.PhotoCaptureManager
-import com.cybergarden.metapetz.services.ReplicateManager
 import com.cybergarden.metapetz.ui.OptionsPanel
 import com.cybergarden.metapetz.ui.PetInfoPanel
-import com.cybergarden.metapetz.ui.PhotoCaptureModal
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_WIDTH
-import com.cybergarden.metapetz.ui.theme.PHOTO_MODAL_HEIGHT
-import com.cybergarden.metapetz.ui.theme.PHOTO_MODAL_WIDTH
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
-import com.meta.spatial.compose.composePanel
 import com.meta.spatial.core.SpatialFeature
 import com.meta.spatial.datamodelinspector.DataModelInspectorFeature
 import com.meta.spatial.debugtools.HotReloadFeature
@@ -105,10 +98,6 @@ class ImmersiveActivity : AppSystemActivity() {
   private var pedestalEntity: Entity? = null
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
-  private var photoCaptureModalEntity: Entity? = null
-  private var headTrackingJob: Job? = null
-  private var customPetImageUrl: String? = null
-  private var isCustomPet = false // Track if current pet is a custom 3D model (different rotation)
   private var boneEntity: Entity? = null
   private var boneHand: Entity? = null
   private var boneSampleJob: Job? = null
@@ -155,22 +144,8 @@ class ImmersiveActivity : AppSystemActivity() {
     FirebaseManager(applicationContext).also { it.updateLastActive() }
   }
 
-  // Replicate Manager for AI background removal
-  val replicateManager: ReplicateManager by lazy {
-    ReplicateManager(ReplicateManager.DEFAULT_API_TOKEN, applicationContext)
-  }
-
-  // Photo Capture Manager for passthrough camera
-  val photoCaptureManager: PhotoCaptureManager by lazy {
-    PhotoCaptureManager(applicationContext)
-  }
-
-  private var pendingCameraCallback: ((Bitmap?) -> Unit)? = null
-  private var cameraPermissionGranted = false
-
   companion object {
     private const val TAG = "ImmersiveActivity"
-    private const val CAMERA_PERMISSION_REQUEST = 1001
     private const val SCENE_PERMISSION = "com.oculus.permission.USE_SCENE"
     private const val SCENE_PERMISSION_REQUEST = 1002
   }
@@ -218,7 +193,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Register grabbable component for ISDK grabbing
     componentManager.registerComponent<IsdkGrabbable>(IsdkGrabbable.Companion)
-    checkAndRequestCameraPermission()
     checkAndRequestScenePermission()
 
     // Enable MR mode
@@ -295,12 +269,6 @@ class ImmersiveActivity : AppSystemActivity() {
         .firstOrNull {
           it.getComponent<Panel>().panelRegistrationId == R.id.ui_example
         }
-
-    // Create the PhotoCapturePanel entity programmatically for head tracking
-    createPhotoCapturePanel()
-
-    // Start head tracking for the photo capture modal
-    startHeadTracking()
 
     // Add a simple physics floor to catch dynamic objects (like the bone)
     createPhysicsFloor()
@@ -432,127 +400,6 @@ class ImmersiveActivity : AppSystemActivity() {
         ?.rightHand
   }
 
-  /**
-   * Create the photo capture modal panel programmatically.
-   * Starts HIDDEN - use palm-up gesture to toggle visibility.
-   */
-  private fun createPhotoCapturePanel() {
-    // Create the panel entity - starts hidden (below ground)
-    photoCaptureModalEntity = Entity.create(
-        listOf(
-            Panel(R.id.photo_capture_modal),
-            Transform(
-                Pose(
-                    Vector3(0f, -100f, 0f), // Start hidden
-                    Quaternion()
-                )
-            )
-        )
-    )
-    photoPanelVisible = false
-    Log.d(TAG, "Photo capture modal panel created (hidden - palm up to open)")
-  }
-
-  // Track panel visibility state
-  private var photoPanelVisible by mutableStateOf(false)
-  private var lastPalmUpTime = 0L
-  private var lastPinchTime = 0L
-  private val GESTURE_COOLDOWN = 1000L
-  private val PINCH_COOLDOWN = 2000L
-
-  // Callback for pinch-triggered photo capture
-  var onPinchCapture: (() -> Unit)? = null
-
-  /**
-   * Start hand gesture detection for the photo capture modal panel.
-   * - Palm up gesture TOGGLES panel
-   * - Panel LOCKS in place when opened
-   * - PINCH gesture triggers photo capture
-   */
-  private fun startHeadTracking() {
-    headTrackingJob?.cancel()
-    headTrackingJob = activityScope.launch {
-      var wasPalmUpActive = false
-      var wasPinchActive = false
-
-      while (isActive) {
-        try {
-          val leftHand = getLeftHandEntity()
-          val rightHand = getRightHandEntity()
-          val head = getHeadEntity()
-          val panel = photoCaptureModalEntity
-
-          if (leftHand != null && head != null && panel != null) {
-            val leftHandPose = leftHand.tryGetComponent<Transform>()?.transform
-            val rightHandPose = rightHand?.tryGetComponent<Transform>()?.transform
-            val headPose = head.tryGetComponent<Transform>()?.transform
-
-            if (leftHandPose != null && leftHandPose != Pose() && headPose != null) {
-              val currentTime = System.currentTimeMillis()
-
-              // === PALM UP GESTURE (left hand) - Toggle panel ===
-              val handUp = leftHandPose.q * Vector3(0f, 1f, 0f)
-              val isPalmUp = handUp.y > 0.6f
-              val isHandRaised = leftHandPose.t.y > (headPose.t.y - 0.4f)
-              val isPalmUpActive = isPalmUp && isHandRaised
-
-              if (isPalmUpActive && !wasPalmUpActive && (currentTime - lastPalmUpTime > GESTURE_COOLDOWN)) {
-                lastPalmUpTime = currentTime
-                photoPanelVisible = !photoPanelVisible
-
-                if (photoPanelVisible) {
-                  val forward = headPose.q * Vector3(0f, 0f, 1f)
-                  forward.y = 0f
-                  val panelRotation = Quaternion.lookRotation(forward)
-                  val panelPose = Pose(
-                      headPose.t + panelRotation * Vector3(0f, -0.1f, 0.7f),
-                      panelRotation * Quaternion(10f, 0f, 0f)
-                  )
-                  panel.setComponent(Transform(panelPose))
-                  Log.d(TAG, "🖐️ Palm up - OPENED viewfinder")
-                } else {
-                  panel.setComponent(Transform(Pose(Vector3(0f, -100f, 0f), Quaternion())))
-                  Log.d(TAG, "🖐️ Palm up - CLOSED viewfinder")
-                }
-              }
-              wasPalmUpActive = isPalmUpActive
-
-              // === PINCH GESTURE (right hand) - Capture photo ===
-              if (photoPanelVisible && rightHandPose != null && rightHandPose != Pose()) {
-                val rightHandForward = rightHandPose.q * Vector3(0f, 0f, 1f)
-                val isPinching = rightHandForward.y < -0.3f
-
-                if (isPinching && !wasPinchActive && (currentTime - lastPinchTime > PINCH_COOLDOWN)) {
-                  lastPinchTime = currentTime
-                  Log.d(TAG, "👌 PINCH - capturing photo!")
-                  onPinchCapture?.invoke()
-                }
-                wasPinchActive = isPinching
-              } else {
-                wasPinchActive = false
-              }
-            }
-          }
-
-          delay(16)
-        } catch (e: Exception) {
-          Log.e(TAG, "Hand tracking error: ${e.message}")
-          delay(16)
-        }
-      }
-    }
-  }
-
-  private fun checkAndRequestCameraPermission() {
-    val permission = PhotoCaptureManager.PERMISSION
-    if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
-      cameraPermissionGranted = true
-      initializeCamera()
-    } else {
-      ActivityCompat.requestPermissions(this, arrayOf(permission), CAMERA_PERMISSION_REQUEST)
-    }
-  }
-
   override fun onRequestPermissionsResult(
       requestCode: Int,
       permissions: Array<out String>,
@@ -560,21 +407,6 @@ class ImmersiveActivity : AppSystemActivity() {
   ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     when (requestCode) {
-      CAMERA_PERMISSION_REQUEST -> {
-        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-          cameraPermissionGranted = true
-          initializeCamera()
-          // If there was a pending callback, execute it now
-          pendingCameraCallback?.let { callback ->
-            capturePhoto(callback)
-            pendingCameraCallback = null
-          }
-        } else {
-          Log.e(TAG, "Camera permission denied")
-          pendingCameraCallback?.invoke(null)
-          pendingCameraCallback = null
-        }
-      }
       SCENE_PERMISSION_REQUEST -> {
         if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
           Log.d(TAG, "Scene permission granted - loading scene from device")
@@ -586,100 +418,8 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
 
-  private fun initializeCamera() {
-    if (cameraPermissionGranted) {
-      val success = photoCaptureManager.initialize()
-      Log.d(TAG, "Camera initialized: $success")
-    }
-  }
-
-  fun capturePhoto(callback: (Bitmap?) -> Unit) {
-    if (!cameraPermissionGranted) {
-      pendingCameraCallback = callback
-      checkAndRequestCameraPermission()
-      return
-    }
-    photoCaptureManager.capturePhoto(callback)
-  }
-
-  fun selectCustomPet(glbUrl: String) {
-    customPetImageUrl = glbUrl
-    currentPet = "Custom"
-    isCustomPet = true // Custom pets use different rotation
-
-    Log.d(TAG, "Loading custom 3D pet from: $glbUrl")
-
-    // Cancel previous spinning animation
-    spinningJob?.cancel()
-    spinningJob = null
-
-    // Remove previous pet and pedestal if they exist
-    currentPetEntity?.destroy()
-    currentPetEntity = null
-    pedestalEntity?.destroy()
-    pedestalEntity = null
-
-    activityScope.launch {
-      try {
-        // Get the panel entity to attach to
-        val panel = panelEntity ?: Entity.nullEntity()
-
-        // Create glowing pedestal
-        pedestalEntity = Entity.create(
-            listOf(
-                Mesh("apk:///models/pedestal_glowing.glb".toUri()),
-                Transform(
-                    Pose(
-                        Vector3(0f, 0.0f, 0.2f),
-                        Quaternion()
-                    )
-                ),
-                Scale(Vector3(0.25f, 0.1f, 0.25f)),
-                TransformParent(panel)
-            )
-        )
-
-        // Initial rotation: 180° around X-axis to flip upright (same as bundled pets)
-        val xFlipRadians = PI.toFloat()
-        val initialRotation = Quaternion(
-            kotlin.math.sin(xFlipRadians / 2).toFloat(),
-            0f,
-            0f,
-            kotlin.math.cos(xFlipRadians / 2).toFloat()
-        )
-
-        // Load the custom 3D model from the GLB URL
-        // Meta Spatial SDK supports loading from network URLs via NetworkedAssetLoader
-        currentPetEntity = Entity.create(
-            listOf(
-                Mesh(glbUrl.toUri()),
-                Transform(
-                    Pose(
-                        Vector3(0f, 0.2f, 0.2f),
-                        initialRotation
-                    )
-                ),
-                Scale(Vector3(0.15f, 0.15f, 0.15f)), // Slightly smaller for custom models
-                TransformParent(panel)
-            )
-        )
-
-        Log.d(TAG, "Custom 3D pet entity created successfully")
-
-        // Update locomotion system with new pet entity
-        petLocomotion.setPetEntity(currentPetEntity, panel)
-
-        startSpinning()
-      } catch (e: Exception) {
-        Log.e(TAG, "Error creating custom pet: ${e.message}", e)
-      }
-    }
-  }
-
   fun selectPet(petName: String) {
     currentPet = petName
-    customPetImageUrl = null
-    isCustomPet = false // Bundled pets need X-axis flip
 
     // Cancel previous spinning animation
     spinningJob?.cancel()
@@ -762,7 +502,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
   private fun startSpinning() {
     val entity = currentPetEntity ?: return
-    val customPetMode = isCustomPet // Capture current value
 
     spinningJob = activityScope.launch {
       var angle = 0f
@@ -953,9 +692,6 @@ class ImmersiveActivity : AppSystemActivity() {
                 setContent {
                   OptionsPanel(
                       onSelectPet = ::selectPet,
-                      onCreateCustomPet = ::selectCustomPet,
-                      replicateManager = replicateManager,
-                      onCapturePhoto = ::capturePhoto,
                       onSpawnBone = ::spawnBoneToy
                   )
                 }
@@ -970,50 +706,12 @@ class ImmersiveActivity : AppSystemActivity() {
               )
             },
         ),
-        // Photo capture panel with pinch gesture support
-        PanelRegistration(R.id.photo_capture_modal) {
-          config {
-            width = PHOTO_MODAL_WIDTH
-            height = PHOTO_MODAL_HEIGHT
-            layoutWidthInDp = 920f * PHOTO_MODAL_WIDTH
-            themeResourceId = R.style.PanelAppThemeTransparent
-            includeGlass = false
-          }
-          composePanel {
-            setContent {
-              PhotoCaptureModal(
-                  replicateManager = replicateManager,
-                  onCapturePhoto = ::capturePhoto,
-                  onClose = {
-                    // Close panel via palm-up gesture toggle
-                    photoPanelVisible = false
-                    photoCaptureModalEntity?.setComponent(
-                        Transform(Pose(Vector3(0f, -100f, 0f), Quaternion()))
-                    )
-                  },
-                  onPetCreated = { glbUrl ->
-                    selectCustomPet(glbUrl)
-                    // Close panel after pet is created
-                    photoPanelVisible = false
-                    photoCaptureModalEntity?.setComponent(
-                        Transform(Pose(Vector3(0f, -100f, 0f), Quaternion()))
-                    )
-                  },
-                  onRegisterPinchCallback = { callback ->
-                    onPinchCapture = callback
-                  }
-              )
-            }
-          }
-        },
     )
   }
 
   override fun onSpatialShutdown() {
     spinningJob?.cancel()
-    headTrackingJob?.cancel()
     petLocomotion.cleanup()
-    photoCaptureManager.dispose()
     mrukFeature.stopEnvironmentRaycaster()
     super.onSpatialShutdown()
   }
