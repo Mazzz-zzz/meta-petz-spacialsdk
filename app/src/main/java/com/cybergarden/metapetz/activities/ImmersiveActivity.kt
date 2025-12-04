@@ -67,6 +67,7 @@ import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
+import com.meta.spatial.core.Vector4
 import com.meta.spatial.toolkit.Mesh
 import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Panel
@@ -82,9 +83,9 @@ import com.meta.spatial.core.Query
 import com.meta.spatial.core.Vector2
 import com.meta.spatial.toolkit.PlayerBodyAttachmentSystem
 import com.meta.spatial.toolkit.SceneObjectSystem
-import com.meta.spatial.runtime.SceneMaterial
 import com.meta.spatial.core.Color4
 import com.cybergarden.metapetz.model.PetColors
+import com.cybergarden.metapetz.utils.GlbColorizer
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -429,7 +430,7 @@ class ImmersiveActivity : AppSystemActivity() {
     currentPet = "Dog"
     currentPetData = petData
     Log.d(TAG, "currentPetData set to: ${currentPetData?.name}")
-    spawnPetModel("Dog")
+    spawnPetModel("Dog", petData.colors)
   }
 
   fun selectPet(petName: String) {
@@ -440,10 +441,11 @@ class ImmersiveActivity : AppSystemActivity() {
       level = 1,
       xp = 0
     )
-    spawnPetModel(petName)
+    val colors = currentPetData?.colors ?: PetColors()
+    spawnPetModel(petName, colors)
   }
 
-  private fun spawnPetModel(petName: String) {
+  private fun spawnPetModel(petName: String, colors: PetColors) {
     // Cancel previous spinning animation
     spinningJob?.cancel()
     spinningJob = null
@@ -470,10 +472,34 @@ class ImmersiveActivity : AppSystemActivity() {
           // Get the panel entity to attach to
           val panel = panelEntity ?: Entity.nullEntity()
 
+          // Colorize the GLB file with the pet's colors
+          val assetPath = modelPath.removePrefix("apk:///")
+          val colorHash = colors.hashCode().toString(16)
+          val outputFileName = "${petName}_${colorHash}.glb"
+
+          val meshUri = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val colorizedFile = GlbColorizer.colorizeGlb(
+              this@ImmersiveActivity,
+              assetPath,
+              colors,
+              outputFileName
+            )
+            if (colorizedFile != null) {
+              // Use file:// URI for the colorized model
+              "file://${colorizedFile.absolutePath}"
+            } else {
+              // Fallback to original model
+              Log.w(TAG, "Failed to colorize model, using original")
+              modelPath
+            }
+          }
+
+          Log.d(TAG, "Loading pet model from: $meshUri")
+
           // Create pet entity with basic components
           currentPetEntity = Entity.create(
               listOf(
-                  Mesh(modelPath.toUri()),
+                  Mesh(meshUri.toUri()),
                   Transform(
                       Pose(
                           // Local position: centered directly in front of panel
@@ -496,18 +522,10 @@ class ImmersiveActivity : AppSystemActivity() {
           // Update locomotion system with new pet entity
           petLocomotion.setPetEntity(currentPetEntity, panel)
 
-          // Apply custom colors from PetData after a short delay to ensure mesh is loaded
-          currentPetData?.let { petData ->
-            delay(500) // Wait for mesh to fully load
-            currentPetEntity?.let { entity ->
-              applyPetColors(entity, petData.colors)
-            }
-          }
-
           // Start spinning animation
           startSpinning()
         } catch (e: Exception) {
-          // Error loading pet
+          Log.e(TAG, "Error loading pet model: ${e.message}", e)
         }
       }
     }
@@ -590,96 +608,6 @@ class ImmersiveActivity : AppSystemActivity() {
         android.graphics.Color.blue(color) / 255f,
         1f
     )
-  }
-
-  /**
-   * Apply custom colors to pet materials (coat, eye, snout)
-   * Uses SceneMaterial.setAlbedoColor() API discovered via runtime reflection
-   */
-  private fun applyPetColors(entity: Entity, colors: PetColors) {
-    val sceneObjectSystem = systemManager.tryFindSystem<SceneObjectSystem>()
-    if (sceneObjectSystem == null) {
-      Log.w(TAG, "SceneObjectSystem not found - cannot apply pet colors")
-      return
-    }
-
-    sceneObjectSystem.getSceneObject(entity)?.thenAccept { sceneObject ->
-      if (sceneObject?.mesh == null) {
-        Log.w(TAG, "SceneObject or mesh is null - cannot apply pet colors")
-        return@thenAccept
-      }
-
-      try {
-        val mesh = sceneObject.mesh
-        Log.d(TAG, "Applying pet colors - coat: ${colors.coat}, eye: ${colors.eye}, snout: ${colors.snout}")
-
-        // TEST: Debug - log all get* methods to see material properties
-        val testRed = android.graphics.Color.valueOf(1f, 0f, 0f, 1f)
-
-        // Apply coat color and log properties
-        val coatMaterial = mesh?.getMaterial("coat") as? SceneMaterial
-        if (coatMaterial != null) {
-          Log.d(TAG, "COAT material get* methods:")
-          coatMaterial.javaClass.methods
-            .filter { it.name.startsWith("get") && it.parameterCount == 0 }
-            .sortedBy { it.name }
-            .forEach { method ->
-              try {
-                val value = method.invoke(coatMaterial)
-                Log.d(TAG, "  ${method.name}() = $value")
-              } catch (e: Exception) {
-                Log.d(TAG, "  ${method.name}() = ERROR: ${e.message}")
-              }
-            }
-          coatMaterial.setAlbedoColor(testRed)
-          Log.d(TAG, "Applied coat color: RED (test)")
-        } else {
-          Log.w(TAG, "Coat material not found in mesh")
-        }
-
-        // Apply eye color and log properties
-        val eyeMaterial = mesh?.getMaterial("eye") as? SceneMaterial
-        if (eyeMaterial != null) {
-          Log.d(TAG, "EYE material get* methods:")
-          eyeMaterial.javaClass.methods
-            .filter { it.name.startsWith("get") && it.parameterCount == 0 }
-            .sortedBy { it.name }
-            .forEach { method ->
-              try {
-                val value = method.invoke(eyeMaterial)
-                Log.d(TAG, "  ${method.name}() = $value")
-              } catch (e: Exception) {
-                Log.d(TAG, "  ${method.name}() = ERROR: ${e.message}")
-              }
-            }
-          eyeMaterial.setAlbedoColor(testRed)
-          Log.d(TAG, "Applied eye color: RED (test)")
-        } else {
-          Log.w(TAG, "Eye material not found in mesh")
-        }
-
-        // Apply snout color
-        val snoutMaterial = mesh?.getMaterial("snout") as? SceneMaterial
-        if (snoutMaterial != null) {
-          snoutMaterial.setAlbedoColor(testRed)
-          Log.d(TAG, "Applied snout color: RED (test)")
-        } else {
-          Log.w(TAG, "Snout material not found in mesh")
-        }
-
-        Log.d(TAG, "Pet colors applied successfully (all RED for testing)")
-      } catch (e: Exception) {
-        Log.e(TAG, "Error applying pet colors: ${e.message}", e)
-      }
-    }
-  }
-
-  /**
-   * Convert a hex color string (e.g., "#3A8DFF") to Android Color object
-   */
-  private fun hexToAndroidColor(hex: String): android.graphics.Color {
-    val colorInt = android.graphics.Color.parseColor(hex)
-    return android.graphics.Color.valueOf(colorInt)
   }
 
   /**

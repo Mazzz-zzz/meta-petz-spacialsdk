@@ -142,4 +142,8 @@ spatial {
       assetsDir.set(File("src/main/assets"))
     }
   }
+  // Custom shaders require NDK - uncomment ndkVersion in android block and install NDK to enable
+  // shaders {
+  //   sources.set(listOf(projectDir.dir("src/shaders")))
+  // }
 }
