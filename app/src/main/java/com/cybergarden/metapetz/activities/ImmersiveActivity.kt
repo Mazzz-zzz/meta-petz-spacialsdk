@@ -680,6 +680,11 @@ class ImmersiveActivity : AppSystemActivity() {
    * This automatically creates physics colliders that are properly anchored to the room.
    * The colliders stay fixed in world space because they're parented to room anchors.
    */
+  // Room boundary settings
+  private val roomHalfSize = 2.5f  // 5m / 2 = 2.5m from center to wall
+  private val roomWallHeight = 2.5f
+  private val roomWallThickness = 0.1f
+
   private fun setupRoom() {
     Log.d(TAG, "=== SETUP ROOM CALLED ===")
 
@@ -690,30 +695,85 @@ class ImmersiveActivity : AppSystemActivity() {
       roomColliderEntities.clear()
     }
 
-    // Create a single test wall - 1x1 meter, right in front at world origin
-    createTestWall()
+    // Create 5x5 meter room with 4 walls (no ceiling)
+    createRoomWalls()
   }
 
   /**
-   * Create a single 1x1 meter test wall at a fixed world position.
-   * This wall has NO parent - it should stay fixed in world space.
+   * Create a 5x5 meter room with 4 walls at world origin.
+   * Each wall has physics collider + visible green mesh.
    */
-  private fun createTestWall() {
-    Log.d(TAG, "=== CREATING TEST WALL ===")
+  private fun createRoomWalls() {
+    Log.d(TAG, "=== CREATING 5x5m ROOM WALLS ===")
 
-    // Create a 1x1 meter wall, 1 meter in front of world origin, at eye height
-    val wallPos = Vector3(0f, 1f, -1f)  // 1m high, 1m in front
-    val wallSize = Vector3(1f, 1f, 0.1f)  // 1m x 1m, 10cm thick (thicker for better collision)
+    val floorY = floorHeight()
+    val wallCenterY = floorY + roomWallHeight / 2
 
-    Log.d(TAG, "Creating test wall at WORLD position: $wallPos")
-    Log.d(TAG, "Wall size: $wallSize")
+    // Front wall (negative Z)
+    createModularWall(
+        position = Vector3(0f, wallCenterY, -roomHalfSize),
+        width = roomHalfSize * 2,
+        height = roomWallHeight,
+        rotation = 0f,
+        name = "FrontWall"
+    )
 
-    // Create physics collider - matching the working floor pattern exactly
-    // Box + Transform + Physics in same order as createPhysicsFloor()
+    // Back wall (positive Z)
+    createModularWall(
+        position = Vector3(0f, wallCenterY, roomHalfSize),
+        width = roomHalfSize * 2,
+        height = roomWallHeight,
+        rotation = 0f,
+        name = "BackWall"
+    )
+
+    // Left wall (negative X)
+    createModularWall(
+        position = Vector3(-roomHalfSize, wallCenterY, 0f),
+        width = roomHalfSize * 2,
+        height = roomWallHeight,
+        rotation = 90f,
+        name = "LeftWall"
+    )
+
+    // Right wall (positive X)
+    createModularWall(
+        position = Vector3(roomHalfSize, wallCenterY, 0f),
+        width = roomHalfSize * 2,
+        height = roomWallHeight,
+        rotation = 90f,
+        name = "RightWall"
+    )
+
+    Log.d(TAG, "Created ${roomColliderEntities.size} wall entities (4 walls x 2 = 8 entities)")
+  }
+
+  /**
+   * Create a single wall with physics collider + visible mesh.
+   * @param position Center position of the wall
+   * @param width Width of the wall (along its face)
+   * @param height Height of the wall
+   * @param rotation Y-axis rotation in degrees (0 = facing Z, 90 = facing X)
+   * @param name Debug name for logging
+   */
+  private fun createModularWall(
+      position: Vector3,
+      width: Float,
+      height: Float,
+      rotation: Float,
+      name: String
+  ) {
+    // Wall dimensions: width x height x thickness
+    val wallSize = Vector3(width, height, roomWallThickness)
+    val wallRotation = Quaternion(0f, rotation, 0f)
+
+    Log.d(TAG, "Creating $name at $position, size=$wallSize, rotation=$rotation°")
+
+    // Physics collider (invisible)
     val physicsEntity = Entity.create(
         listOf(
             Box(wallSize),
-            Transform(Pose(wallPos, Quaternion())),
+            Transform(Pose(position, wallRotation)),
             Physics().apply {
               state = PhysicsState.KINEMATIC
               shape = "box"
@@ -723,22 +783,20 @@ class ImmersiveActivity : AppSystemActivity() {
         )
     )
     roomColliderEntities.add(physicsEntity)
-    Log.d(TAG, "Physics wall created with entity id: ${physicsEntity.id}")
 
-    // Create visible mesh separately (so we can see where the wall is)
+    // Visual mesh (semi-transparent green)
     val visualEntity = Entity.create(
         listOf(
             Mesh(android.net.Uri.parse("mesh://box")),
             Box(wallSize),
-            Transform(Pose(wallPos, Quaternion())),
+            Transform(Pose(position, wallRotation)),
             Material().apply {
-              baseColor = Color4(0f, 1f, 0f, 0.5f)  // Semi-transparent green
+              baseColor = Color4(0f, 1f, 0f, 0.3f)  // Semi-transparent green
               unlit = true
             }
         )
     )
     roomColliderEntities.add(visualEntity)
-    Log.d(TAG, "Visual wall created with entity id: ${visualEntity.id}")
   }
 
   // TODO: MRUK-based wall creation - not used yet
