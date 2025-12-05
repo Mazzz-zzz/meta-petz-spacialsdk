@@ -1,0 +1,26 @@
+FLOOR POLYGON LIMITATION - TODO
+===============================
+
+Current Implementation:
+- Floor polygon is extracted from MRUK FLOOR anchor's min/max bounds
+- This creates a RECTANGULAR polygon even for irregular rooms
+
+Problem:
+- L-shaped, T-shaped, or other irregular floor layouts won't be accurately represented
+- The polygon will be the bounding rectangle of the floor, not the actual shape
+
+Why it still works:
+- Wall physics colliders enforce the actual room shape
+- Pet can't walk through walls even if floor polygon allows that area
+
+Future Fix:
+- Find the actual boundary vertices API in Meta Spatial SDK
+- Possible properties to investigate:
+  - MRUKPlane.planeBoundary2D (exists in Unity MRUK)
+  - MRUKAnchor boundary data
+  - Room mesh vertices from MRUK
+- May need to build polygon from wall corner positions instead
+
+References:
+- Meta Spatial SDK MRUK docs: https://developers.meta.com/horizon/documentation/spatial-sdk/spatial-sdk-mruk/
+- Meta Spatial SDK Samples: https://github.com/meta-quest/Meta-Spatial-SDK-Samples
