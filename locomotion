@@ -1,0 +1,884 @@
+       196        private var isWalking = false
+       197 +      private var currentTarget: Vector3? = null        
+       198
+       199        // Idle wander state
+       200        private var idleWanderJob: Job? = null
+     ...
+       208        // Reference to the pointing system for
+             cleanup
+       209        private var pointingSystem:
+             PointToMoveSystem? = null
+       210
+       211 -      // MRUK reference for obstacle detection
+       211 +      // MRUK reference for obstacle detection
+           +   and ground raycast
+       212        private var mrukFeature: MRUKFeature? =
+             null
+       213
+       214 +      // Physics control constants
+       215 +      private val sphereRadius = 0.2f
+       216 +      private val groundCheckDistance = 0.05f  //       
+           +  How close to ground to be "grounded"
+       217 +  
+       218        // Jump state
+       219        private var isJumping = false
+       220 +      private var isGrounded = true
+       221        private var jumpStartTime = 0L
+       222 -      private val jumpHeight = 0.25f    // meters       
+           -  - height of jump arc
+       223 -      private val jumpDuration = 400L   // 
+           - milliseconds - how long the jump takes
+       224 -      private val obstacleDetectDistance = 0.4f         
+           - // meters - how far ahead to look
+       222 +      private var jumpAnimPaused = false
+       223 +      private val minJumpForce = 2.0f       // 
+           + Minimum upward velocity for small obstacles
+       224 +      private val maxJumpForce = 4.0f       // 
+           + Maximum upward velocity for tall obstacles
+       225 +      private val jumpAnimPausePoint = 0.4f // 
+           + Pause animation at 40% (mid-air pose)
+       226 +      private val obstacleDetectDistance = 0.6f         
+           + // meters - how far ahead to look
+       227
+       228        // Thrown bones reference for push
+             detection
+       229        private var thrownBones:
+             MutableList<Entity> = mutableListOf()
+       230 -      private val pushRadius = 0.15f
+           -      // meters - how close before pushing
+       231 -      private val pushForce = 1.5f
+           -        // impulse strength
+       230 +      private val pushRadius = 0.25f
+           +      // meters - how close before pushing
+       231 +      private val pushForce = 2.0f
+           +        // impulse strength
+       232
+       233        // Callbacks
+       234        var onWalkStart: (() -> Unit)? = null
+     ...
+       229        var onTargetSet: ((Vector3) -> Unit)? =
+             null
+       230
+       231        /**
+       232 -       * Set the pet entity to control
+       232 +       * Set the pet entities - mesh for 
+           + animation, physics sphere for movement
+       233         */
+       234 -      fun setPetEntity(entity: Entity?, panel
+           -  : Entity? = null) {
+       235 -          petEntity = entity
+       236 -          panelEntity = panel
+       237 -          Log.d(TAG, "Pet entity set: ${entity !=       
+           -  null}")
+       234 +      fun setPetEntity(meshEntity: Entity?, 
+           +  physicsEntity: Entity?) {
+       235 +          petMeshEntity = meshEntity
+       236 +          petPhysicsEntity = physicsEntity
+       237 +          Log.d(TAG, "Pet entities set: 
+           + mesh=${meshEntity != null}, 
+           + physics=${physicsEntity != null}")
+       238        }
+       239
+       240        /**
+       241 -       * Set the MRUK feature for obstacle 
+           -  detection raycasting
+       241 +       * Set the MRUK feature for obstacle 
+           +  detection and ground raycasting
+       242         */
+       243        fun setMrukFeature(mruk: MRUKFeature) {
+       244            this.mrukFeature = mruk
+       245 -          Log.d(TAG, "MRUK feature set for 
+           -  obstacle detection")
+       245 +          Log.d(TAG, "MRUK feature set for 
+           +  obstacle detection and ground raycast")
+       246        }
+       247
+       248        /**
+     ...
+       253        }
+       254
+       255        /**
+       256 +       * Check if pet is grounded using raycast         
+           + downward
+       257 +       */
+       258 +      private fun checkGrounded(): Boolean {
+       259 +          val physicsEntity = petPhysicsEntity ?:       
+           +  return true
+       260 +          val transform = physicsEntity.tryGetCom       
+           + ponent<Transform>()?.transform ?: return true
+       261 +          val pos = transform.t
+       262 +  
+       263 +          // Raycast downward from sphere center        
+       264 +          val mruk = mrukFeature
+       265 +          if (mruk != null) {
+       266 +              val currentRoom = 
+           + mruk.getCurrentRoom()
+       267 +              if (currentRoom != null) {
+       268 +                  try {
+       269 +                      val hit = mruk.raycastRoom(       
+       270 +
+           + currentRoom.anchor.uuid,
+       271 +                          pos,
+       272 +                          Vector3(0f, -1f, 0f),         
+           + // Down
+       273 +                          sphereRadius + 
+           + groundCheckDistance + 0.1f,
+       274 +
+           + SurfaceType.PLANE_VOLUME
+       275 +                      )
+       276 +                      if (hit != null) {
+       277 +                          val distToGround = 
+           + pos.y - hit.hitPosition.y
+       278 +                          return distToGround <=        
+           + sphereRadius + groundCheckDistance
+       279 +                      }
+       280 +                  } catch (e: Exception) {
+       281 +                      // Raycast failed, assume         
+           + grounded
+       282 +                  }
+       283 +              }
+       284 +          }
+       285 +  
+       286 +          // Fallback: check if close to floor
+       287 +          return pos.y <= floorY + sphereRadius +       
+           +  groundCheckDistance
+       288 +      }
+       289 +  
+       290 +      /**
+       291         * Play a specific animation on the pet
+             entity
+       292         * @param track Animation track index
+             (ANIM_WAG, ANIM_WALKLOOP, etc.)
+       293         * @param loop Whether to loop the
+             animation
+
+● Now update the playAnimation function:
+
+● Update(app\src\main\java\com\cybergarden\metapetz\ecs\PetLocomotio
+        n.kt)
+  ⎿  Updated app\src\main\java\com\cybergarden\metapetz\ecs\Pet     
+     ocomotion.kt with 50 additions and 4 removals
+       296        }
+       297
+       298        /**
+       299 -       * Play a specific animation on the pet 
+           -  entity
+       299 +       * Play a specific animation on the pet 
+           +  mesh entity
+       300         * @param track Animation track index
+             (ANIM_WAG, ANIM_WALKLOOP, etc.)
+       301         * @param loop Whether to loop the
+             animation
+       302 +       * @param startTime Optional start time for       
+           +  animation (for pausing/resuming)
+       303         */
+       304 -      private fun playAnimation(track: Int, loop:       
+           -   Boolean = true) {
+       305 -          val pet = petEntity ?: return
+       304 +      private fun playAnimation(track: Int, loop:       
+           +   Boolean = true
+           +  , startTime: Long = System.currentTimeMillis())       
+           +   {
+       305 +          val pet = petMeshEntity ?: return
+       306            try {
+       307                pet.setComponent(
+       308                    Animated(
+       309 -                      startTime = 
+           -  System.currentTimeMillis(),
+       309 +                      startTime = startTime,
+       310                        playbackState =
+             PlaybackState.PLAYING,
+       311                        playbackType = if (loop)
+             PlaybackType.LOOP else PlaybackType.CLAMP,
+       312                        track = track
+       313                    )
+       314                )
+       315                Log.d(TAG, "Playing animation
+             track: $track, loop: $loop")
+       316 +              jumpAnimPaused = false
+       317            } catch (e: Exception) {
+       318                Log.e(TAG, "Failed to play
+             animation: ${e.message}")
+       319            }
+       320        }
+       321
+       322        /**
+       323 +       * Pause animation at current frame
+       324 +       */
+       325 +      private fun pauseAnimation() {
+       326 +          val pet = petMeshEntity ?: return
+       327 +          try {
+       328 +              val current = 
+           + pet.tryGetComponent<Animated>() ?: return
+       329 +              pet.setComponent(
+       330 +                  Animated(
+       331 +                      startTime = 
+           + current.startTime,
+       332 +                      playbackState = 
+           + PlaybackState.PAUSED,
+       333 +                      playbackType = 
+           + current.playbackType,
+       334 +                      track = current.track
+       335 +                  )
+       336 +              )
+       337 +              jumpAnimPaused = true
+       338 +              Log.d(TAG, "Animation paused")
+       339 +          } catch (e: Exception) {
+       340 +              Log.e(TAG, "Failed to pause 
+           + animation: ${e.message}")
+       341 +          }
+       342 +      }
+       343 +  
+       344 +      /**
+       345 +       * Resume paused animation
+       346 +       */
+       347 +      private fun resumeAnimation() {
+       348 +          val pet = petMeshEntity ?: return
+       349 +          try {
+       350 +              val current = 
+           + pet.tryGetComponent<Animated>() ?: return
+       351 +              pet.setComponent(
+       352 +                  Animated(
+       353 +                      startTime = 
+           + current.startTime,
+       354 +                      playbackState = 
+           + PlaybackState.PLAYING,
+       355 +                      playbackType = 
+           + current.playbackType,
+       356 +                      track = current.track
+       357 +                  )
+       358 +              )
+       359 +              jumpAnimPaused = false
+       360 +              Log.d(TAG, "Animation resumed")
+       361 +          } catch (e: Exception) {
+       362 +              Log.e(TAG, "Failed to resume 
+           + animation: ${e.message}")
+       363 +          }
+       364 +      }
+       365 +  
+       366 +      /**
+       367         * Get if pet is currently walking
+       368         */
+       369        fun isCurrentlyWalking(): Boolean =
+             isWalking
+
+● Now let me rewrite the moveTo function to use physics
+  velocity:
+
+● Read(app\src\main\java\com\cybergarden\metapetz\ecs\PetLocomotion.
+      kt)
+  ⎿  Read 200 lines
+
+● Read(app\src\main\java\com\cybergarden\metapetz\ecs\PetLocomotion.
+      kt)
+  ⎿  Read 80 lines
+
+● Now let me replace the moveTo function and helpers with a
+  physics-based implementation:
+
+● Update(app\src\main\java\com\cybergarden\metapetz\ecs\PetLocomotio
+        n.kt)
+  ⎿  Updated app\src\main\java\com\cybergarden\metapetz\ecs\Pet     
+     ocomotion.kt with 167 additions and 118 removals
+       369        fun isCurrentlyWalking(): Boolean =
+             isWalking
+       370
+       371        /**
+       372 -       * Stop current walk immediately
+       372 +       * Stop current walk immediately
+           +   and zero out physics velocity
+       373         */
+       374        fun stopWalking() {
+       375            walkJob?.cancel()
+       376            walkJob = null
+       377            isWalking = false
+       378 +          currentTarget = null
+       379 +  
+       380 +          // Zero out physics velocity
+       381 +          val physicsEntity = petPhysicsEntity ?:       
+           +  return
+       382 +          val physics = 
+           + physicsEntity.tryGetComponent<Physics>() ?: 
+           + return
+       383 +          physics.linearVelocity = Vector3(0f, 
+           + physics.linearVelocity.y, 0f)  // Keep Y 
+           + velocity (gravity)
+       384 +          physicsEntity.setComponent(physics)
+       385        }
+       386
+       387        /**
+       388 -       * Move pet to target position with smooth        
+           -  interpolation
+       389 -       * Pet will face the direction of movement        
+       390 -       * Includes obstacle detection, jumping, 
+           -  and bone pushing
+       388 +       * Move pet to target position using 
+           +  physics velocity
+       389 +       * Controls the physics sphere, dog mesh 
+           + follows via parenting
+       390 +       * Includes obstacle detection with dynamic       
+           +   jump force
+       391         */
+       392        fun moveTo(target: Vector3) {
+       393 -          val pet = petEntity ?: run {
+       394 -              Log.w(TAG, "moveTo called but 
+           -  petEntity is null - select a pet first")
+       393 +          val physicsEntity = petPhysicsEntity ?:       
+           +  run {
+       394 +              Log.w(TAG, "moveTo called but 
+           +  petPhysicsEntity is null - select a pet first")       
+       395                return
+       396            }
+       397 +          val meshEntity = petMeshEntity ?: 
+           + return
+       398
+       399            // Clamp target to floor polygon if set       
+       400            val clampedTarget =
+             floorPolygon?.clamp(target) ?: target
+     ...
+       394                Log.d(TAG, "Target clamped to floor       
+              polygon: $target -> $clampedTarget")
+       395            }
+       396
+       397 +          currentTarget = clampedTarget
+       398 +  
+       399            // Cancel any existing walk
+       400            walkJob?.cancel()
+       401
+       402            walkJob = scope.launch {
+       403                isWalking = true
+       404 -              isJumping = false
+       404
+       405                // Start walk animation
+       406                playAnimation(ANIM_WALKLOOP, loop =       
+              true)
+     ...
+       407                onWalkStart?.invoke()
+       408
+       409                try {
+       410 -                  // Get current position
+       411 -                  val transform = 
+           - pet.getComponent<Transform>()
+       412 -                  val startPos = 
+           - transform.transform.t
+       413 -                  val baseY = startPos.y  // 
+           - Store base Y for jump arc calculation
+       410 +                  val arrivalThreshold = 0.15f          
+           + // How close to target to consider "arrived"
+       411 +                  var frameCount = 0
+       412 +                  var wasInAir = false
+       413
+       414 -                  // Calculate distance and 
+           - duration (using clamped target)
+       415 -                  val dx = clampedTarget.x - 
+           - startPos.x
+       416 -                  val dz = clampedTarget.z - 
+           - startPos.z
+       417 -                  val distance = sqrt(dx * dx +         
+           - dz * dz)
+       414 +                  while (isActive) {
+       415 +                      frameCount++
+       416
+       417 -                  // Skip if already at target
+       418 -                  if (distance < 0.05f) {
+       419 -                      isWalking = false
+       420 -                      onWalkEnd?.invoke()
+       421 -                      return@launch
+       422 -                  }
+       417 +                      // Get current position 
+           + from physics sphere
+       418 +                      val transform = physicsEnti       
+           + ty.tryGetComponent<Transform>()?.transform
+       419 +                      if (transform == null) {
+       420 +                          delay(16)
+       421 +                          continue
+       422 +                      }
+       423 +                      val currentPos = 
+           + transform.t
+       424
+       425 -                  val duration = (distance / 
+           - walkSpeed * 1000).toLong().coerceAtLeast(100)
+       425 +                      // Check grounded state
+       426 +                      val wasGrounded = 
+           + isGrounded
+       427 +                      isGrounded = 
+           + checkGrounded()
+       428
+       429 -                  // Direction vector to target         
+           - for lookRotationAroundY
+       430 -                  val direction = Vector3(dx, 0f,       
+           -  dz)
+       431 -                  val normalizedDir = Vector3(dx        
+           - / distance, 0f, dz / distance)
+       429 +                      // Handle landing - resume        
+           + animation when we land
+       430 +                      if (!wasGrounded && 
+           + isGrounded && jumpAnimPaused) {
+       431 +                          resumeAnimation()
+       432 +                          Log.d(TAG, "Landed - 
+           + resuming animation")
+       433 +                      }
+       434
+       435 -                  Log.d(TAG, "Walking from 
+           - $startPos to $clampedTarget, distance: 
+           - $distance, duration: ${duration}ms")
+       435 +                      // Calculate distance to 
+           + target (2D)
+       436 +                      val dx = clampedTarget.x -        
+           + currentPos.x
+       437 +                      val dz = clampedTarget.z -        
+           + currentPos.z
+       438 +                      val distance = sqrt(dx * dx       
+           +  + dz * dz)
+       439
+       440 -                  val startTime = 
+           - System.currentTimeMillis()
+       441 -                  var prevTime = startTime
+       442 -                  val smoothTime = 1f / 60f
+       443 -                  val rotationSpeed = 0.15f // 
+           - How fast to rotate (0-1, higher = faster)
+       444 -                  var frameCount = 0
+       440 +                      // Check if arrived
+       441 +                      if (distance < 
+           + arrivalThreshold) {
+       442 +                          Log.d(TAG, "Arrived at        
+           + target")
+       443 +                          break
+       444 +                      }
+       445
+       446 -                  while (isActive) {
+       447 -                      val currentTime = 
+           - System.currentTimeMillis()
+       448 -                      val deltaTime = 
+           - (currentTime - prevTime) / 1000f
+       449 -                      prevTime = currentTime
+       450 -                      frameCount++
+       446 +                      // Normalize direction
+       447 +                      val dirX = dx / distance
+       448 +                      val dirZ = dz / distance
+       449
+       450 -                      val elapsed = currentTime -       
+           -  startTime
+       451 -                      val progress = 
+           - (elapsed.toFloat() / duration).coerceIn(0f, 1f)        
+       450 +                      // Check for obstacles 
+           + ahead (only when grounded)
+       451 +                      if (frameCount % 5 == 0 &&        
+           + isGrounded && !isJumping) {
+       452 +                          val obstacleHeight = 
+           + detectObstacleHeight(currentPos, Vector3(dirX,         
+           + 0f, dirZ))
+       453 +                          if (obstacleHeight > 
+           + 0f) {
+       454 +
+           + triggerJump(obstacleHeight)
+       455 +                          }
+       456 +                      }
+       457
+       458 -                      // Check for obstacles 
+           - every 10 frames (unless already jumping)
+       459 -                      if (frameCount % 10 == 0 &&       
+           -  !isJumping) {
+       460 -                          val currentPos = 
+           - Vector3(
+       461 -                              startPos.x + dx *         
+           - progress,
+       462 -                              baseY,
+       463 -                              startPos.z + dz *         
+           - progress
+       464 -                          )
+       465 -                          if 
+           - (detectObstacleAhead(currentPos, normalizedDir))       
+           -  {
+       466 -
+           - triggerJump(currentTime)
+       458 +                      // Handle jump animation 
+           + pausing mid-air
+       459 +                      if (isJumping && 
+           + !isGrounded && !jumpAnimPaused) {
+       460 +                          val physics = 
+           + physicsEntity.tryGetComponent<Physics>()
+       461 +                          if (physics != null &&        
+           + physics.linearVelocity.y < 0.5f) {
+       462 +                              // We're at or past       
+           +  the peak - pause animation at mid-air pose
+       463 +                              pauseAnimation()
+       464 +                              Log.d(TAG, "Jump 
+           + peak reached - pausing animation")
+       465                            }
+       466                        }
+       467
+       468 -                      // Calculate Y position 
+           - (includes jump arc if jumping)
+       469 -                      val jumpY = 
+           - calculateJumpOffset(currentTime)
+       468 +                      // Set horizontal velocity        
+           + toward target (only when grounded or slightly in       
+           +  air)
+       469 +                      val physics = 
+           + physicsEntity.tryGetComponent<Physics>()
+       470 +                      if (physics != null) {
+       471 +                          val currentVelY = 
+           + physics.linearVelocity.y
+       472
+       473 -                      // Interpolate position 
+           - with jump offset
+       474 -                      val newPos = Vector3(
+       475 -                          startPos.x + dx * 
+           - progress,
+       476 -                          baseY + jumpY,
+       477 -                          startPos.z + dz * 
+           - progress
+       478 -                      )
+       473 +                          // Apply horizontal 
+           + movement
+       474 +                          physics.linearVelocity        
+           + = Vector3(
+       475 +                              dirX * walkSpeed,
+       476 +                              currentVelY,  // 
+           + Preserve vertical velocity (gravity/jump)
+       477 +                              dirZ * walkSpeed
+       478 +                          )
+       479 +
+           + physicsEntity.setComponent(physics)
+       480 +                      }
+       481
+       482 -                      // Target rotation using 
+           - lookRotationAroundY (like AnimationsSample 
+           - DroneSystem)
+       483 -                      val targetRotation = 
+           - Quaternion.lookRotationAroundY(direction)
+       482 +                      // Update mesh rotation to        
+           + face movement direction
+       483 +
+           + updateMeshRotation(meshEntity, Vector3(dirX, 0f,       
+           +  dirZ))
+       484
+       485 -                      // Smooth rotation with 
+           - slerp (like AnimationsSample DroneSystem)
+       486 -                      val newTransform = 
+           - pet.getComponent<Transform>()
+       487 -                      val currentRotation = 
+           - newTransform.transform.q
+       488 -                      val smoothFactor = 
+           - smoothOver(deltaTime, rotationSpeed, smoothTime)       
+       489 -                      val smoothedRotation = 
+           - currentRotation.slerp(targetRotation, 
+           - smoothFactor)
+       485 +                      // Check for bone 
+           + collisions
+       486 +
+           + checkBoneCollisions(currentPos)
+       487
+       488 -                      // Update transform
+       489 -                      newTransform.transform.t =        
+           - newPos
+       490 -                      newTransform.transform.q =        
+           - smoothedRotation
+       491 -
+           - pet.setComponent(newTransform)
+       492 -  
+       493 -                      // Check for bone 
+           - collisions and push them
+       494 -                      checkBoneCollisions(newPos)       
+       495 -  
+       496 -                      if (progress >= 1f) break
+       497 -                      delay(16) // ~60 FPS
+       488 +                      delay(16)  // ~60 FPS
+       489                    }
+       490
+       491                    Log.d(TAG, "Walk complete")
+     ...
+       497                } finally {
+       498                    isWalking = false
+       499                    isJumping = false
+       500 +                  jumpAnimPaused = false
+       501 +                  currentTarget = null
+       502
+       503 +                  // Stop horizontal movement
+       504 +                  val physics = 
+           + petPhysicsEntity?.tryGetComponent<Physics>()
+       505 +                  if (physics != null) {
+       506 +                      physics.linearVelocity = 
+           + Vector3(0f, physics.linearVelocity.y, 0f)
+       507 +
+           + petPhysicsEntity?.setComponent(physics)
+       508 +                  }
+       509 +  
+       510                    // Return to idle animation
+             (wag)
+       511                    playAnimation(ANIM_WAG, loop =        
+             true)
+       512
+     ...
+       507        }
+       508
+       509        /**
+       510 -       * Detect obstacles ahead using MRUK 
+           - raycasting
+       511 -       * Returns true if an obstacle is detected        
+           - within range
+       510 +       * Update mesh entity rotation to face 
+           + movement direction
+       511         */
+       512 -      private fun detectObstacleAhead(currentPos:       
+           -  Vector3, direction: Vector3): Boolean {
+       513 -          val mruk = mrukFeature ?: return false        
+       514 -          val currentRoom = mruk.getCurrentRoom()       
+           -  ?: return false
+       512 +      private fun updateMeshRotation(meshEntity:        
+           + Entity, direction: Vector3) {
+       513 +          try {
+       514 +              val transform = 
+           + meshEntity.getComponent<Transform>()
+       515
+       516 +              // Calculate target rotation 
+           + (facing direction)
+       517 +              val targetYaw = 
+           + Quaternion.lookRotationAroundY(direction)
+       518 +  
+       519 +              // Preserve the X flip rotation 
+           + (180° around X)
+       520 +              val xFlipRadians = 
+           + kotlin.math.PI.toFloat()
+       521 +              val xFlip = Quaternion(
+       522 +                  kotlin.math.sin(xFlipRadians /        
+           + 2).toFloat(),
+       523 +                  0f, 0f,
+       524 +                  kotlin.math.cos(xFlipRadians /        
+           + 2).toFloat()
+       525 +              )
+       526 +  
+       527 +              // Combine: first flip, then yaw
+       528 +              val targetRotation = targetYaw * 
+           + xFlip
+       529 +  
+       530 +              // Smooth rotation
+       531 +              val currentRotation = 
+           + transform.transform.q
+       532 +              val smoothedRotation = 
+           + currentRotation.slerp(targetRotation, 0.1f)
+       533 +  
+       534 +              transform.transform.q = 
+           + smoothedRotation
+       535 +              meshEntity.setComponent(transform)        
+       536 +          } catch (e: Exception) {
+       537 +              // Ignore rotation errors
+       538 +          }
+       539 +      }
+       540 +  
+       541 +      /**
+       542 +       * Detect obstacle ahead and return its 
+           + height (0 if no obstacle)
+       543 +       * Used to calculate jump force
+       544 +       */
+       545 +      private fun 
+           + detectObstacleHeight(currentPos: Vector3, 
+           + direction: Vector3): Float {
+       546 +          val mruk = mrukFeature ?: return 0f
+       547 +          val currentRoom = mruk.getCurrentRoom()       
+           +  ?: return 0f
+       548 +  
+       549            try {
+       550 -              // Cast ray at low 
+           -  height to detect furniture legs/edges
+       551 -              val rayOrigin = 
+           -  Vector3(currentPos.x, floorY + 0.1f
+           -  , currentPos.z)
+       550 +              // Cast ray at sphere center 
+           +  height to detect obstacles
+       551 +              val rayOrigin = 
+           +  Vector3(currentPos.x, currentPos.y
+           +  , currentPos.z)
+       552                val hit = mruk.raycastRoom(
+       553                    currentRoom.anchor.uuid,
+       554                    rayOrigin,
+     ...
+       526                )
+       527
+       528                if (hit != null) {
+       529 -                  Log.d(TAG, "Obstacle detected         
+           - at distance: ${hit.hitPosition}")
+       530 -                  return true
+       529 +                  // Estimate obstacle height by        
+           + casting ray upward from hit point
+       530 +                  val obstacleTop = 
+           + estimateObstacleTop(hit.hitPosition, direction)        
+       531 +                  val heightAboveGround = 
+           + obstacleTop - floorY
+       532 +                  Log.d(TAG, "Obstacle detected,        
+           + estimated height: $heightAboveGround")
+       533 +                  return 
+           + heightAboveGround.coerceIn(0.1f, 1.0f)  // Clamp       
+           +  to reasonable range
+       534                }
+       535            } catch (e: Exception) {
+       536                Log.e(TAG, "Obstacle detection
+             error: ${e.message}")
+       537            }
+       538 -          return false
+       538 +          return 0f
+       539        }
+       540
+       541        /**
+       542 -       * Trigger jump - starts the jump animation       
+           -  and sets jump timing
+       542 +       * Estimate the top of an obstacle by 
+           + raycasting upward
+       543         */
+       544 -      private fun triggerJump(currentTime: Long)        
+           - {
+       545 -          if (isJumping) return  // Already 
+           - jumping
+       546 -  
+       547 -          isJumping = true
+       548 -          jumpStartTime = currentTime
+       549 -          playAnimation(ANIM_JUMP, loop = false)        
+       550 -          Log.d(TAG, "Jump triggered!")
+       551 -  
+       552 -          // Schedule return to walk animation 
+           - after jump
+       553 -          scope.launch {
+       554 -              delay(jumpDuration)
+       555 -              if (isWalking) {
+       556 -                  isJumping = false
+       557 -                  playAnimation(ANIM_WALKLOOP, 
+           - loop = true)
+       558 -              }
+       559 -          }
+       544 +      private fun estimateObstacleTop(hitPoint:         
+           + Vector3, direction: Vector3): Float {
+       545 +          // For now, return a reasonable default       
+           +  based on typical furniture
+       546 +          // Could be improved with additional 
+           + raycasts
+       547 +          return hitPoint.y + 0.3f
+       548        }
+       549
+       550        /**
+       551 -       * Calculate vertical offset for jump arc
+       552 -       * Returns 0 if not jumping, otherwise 
+           - returns parabolic arc height
+       551 +       * Trigger jump with force proportional to        
+           + obstacle height
+       552         */
+       553 -      private fun 
+           - calculateJumpOffset(currentTime: Long): Float {        
+       554 -          if (!isJumping) return 0f
+       553 +      private fun triggerJump(obstacleHeight: 
+           + Float) {
+       554 +          if (isJumping || !isGrounded) return
+       555
+       556 -          val jumpElapsed = currentTime - 
+           - jumpStartTime
+       557 -          if (jumpElapsed >= jumpDuration) {
+       558 -              isJumping = false
+       559 -              return 0f
+       560 -          }
+       556 +          val physicsEntity = petPhysicsEntity ?:       
+           +  return
+       557 +          val physics = 
+           + physicsEntity.tryGetComponent<Physics>() ?: 
+           + return
+       558
+       559 -          // Parabolic arc: peaks at 50% progress       
+       560 -          val jumpProgress = 
+           - jumpElapsed.toFloat() / jumpDuration
+       561 -          return jumpHeight * 4f * jumpProgress *       
+           -  (1f - jumpProgress)
+       559 +          isJumping = true
+       560 +          jumpStartTime = 
+           + System.currentTimeMillis()
+       561 +          jumpAnimPaused = false
+       562 +  
+       563 +          // Calculate jump force based on 
+           + obstacle height
+       564 +          // Higher obstacles need more force
+       565 +          val heightFactor = (obstacleHeight / 
+           + 0.5f).coerceIn(0.5f, 1.5f)
+       566 +          val jumpForce = minJumpForce + 
+           + (maxJumpForce - minJumpForce) * heightFactor
+       567 +  
+       568 +          // Apply upward velocity
+       569 +          physics.linearVelocity = Vector3(
+       570 +              physics.linearVelocity.x,
+       571 +              jumpForce,
+       572 +              physics.linearVelocity.z
+       573 +          )
+       574 +          physicsEntity.setComponent(physics)
+       575 +  
+       576 +          // Start jump animation
+       577 +          playAnimation(ANIM_JUMP, loop = false)        
+       578 +          Log.d(TAG, "Jump triggered! Force: 
+           + $jumpForce, obstacleHeight: $obstacleHeight")
+       579        }
+       580
+       581        /**
+     ...
+       580        private fun checkBoneCollisions(petPos:
+             Vector3) {
+       581            if (thrownBones.isEmpty()) return
+       582
+       583 -          val bonesToCheck = thrownBones.toList()       
+           -    // Copy to avoid concurrent modification
+       583 +          val bonesToCheck = thrownBones.toList()       
+       584            for (bone in bonesToCheck) {
+       585                try {
+       586                    val boneTransform =
+             bone.tryGetComponent<Transform>()?.transform ?:        
+             continue
+     ...
+       592                    val distance = sqrt(dx * dx +
+             dz * dz)
+       593
+       594                    if (distance < pushRadius &&
+             distance > 0.01f) {
+       595 -                      // Calculate push direction       
+           -  (away from pet)
+       595                        val pushDirX = dx /
+             distance
+       596                        val pushDirZ = dz /
+             distance
+       597
+       598 -                      // Get physics component 
+           - and apply impulse
+       598                        val physics =
+             bone.tryGetComponent<Physics>()
+       599                        if (physics != null &&
+             physics.state == PhysicsState.DYNAMIC) {
+       600 -                          // Apply velocity 
+           - impulse
+       600                            physics.linearVelocity        
+             = Vector3(
+       601                                pushDirX *
+             pushForce,
+       602 -                              0.3f,
+           -    // Slight upward pop
+       602 +                              0.5f,
+       603                                pushDirZ *
+             pushForce
+       604                            )
+       605
+             bone.setComponent(physics)
+       606 -                          Log.d(TAG, "Pushed bone       
+           -   away from pet, dir=($pushDirX, $pushDirZ)")
+       606 +                          Log.d(TAG, "Pushed bone       
+           +   away from pet")
+       607                        }
+       608                    }
+       609                } catch (e: Exception) {
+       610 -                  // Bone may have been destroyed       
+           -  , skip
+       610 +                  // Bone may have been destroyed       
+       611                }
+       612            }
+       613        }
+
+● Now let me update the cleanup function:
+
+● Search(pattern: "petEntity = null|panelEntity = null", path:      
+        "app\src\main\java\com\cybergarden\metapetz\ecs\PetLocomotio
+        n.kt", output_mode: "content", head_limit: 20)
+  ⎿  Found 12 lines (ctrl+o to expand)
+
+∴ Thinking…
