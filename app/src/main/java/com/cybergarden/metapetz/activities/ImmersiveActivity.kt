@@ -72,6 +72,7 @@ import com.meta.spatial.mruk.MRUKStartEnvrionmentRaycasterResult
 import com.meta.spatial.mruk.MRUKAnchor
 import com.meta.spatial.mruk.MRUKRoom
 import com.meta.spatial.mruk.MRUKLabel
+import com.meta.spatial.mruk.MRUKSceneEventListener
 import com.meta.spatial.mruk.AnchorProceduralMesh
 import com.meta.spatial.mruk.AnchorProceduralMeshConfig
 import com.meta.spatial.core.Entity
@@ -131,6 +132,12 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Custom wall material for transparent green walls
   private lateinit var wallMaterial: SceneMaterial
+
+  // MRUK procedural mesh spawner - creates meshes for room anchors automatically
+  private var procMeshSpawner: AnchorProceduralMesh? = null
+
+  // MRUK scene event listener
+  private var sceneEventListener: MRUKSceneEventListener? = null
 
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
@@ -827,36 +834,43 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Scan room using MRUK - loads scene data and triggers Space Setup if needed.
+   * This follows the MixedRealitySample pattern for proper room mesh alignment.
+   * The AnchorProceduralMesh automatically creates visible meshes for all room anchors.
    */
   private fun scanRoom() {
     Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
+    Log.d(TAG, "Requesting scene capture to ensure fresh room data...")
 
-    // Load scene data from device
+    // Always request scene capture first to ensure up-to-date room data
+    // This launches the Space Setup UI if no scene exists, or updates existing data
+    scene.requestSceneCapture().whenComplete { _, captureError ->
+      if (captureError != null) {
+        Log.e(TAG, "Scene capture error: ${captureError.message}", captureError)
+        // Try loading existing scene data even if capture failed
+        loadSceneFromDeviceWithLogging()
+      } else {
+        Log.d(TAG, "Scene capture completed - loading scene data...")
+        loadSceneFromDeviceWithLogging()
+      }
+    }
+  }
+
+  /**
+   * Load scene from device and log room data.
+   * Called after scene capture completes.
+   */
+  private fun loadSceneFromDeviceWithLogging() {
     mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
       if (error != null) {
         Log.e(TAG, "loadSceneFromDevice error: ${error.message}", error)
       }
       if (result == MRUKLoadDeviceResult.SUCCESS) {
-        Log.d(TAG, "Scene loaded successfully")
+        Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
+        Log.d(TAG, "AnchorProceduralMesh will now create visible meshes for all room anchors")
         logMrukRoomData()
       } else {
-        Log.e(TAG, "MRUK load failed: $result - launching Space Setup...")
-        // Prompt user to complete Space Setup
-        mrukFeature.requestSceneCapture().whenComplete { _, captureError ->
-          if (captureError != null) {
-            Log.e(TAG, "Scene capture error: ${captureError.message}")
-          } else {
-            Log.d(TAG, "Scene capture completed - reloading scene...")
-            mrukFeature.loadSceneFromDevice().whenComplete { reloadResult, _ ->
-              if (reloadResult == MRUKLoadDeviceResult.SUCCESS) {
-                Log.d(TAG, "Scene loaded after capture")
-                logMrukRoomData()
-              } else {
-                Log.e(TAG, "Still no rooms after capture: $reloadResult")
-              }
-            }
-          }
-        }
+        Log.e(TAG, "MRUK load failed with result: $result")
+        Log.w(TAG, "Please set up your room in Quest Settings > Physical Space > Space Setup")
       }
     }
   }
@@ -1070,6 +1084,9 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
+    // Remove MRUK scene event listener
+    sceneEventListener?.let { mrukFeature.removeSceneEventListener(it) }
+    sceneEventListener = null
     // Clean up any room boundary colliders
     roomColliderEntities.forEach { it.destroy() }
     roomColliderEntities.clear()
@@ -1108,7 +1125,7 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Initialize custom wall material for transparent green walls.
+   * Initialize custom wall material for transparent green walls and MRUK procedural mesh spawner.
    */
   private fun initWallMeshCreator() {
     // Create custom material with solidColor shader (using Vector4 attribute)
@@ -1122,6 +1139,50 @@ class ImmersiveActivity : AppSystemActivity() {
         setAttribute("customColor", Vector4(0f, 1f, 0f, 0.3f)) // RGBA: green with 30% alpha
     }
     Log.d(TAG, "Wall material initialized with custom solidColor shader")
+
+    // Create AnchorProceduralMesh to automatically render room anchors
+    // This follows the MixedRealitySample pattern for proper room mesh alignment
+    procMeshSpawner = AnchorProceduralMesh(
+        mrukFeature,
+        mapOf(
+            MRUKLabel.FLOOR to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.WALL_FACE to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.CEILING to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.TABLE to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.COUCH to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.BED to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.LAMP to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.PLANT to AnchorProceduralMeshConfig(wallMaterial, true),
+            MRUKLabel.OTHER to AnchorProceduralMeshConfig(wallMaterial, true),
+        )
+    )
+    Log.d(TAG, "AnchorProceduralMesh initialized for MRUK room visualization")
+
+    // Register scene event listener to handle room loading events
+    sceneEventListener = object : MRUKSceneEventListener {
+        override fun onRoomAdded(room: MRUKRoom) {
+            Log.d(TAG, "=== MRUK ROOM ADDED ===")
+            Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+            Log.d(TAG, "Room has ${room.anchors.size} anchors")
+            // Procedural meshes are automatically created by AnchorProceduralMesh
+        }
+
+        override fun onRoomUpdated(room: MRUKRoom) {
+            Log.d(TAG, "=== MRUK ROOM UPDATED ===")
+            Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+        }
+
+        override fun onRoomRemoved(room: MRUKRoom) {
+            Log.d(TAG, "=== MRUK ROOM REMOVED ===")
+            Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+        }
+    }
+    mrukFeature.addSceneEventListener(sceneEventListener!!)
+    Log.d(TAG, "MRUKSceneEventListener registered")
   }
 
   /**
