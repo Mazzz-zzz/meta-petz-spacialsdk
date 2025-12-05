@@ -737,6 +737,9 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun setupRoom() {
     Log.d(TAG, "=== SETUP ROOM (Outside) CALLED ===")
 
+    // Clear all bones when environment is reset
+    clearAllBones()
+
     // Clear any existing manual room walls
     if (roomColliderEntities.isNotEmpty()) {
       Log.d(TAG, "Clearing ${roomColliderEntities.size} existing room colliders")
@@ -746,6 +749,11 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Clear any existing room scan data (mutual exclusivity)
     clearRoomBoundsEdges()
+
+    // Destroy procMeshSpawner to remove furniture meshes from room scan
+    procMeshSpawner?.destroy()
+    procMeshSpawner = null
+    Log.d(TAG, "Destroyed procMeshSpawner to clear room scan meshes")
 
     // Get head position to center the room on the user
     val headEntity = getHeadEntity()
@@ -852,15 +860,18 @@ class ImmersiveActivity : AppSystemActivity() {
     )
     roomColliderEntities.add(physicsEntity)
 
-    // Visual mesh - semi-transparent green walls using custom shader
-    val visualEntity = Entity.create(Transform(Pose(position, wallRotation)))
-    val sceneMesh = createWallSceneMesh(wallSize)
-    val sceneObject = SceneObject(scene, sceneMesh, "wall_visual", visualEntity)
-    systemManager.findSystem<SceneObjectSystem>().addSceneObject(
-        visualEntity,
-        java.util.concurrent.CompletableFuture<SceneObject>().apply { complete(sceneObject) }
+    // Visual edges - use edge boxes like room scan (4 thin boxes forming outline)
+    // Physics collider above handles collision, these are just for aesthetics
+    val rotationRad = rotation * PI.toFloat() / 180f
+    val wallQuaternion = Quaternion(0f, sin(rotationRad / 2f), 0f, cos(rotationRad / 2f))
+    val wallPose = Pose(position, wallQuaternion)
+    val edgeEntities = createPlaneOutlineEdges(
+        centerPose = wallPose,
+        width = width,
+        height = height,
+        thickness = EDGE_THICKNESS
     )
-    roomColliderEntities.add(visualEntity)
+    roomColliderEntities.addAll(edgeEntities)
   }
 
   /**
@@ -871,6 +882,9 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun scanRoom() {
     Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
 
+    // Clear all bones when environment is reset
+    clearAllBones()
+
     // Clear any existing manual room data (mutual exclusivity)
     if (roomColliderEntities.isNotEmpty()) {
       Log.d(TAG, "Clearing ${roomColliderEntities.size} existing manual room colliders")
@@ -880,6 +894,26 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Clear any existing room scan data (in case re-scanning)
     clearRoomBoundsEdges()
+
+    // Recreate procMeshSpawner if it was destroyed (e.g., by setupRoom)
+    if (procMeshSpawner == null) {
+      Log.d(TAG, "Recreating procMeshSpawner for room scan")
+      procMeshSpawner = AnchorProceduralMesh(
+          mrukFeature,
+          mapOf(
+              MRUKLabel.TABLE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.COUCH to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.BED to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.LAMP to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.PLANT to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+          )
+      )
+    }
 
     Log.d(TAG, "Requesting scene capture to ensure fresh room data...")
 
@@ -1589,6 +1623,31 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun stopBonePickupCheck() {
     bonePickupJob?.cancel()
     bonePickupJob = null
+  }
+
+  /**
+   * Clear all bones (held and thrown) when environment is reset.
+   */
+  private fun clearAllBones() {
+    Log.d(TAG, "Clearing all bones - held: ${boneEntity != null}, thrown: ${thrownBones.size}")
+
+    // Stop bone sampling if active
+    boneSampleJob?.cancel()
+    boneSampleJob = null
+    boneHand = null
+    lastBonePos = null
+    lastBoneSampleNs = 0L
+
+    // Destroy held bone
+    boneEntity?.destroy()
+    boneEntity = null
+
+    // Destroy all thrown bones
+    thrownBones.forEach { it.destroy() }
+    thrownBones.clear()
+    thrownBoneTimes.clear()
+
+    Log.d(TAG, "All bones cleared")
   }
 
   // --- Room bounds edge geometry functions ---
