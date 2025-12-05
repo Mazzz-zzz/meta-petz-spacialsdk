@@ -399,9 +399,12 @@ class PointToMoveSystem(
         val rightHandDirection = (rightHandPose.q * Vector3(0f, 0f, 1f)).normalize()
 
         // ALWAYS raycast to update pointer position (every frame)
-        val hitPoint = tryDepthRaycast(rightHandPose.t, rightHandDirection)
-            ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
-            ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+        // DISABLED: MRUK raycasting hits invisible walls and blocks UI interaction
+        // Only use floor plane raycast for now
+        val hitPoint = tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+        // val hitPoint = tryDepthRaycast(rightHandPose.t, rightHandDirection)
+        //     ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
+        //     ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
 
         if (hitPoint != null) {
             // Update pointer position and make visible

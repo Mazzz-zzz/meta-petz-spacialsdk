@@ -33,7 +33,7 @@ import com.meta.spatial.uiset.theme.SpatialTheme
     heightDp = (PanelConstants.DEFAULT_DP_PER_METER * OPTIONS_PANEL_HEIGHT).toInt(),
 )
 fun OptionsPanelPreview() {
-    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {})
+    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {}, onScanRoom = {})
 }
 
 @Composable
@@ -42,6 +42,7 @@ fun OptionsPanel(
     onSelectDemoPet: ((PetData) -> Unit)? = null,
     onSpawnBone: (() -> Unit)? = null,
     onSetupRoom: (() -> Unit)? = null,
+    onScanRoom: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
@@ -91,6 +92,19 @@ fun OptionsPanel(
                     onClick = {
                         Log.d("OptionsPanel", "Setup Room button pressed")
                         onSetupRoom()
+                    }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Scan Room button (MRUK data retrieval)
+            if (onScanRoom != null) {
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Scan Room (MRUK)",
+                    onClick = {
+                        Log.d("OptionsPanel", "Scan Room button pressed")
+                        onScanRoom()
                     }
                 )
                 Spacer(modifier = Modifier.height(12.dp))

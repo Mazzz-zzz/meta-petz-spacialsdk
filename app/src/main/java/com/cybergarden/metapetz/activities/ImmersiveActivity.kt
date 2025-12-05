@@ -799,8 +799,124 @@ class ImmersiveActivity : AppSystemActivity() {
     roomColliderEntities.add(visualEntity)
   }
 
-  // TODO: MRUK-based wall creation - not used yet
-  // private fun createProceduralMeshColliders() { ... }
+  /**
+   * Scan room using MRUK and log all boundary data.
+   * This retrieves the actual scanned room from Meta's Space Setup.
+   */
+  private fun scanRoom() {
+    Log.d(TAG, "")
+    Log.d(TAG, "╔══════════════════════════════════════════════════════════════╗")
+    Log.d(TAG, "║                    MRUK ROOM SCAN                            ║")
+    Log.d(TAG, "╚══════════════════════════════════════════════════════════════╝")
+
+    // Check if MRUK is initialized
+    Log.d(TAG, "mrukFeature initialized: ${::mrukFeature.isInitialized}")
+    Log.d(TAG, "scenePermissionGranted: $scenePermissionGranted")
+
+    // Check current rooms
+    val currentRooms = mrukFeature.rooms
+    Log.d(TAG, "Current rooms count: ${currentRooms.size}")
+
+    if (currentRooms.isNotEmpty()) {
+      // Already have room data, log it
+      logMrukRoomData()
+    } else {
+      // Need to load scene first
+      Log.d(TAG, "No rooms loaded - calling loadSceneFromDevice()...")
+      try {
+        mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
+          Log.d(TAG, "loadSceneFromDevice result: $result")
+          if (error != null) {
+            Log.e(TAG, "loadSceneFromDevice error: ${error.message}", error)
+          }
+          if (result == MRUKLoadDeviceResult.SUCCESS) {
+            logMrukRoomData()
+          } else {
+            Log.e(TAG, "MRUK load failed: $result")
+            Log.d(TAG, "Launching Space Setup (Scene Capture)...")
+            // Prompt user to complete Space Setup
+            mrukFeature.requestSceneCapture().whenComplete { _, captureError ->
+              if (captureError != null) {
+                Log.e(TAG, "Scene capture error: ${captureError.message}")
+              } else {
+                Log.d(TAG, "Scene capture completed - reloading scene...")
+                // Stop any environment raycaster that might have been started
+                mrukFeature.stopEnvironmentRaycaster()
+                // After capture completes, try loading again
+                mrukFeature.loadSceneFromDevice().whenComplete { reloadResult, _ ->
+                  if (reloadResult == MRUKLoadDeviceResult.SUCCESS) {
+                    logMrukRoomData()
+                  } else {
+                    Log.e(TAG, "Still no rooms after capture: $reloadResult")
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e: Exception) {
+        Log.e(TAG, "Exception calling loadSceneFromDevice: ${e.message}", e)
+      }
+    }
+  }
+
+  /**
+   * Log all MRUK room and anchor data.
+   */
+  private fun logMrukRoomData() {
+    val rooms = mrukFeature.rooms
+    Log.d(TAG, "")
+    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+    Log.d(TAG, "MRUK DATA: ${rooms.size} room(s) found")
+    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+
+    rooms.forEachIndexed { roomIndex, room ->
+      Log.d(TAG, "")
+      Log.d(TAG, "┌─────────────────────────────────────────────────────────────┐")
+      Log.d(TAG, "│ ROOM $roomIndex                                              │")
+      Log.d(TAG, "├─────────────────────────────────────────────────────────────┤")
+      Log.d(TAG, "│ Room anchor UUID: ${room.anchor.uuid}")
+      Log.d(TAG, "│ Anchors count: ${room.anchors.size}")
+      Log.d(TAG, "└─────────────────────────────────────────────────────────────┘")
+
+      // Log each anchor
+      room.anchors.forEachIndexed { anchorIndex, anchorEntity ->
+        val mrukAnchor = anchorEntity.tryGetComponent<MRUKAnchor>()
+        val transform = anchorEntity.tryGetComponent<Transform>()?.transform
+
+        if (mrukAnchor != null) {
+          Log.d(TAG, "")
+          Log.d(TAG, "  ┌── ANCHOR $anchorIndex ──────────────────────────────────────")
+          Log.d(TAG, "  │ UUID: ${mrukAnchor.uuid}")
+
+          // Transform
+          if (transform != null) {
+            Log.d(TAG, "  │ Position: (${String.format("%.3f", transform.t.x)}, ${String.format("%.3f", transform.t.y)}, ${String.format("%.3f", transform.t.z)})")
+            Log.d(TAG, "  │ Rotation: (${String.format("%.3f", transform.q.x)}, ${String.format("%.3f", transform.q.y)}, ${String.format("%.3f", transform.q.z)}, ${String.format("%.3f", transform.q.w)})")
+          }
+
+          // Try to get all component types on this anchor to see what's available
+          Log.d(TAG, "  │ Components:")
+          Log.d(TAG, "  │   - Has MRUKAnchor: true")
+          Log.d(TAG, "  │   - Has Transform: ${anchorEntity.hasComponent<Transform>()}")
+          Log.d(TAG, "  │   - Has Box: ${anchorEntity.hasComponent<Box>()}")
+          Log.d(TAG, "  │   - Has Physics: ${anchorEntity.hasComponent<Physics>()}")
+
+          Log.d(TAG, "  └────────────────────────────────────────────────────────────")
+        } else {
+          Log.d(TAG, "  [ANCHOR $anchorIndex] No MRUKAnchor component")
+          if (transform != null) {
+            Log.d(TAG, "    Position: (${transform.t.x}, ${transform.t.y}, ${transform.t.z})")
+          }
+        }
+      }
+    }
+
+    Log.d(TAG, "")
+    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+    Log.d(TAG, "END MRUK DATA")
+    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+  }
 
   /**
    * Spawn a physics-enabled bone near the player.
@@ -929,6 +1045,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSelectDemoPet = ::selectDemoPet,
                       onSpawnBone = ::spawnBoneToy,
                       onSetupRoom = ::setupRoom,
+                      onScanRoom = ::scanRoom,
                       firebaseManager = firebaseManager
                   )
                 }
