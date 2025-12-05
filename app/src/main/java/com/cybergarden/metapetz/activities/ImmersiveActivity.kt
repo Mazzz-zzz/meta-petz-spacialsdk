@@ -153,6 +153,9 @@ class ImmersiveActivity : AppSystemActivity() {
   private lateinit var edgeBoxMaterial: SceneMaterial
   private lateinit var furnitureEdgeMaterial: SceneMaterial
 
+  // Physics colliders for room bounds (walls from room scan)
+  private val roomBoundsPhysicsEntities = mutableListOf<Entity>()
+
   // Labels that represent room bounds (walls, floor, ceiling)
   private val roomBoundsLabels = setOf(MRUKLabel.WALL_FACE, MRUKLabel.FLOOR, MRUKLabel.CEILING)
 
@@ -750,6 +753,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Create 5x5 meter room with 4 walls (no ceiling) centered on head
     createRoomWalls(roomCenterX, roomCenterZ)
+
+    // Set floor polygon for pet locomotion (keep pet inside the room)
+    petLocomotion.setFloorPolygonFromRect(roomCenterX, roomCenterZ, roomHalfSize, roomHalfSize)
   }
 
   /**
@@ -1571,7 +1577,13 @@ class ImmersiveActivity : AppSystemActivity() {
       entity.destroy()
     }
     roomEdgeEntities.clear()
-    Log.d(TAG, "Cleared all room bounds edge entities")
+
+    for (entity in roomBoundsPhysicsEntities) {
+      entity.destroy()
+    }
+    roomBoundsPhysicsEntities.clear()
+
+    Log.d(TAG, "Cleared all room bounds edge and physics entities")
   }
 
   /**
@@ -1624,6 +1636,87 @@ class ImmersiveActivity : AppSystemActivity() {
         thickness = EDGE_THICKNESS
     )
     roomEdgeEntities.addAll(edges)
+
+    // Create physics collider for wall faces only (not floor/ceiling)
+    val isWall = anchorLabels.any { it == MRUKLabel.WALL_FACE.name }
+    if (isWall) {
+      createWallPhysicsCollider(anchorPose, width, height)
+    }
+
+    // Extract floor polygon from FLOOR anchor
+    val isFloor = anchorLabels.any { it == MRUKLabel.FLOOR.name }
+    if (isFloor) {
+      extractFloorPolygon(anchorPose, planeComponent)
+    }
+  }
+
+  /**
+   * Extract the floor polygon from the FLOOR anchor's plane bounds.
+   * Creates a polygon from the plane's min/max corners transformed to world space.
+   */
+  private fun extractFloorPolygon(anchorPose: Pose, planeComponent: MRUKPlane) {
+    // Get the floor plane's local corners from min/max
+    val minX = planeComponent.min.x
+    val maxX = planeComponent.max.x
+    val minY = planeComponent.min.y
+    val maxY = planeComponent.max.y
+
+    // Floor plane local coordinates: X = width, Y = depth (since floor is horizontal)
+    // Create 4 corners in local space (Z = 0 for the plane surface)
+    val localCorners = listOf(
+        Vector3(minX, minY, 0f),  // bottom-left
+        Vector3(maxX, minY, 0f),  // bottom-right
+        Vector3(maxX, maxY, 0f),  // top-right
+        Vector3(minX, maxY, 0f)   // top-left
+    )
+
+    // Transform corners to world space
+    val worldCorners = localCorners.map { local ->
+      val rotated = anchorPose.q.times(local)
+      Vector3(
+          anchorPose.t.x + rotated.x,
+          anchorPose.t.y + rotated.y,
+          anchorPose.t.z + rotated.z
+      )
+    }
+
+    // Create floor polygon from world X/Z coordinates
+    val vertices = worldCorners.map { corner ->
+      PetLocomotion.Point2D(corner.x, corner.z)
+    }
+
+    val floorPolygon = PetLocomotion.FloorPolygon(vertices)
+    petLocomotion.setFloorPolygon(floorPolygon)
+
+    Log.d(TAG, "Floor polygon set from FLOOR anchor with ${vertices.size} vertices")
+    vertices.forEachIndexed { i, v ->
+      Log.d(TAG, "  Vertex $i: (${v.x}, ${v.z})")
+    }
+  }
+
+  /**
+   * Creates a physics collider for a wall anchor from room scan.
+   * The collider matches the wall's full dimensions.
+   */
+  private fun createWallPhysicsCollider(pose: Pose, width: Float, height: Float) {
+    val wallThickness = 0.1f
+    val wallSize = Vector3(width, height, wallThickness)
+
+    Log.d(TAG, "Creating wall physics collider: size=$wallSize at ${pose.t}")
+
+    val physicsEntity = Entity.create(
+        listOf(
+            Box(wallSize),
+            Transform(pose),
+            Physics().apply {
+              state = PhysicsState.KINEMATIC
+              shape = "box"
+              dimensions = wallSize
+              restitution = 0.8f
+            }
+        )
+    )
+    roomBoundsPhysicsEntities.add(physicsEntity)
   }
 
   /**

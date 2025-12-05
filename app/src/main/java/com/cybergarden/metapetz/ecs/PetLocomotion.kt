@@ -64,9 +64,128 @@ class PetLocomotion(
         const val ANIM_WALKLOOP = 3   // "walkloop" (preferred for locomotion)
     }
 
+    /**
+     * 2D point for floor polygon vertices (X, Z coordinates).
+     */
+    data class Point2D(val x: Float, val z: Float)
+
+    /**
+     * Floor bounds as a 2D polygon for constraining pet movement.
+     * Supports irregular room shapes (L-shaped, T-shaped, etc.)
+     * Vertices should be in order (clockwise or counter-clockwise).
+     */
+    class FloorPolygon(val vertices: List<Point2D>) {
+
+        /**
+         * Check if a point is inside the polygon using ray casting algorithm.
+         */
+        fun contains(x: Float, z: Float): Boolean {
+            if (vertices.size < 3) return false
+
+            var inside = false
+            var j = vertices.size - 1
+
+            for (i in vertices.indices) {
+                val vi = vertices[i]
+                val vj = vertices[j]
+
+                // Ray casting: count edge crossings
+                if ((vi.z > z) != (vj.z > z) &&
+                    x < (vj.x - vi.x) * (z - vi.z) / (vj.z - vi.z) + vi.x) {
+                    inside = !inside
+                }
+                j = i
+            }
+            return inside
+        }
+
+        /**
+         * Clamp a position to stay inside the polygon.
+         * If inside, returns the position unchanged.
+         * If outside, returns the nearest point on the polygon edge.
+         */
+        fun clamp(position: Vector3): Vector3 {
+            if (contains(position.x, position.z)) {
+                return position
+            }
+
+            // Find nearest point on polygon edge
+            val nearest = nearestPointOnEdge(position.x, position.z)
+            return Vector3(nearest.x, position.y, nearest.z)
+        }
+
+        /**
+         * Find the nearest point on the polygon edge to the given point.
+         */
+        private fun nearestPointOnEdge(x: Float, z: Float): Point2D {
+            if (vertices.size < 2) return Point2D(x, z)
+
+            var nearestPoint = vertices[0]
+            var nearestDistSq = Float.MAX_VALUE
+
+            for (i in vertices.indices) {
+                val v1 = vertices[i]
+                val v2 = vertices[(i + 1) % vertices.size]
+
+                // Find nearest point on this edge segment
+                val edgePoint = nearestPointOnSegment(x, z, v1, v2)
+                val dx = edgePoint.x - x
+                val dz = edgePoint.z - z
+                val distSq = dx * dx + dz * dz
+
+                if (distSq < nearestDistSq) {
+                    nearestDistSq = distSq
+                    nearestPoint = edgePoint
+                }
+            }
+
+            return nearestPoint
+        }
+
+        /**
+         * Find the nearest point on a line segment to a given point.
+         */
+        private fun nearestPointOnSegment(px: Float, pz: Float, v1: Point2D, v2: Point2D): Point2D {
+            val dx = v2.x - v1.x
+            val dz = v2.z - v1.z
+            val lengthSq = dx * dx + dz * dz
+
+            if (lengthSq < 0.0001f) {
+                // Segment is essentially a point
+                return v1
+            }
+
+            // Project point onto line, clamped to segment
+            val t = ((px - v1.x) * dx + (pz - v1.z) * dz) / lengthSq
+            val tClamped = t.coerceIn(0f, 1f)
+
+            return Point2D(
+                v1.x + tClamped * dx,
+                v1.z + tClamped * dz
+            )
+        }
+
+        companion object {
+            /**
+             * Create a rectangular floor polygon from center and half-sizes.
+             */
+            fun fromRect(centerX: Float, centerZ: Float, halfSizeX: Float, halfSizeZ: Float): FloorPolygon {
+                return FloorPolygon(listOf(
+                    Point2D(centerX - halfSizeX, centerZ - halfSizeZ), // bottom-left
+                    Point2D(centerX + halfSizeX, centerZ - halfSizeZ), // bottom-right
+                    Point2D(centerX + halfSizeX, centerZ + halfSizeZ), // top-right
+                    Point2D(centerX - halfSizeX, centerZ + halfSizeZ)  // top-left
+                ))
+            }
+        }
+    }
+
     // Current pet entity to move
     private var petEntity: Entity? = null
     private var panelEntity: Entity? = null
+
+    // Floor polygon for constraining movement
+    private var floorPolygon: FloorPolygon? = null
 
     // Walking state
     private var walkJob: Job? = null
@@ -145,6 +264,12 @@ class PetLocomotion(
             return
         }
 
+        // Clamp target to floor polygon if set
+        val clampedTarget = floorPolygon?.clamp(target) ?: target
+        if (clampedTarget != target) {
+            Log.d(TAG, "Target clamped to floor polygon: $target -> $clampedTarget")
+        }
+
         // Cancel any existing walk
         walkJob?.cancel()
 
@@ -161,9 +286,9 @@ class PetLocomotion(
                 val transform = pet.getComponent<Transform>()
                 val startPos = transform.transform.t
 
-                // Calculate distance and duration
-                val dx = target.x - startPos.x
-                val dz = target.z - startPos.z
+                // Calculate distance and duration (using clamped target)
+                val dx = clampedTarget.x - startPos.x
+                val dz = clampedTarget.z - startPos.z
                 val distance = sqrt(dx * dx + dz * dz)
 
                 // Skip if already at target
@@ -178,7 +303,7 @@ class PetLocomotion(
                 // Direction vector to target for lookRotationAroundY
                 val direction = Vector3(dx, 0f, dz)
 
-                Log.d(TAG, "Walking from $startPos to $target, distance: $distance, duration: ${duration}ms")
+                Log.d(TAG, "Walking from $startPos to $clampedTarget, distance: $distance, duration: ${duration}ms")
 
                 val startTime = System.currentTimeMillis()
                 var prevTime = startTime
@@ -313,6 +438,36 @@ class PetLocomotion(
         this.wanderRadius = radius
         Log.d(TAG, "Wander area set: center=($centerX, $centerZ), radius=$radius")
     }
+
+    /**
+     * Set the floor polygon for constraining pet movement.
+     * All movement targets will be clamped to stay within this polygon.
+     * @param polygon The floor polygon or null to disable bounds
+     */
+    fun setFloorPolygon(polygon: FloorPolygon?) {
+        this.floorPolygon = polygon
+        if (polygon != null) {
+            Log.d(TAG, "Floor polygon set with ${polygon.vertices.size} vertices")
+        } else {
+            Log.d(TAG, "Floor polygon cleared")
+        }
+    }
+
+    /**
+     * Convenience method to set a rectangular floor polygon from center and half-size.
+     * @param centerX Center X coordinate
+     * @param centerZ Center Z coordinate
+     * @param halfSizeX Half-width in X direction
+     * @param halfSizeZ Half-width in Z direction
+     */
+    fun setFloorPolygonFromRect(centerX: Float, centerZ: Float, halfSizeX: Float, halfSizeZ: Float) {
+        setFloorPolygon(FloorPolygon.fromRect(centerX, centerZ, halfSizeX, halfSizeZ))
+    }
+
+    /**
+     * Get current floor polygon (for external use, e.g., debugging)
+     */
+    fun getFloorPolygon(): FloorPolygon? = floorPolygon
 
     /**
      * Start idle wander mode - pet will randomly pick points and walk to them
