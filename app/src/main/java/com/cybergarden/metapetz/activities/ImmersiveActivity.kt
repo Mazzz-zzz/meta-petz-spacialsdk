@@ -126,6 +126,13 @@ class ImmersiveActivity : AppSystemActivity() {
   private var lastBonePos: Vector3? = null
   private var lastBoneSampleNs: Long = 0L
 
+  // Track thrown bones for pickup
+  private val thrownBones = mutableListOf<Entity>()
+  private val thrownBoneTimes = mutableMapOf<Long, Long>() // Entity ID -> throw timestamp
+  private var bonePickupJob: Job? = null
+  private val BONE_PICKUP_DISTANCE = 0.15f // Distance in meters to trigger pickup
+  private val BONE_PICKUP_COOLDOWN_MS = 800L // Cooldown before bone can be picked up after throw
+
   // Room boundary colliders
   private val roomColliderEntities = mutableListOf<Entity>()
 
@@ -183,12 +190,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Pet model file paths in assets
   private val petModels = mapOf(
-      "Cat" to "apk:///models/cat.glb",
       "Dog" to "apk:///models/metadog.glb",
-      "Bunny" to "apk:///models/bunny.glb",
-      "Bird" to "apk:///models/bird.glb",
-      "Fish" to "apk:///models/fish.glb",
-      "Hamster" to "apk:///models/hamster.glb",
   )
 
   override fun registerFeatures(): List<SpatialFeature> {
@@ -348,6 +350,9 @@ class ImmersiveActivity : AppSystemActivity() {
     initWallMeshCreator()
 
     // Walls are now created on-demand via "Setup Room" button
+
+    // Start bone pickup proximity checking
+    startBonePickupCheck()
 
     // Grabbable handler: keeps physics while held and restores on release
     val inputSystem = systemManager.tryFindSystem<IsdkInputListenerSystem>()
@@ -1070,6 +1075,11 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
+    // Clean up bone pickup system
+    stopBonePickupCheck()
+    thrownBones.forEach { it.destroy() }
+    thrownBones.clear()
+    thrownBoneTimes.clear()
     // Clean up any room boundary colliders
     roomColliderEntities.forEach { it.destroy() }
     roomColliderEntities.clear()
@@ -1287,8 +1297,10 @@ class ImmersiveActivity : AppSystemActivity() {
               }
           )
       )
-      // Don't track this as boneEntity - it's a free-flying bone
-      Log.d(TAG, "Spawned thrown bone at pos=$position vel=$velocity id=${entity.id}")
+      // Track thrown bone for pickup with timestamp
+      thrownBones.add(entity)
+      thrownBoneTimes[entity.id] = System.currentTimeMillis()
+      Log.d(TAG, "Spawned thrown bone at pos=$position vel=$velocity id=${entity.id}, tracked=${thrownBones.size} bones")
     } catch (e: Exception) {
       Log.e(TAG, "Failed to spawn thrown bone: ${e.message}", e)
     }
@@ -1300,6 +1312,150 @@ class ImmersiveActivity : AppSystemActivity() {
     boneHand = null
     lastBonePos = null
     lastBoneSampleNs = 0L
+  }
+
+  /**
+   * Start continuous proximity checking for bone pickup.
+   * Checks both hands against all thrown bones.
+   */
+  private fun startBonePickupCheck() {
+    bonePickupJob?.cancel()
+    bonePickupJob = activityScope.launch {
+      while (isActive) {
+        try {
+          // Skip if player is already holding a bone
+          if (boneEntity != null) {
+            delay(100)
+            continue
+          }
+
+          // Get hand positions
+          val rightHand = getRightHandEntity()
+          val leftHand = getLeftHandEntity()
+          val rightHandPos = rightHand?.tryGetComponent<Transform>()?.transform?.t
+          val leftHandPos = leftHand?.tryGetComponent<Transform>()?.transform?.t
+
+          // Check each thrown bone for proximity
+          val bonesToRemove = mutableListOf<Entity>()
+          val currentTime = System.currentTimeMillis()
+          for (bone in thrownBones) {
+            try {
+              // Check cooldown - skip if bone was thrown too recently
+              val throwTime = thrownBoneTimes[bone.id] ?: 0L
+              if (currentTime - throwTime < BONE_PICKUP_COOLDOWN_MS) {
+                continue // Still in cooldown
+              }
+
+              val boneTransform = bone.tryGetComponent<Transform>()?.transform
+              if (boneTransform == null) {
+                // Bone entity may have been destroyed
+                bonesToRemove.add(bone)
+                continue
+              }
+              val bonePos = boneTransform.t
+
+              // Check distance to right hand
+              if (rightHandPos != null) {
+                val distRight = vectorLength(vectorDiff(bonePos, rightHandPos))
+                if (distRight < BONE_PICKUP_DISTANCE) {
+                  Log.d(TAG, "Bone pickup triggered - right hand dist=$distRight")
+                  pickupBone(bone, rightHand)
+                  bonesToRemove.add(bone)
+                  break // Only pick up one bone at a time
+                }
+              }
+
+              // Check distance to left hand
+              if (leftHandPos != null) {
+                val distLeft = vectorLength(vectorDiff(bonePos, leftHandPos))
+                if (distLeft < BONE_PICKUP_DISTANCE) {
+                  Log.d(TAG, "Bone pickup triggered - left hand dist=$distLeft")
+                  pickupBone(bone, leftHand)
+                  bonesToRemove.add(bone)
+                  break // Only pick up one bone at a time
+                }
+              }
+            } catch (e: Exception) {
+              // Bone may have been destroyed, mark for removal
+              bonesToRemove.add(bone)
+            }
+          }
+
+          // Clean up any removed bones from tracking
+          bonesToRemove.forEach { thrownBoneTimes.remove(it.id) }
+          thrownBones.removeAll(bonesToRemove)
+
+          delay(50) // Check ~20 times per second
+        } catch (e: Exception) {
+          Log.e(TAG, "Bone pickup check error: ${e.message}")
+          delay(100)
+        }
+      }
+    }
+    Log.d(TAG, "Bone pickup check started")
+  }
+
+  /**
+   * Pick up a thrown bone - destroy it and create a new one attached to the hand.
+   */
+  private fun pickupBone(thrownBone: Entity, hand: Entity?) {
+    if (hand == null || hand == Entity.nullEntity()) {
+      Log.w(TAG, "Cannot pickup bone - no hand entity")
+      return
+    }
+
+    try {
+      // Get the bone's current position for sound
+      val bonePos = thrownBone.tryGetComponent<Transform>()?.transform?.t
+
+      // Destroy the thrown bone
+      thrownBone.destroy()
+      Log.d(TAG, "Destroyed thrown bone for pickup")
+
+      // Create a new bone attached to the hand
+      val localOffset = Vector3(0f, 0f, 0.08f)
+      val pose = Pose(localOffset, Quaternion())
+
+      val newBone = Entity.create(
+          listOf(
+              Mesh("apk:///models/bonew.glb".toUri(), hittable = MeshCollision.LineTest),
+              Transform(pose),
+              Scale(Vector3(0.2f, 0.2f, 0.2f)),
+              Visible(true),
+              Hittable(MeshCollision.LineTest),
+              Box(Vector3(0.2f, 0.06f, 0.35f)),
+              IsdkGrabbable(),
+              Physics().apply {
+                state = PhysicsState.KINEMATIC // Attached to hand
+                shape = "box"
+                dimensions = Vector3(0.2f, 0.06f, 0.35f)
+                restitution = 0.2f
+              }
+          )
+      )
+
+      // Track as the held bone and attach to hand
+      boneEntity = newBone
+      attachToHand(newBone, hand)
+      startBoneSampling(newBone, hand)
+
+      // Play pickup sound
+      if (bonePos != null) {
+        boneSoundPlayer.play(bonePos, 0.8f, false)
+      }
+
+      Log.d(TAG, "Picked up bone and attached to hand=${hand.id}")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to pickup bone: ${e.message}", e)
+    }
+  }
+
+  /**
+   * Stop bone pickup checking.
+   */
+  private fun stopBonePickupCheck() {
+    bonePickupJob?.cancel()
+    bonePickupJob = null
   }
 
 }
