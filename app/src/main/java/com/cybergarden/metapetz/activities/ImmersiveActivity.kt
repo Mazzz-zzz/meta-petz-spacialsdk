@@ -735,14 +735,17 @@ class ImmersiveActivity : AppSystemActivity() {
   private val roomWallThickness = 0.1f
 
   private fun setupRoom() {
-    Log.d(TAG, "=== SETUP ROOM CALLED ===")
+    Log.d(TAG, "=== SETUP ROOM (Outside) CALLED ===")
 
-    // Clear any existing walls
+    // Clear any existing manual room walls
     if (roomColliderEntities.isNotEmpty()) {
       Log.d(TAG, "Clearing ${roomColliderEntities.size} existing room colliders")
       roomColliderEntities.forEach { it.destroy() }
       roomColliderEntities.clear()
     }
+
+    // Clear any existing room scan data (mutual exclusivity)
+    clearRoomBoundsEdges()
 
     // Get head position to center the room on the user
     val headEntity = getHeadEntity()
@@ -867,6 +870,17 @@ class ImmersiveActivity : AppSystemActivity() {
    */
   private fun scanRoom() {
     Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
+
+    // Clear any existing manual room data (mutual exclusivity)
+    if (roomColliderEntities.isNotEmpty()) {
+      Log.d(TAG, "Clearing ${roomColliderEntities.size} existing manual room colliders")
+      roomColliderEntities.forEach { it.destroy() }
+      roomColliderEntities.clear()
+    }
+
+    // Clear any existing room scan data (in case re-scanning)
+    clearRoomBoundsEdges()
+
     Log.d(TAG, "Requesting scene capture to ensure fresh room data...")
 
     // Always request scene capture first to ensure up-to-date room data
