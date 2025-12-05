@@ -115,3 +115,6 @@ Thumbs.db
 # tasks/ 
 
 examples/
+
+# Claude Code reference files
+.claude/

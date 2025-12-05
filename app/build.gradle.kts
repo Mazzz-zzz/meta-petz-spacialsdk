@@ -32,7 +32,7 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     // Update the ndkVersion to the right version for your app
-    // ndkVersion = "27.0.12077973"
+    ndkVersion = "29.0.14206865"
 
     // API Keys from local.properties
     buildConfigField("String", "REPLICATE_API_TOKEN", "\"${localProperties.getProperty("REPLICATE_API_TOKEN", "")}\"")
@@ -142,8 +142,8 @@ spatial {
       assetsDir.set(File("src/main/assets"))
     }
   }
-  // Custom shaders require NDK - uncomment ndkVersion in android block and install NDK to enable
-  // shaders {
-  //   sources.set(listOf(projectDir.dir("src/shaders")))
-  // }
+  // Custom shaders require NDK
+  shaders {
+    sources.set(listOf(projectDir.dir("src/shaders")))
+  }
 }

@@ -42,7 +42,13 @@ import com.meta.spatial.physics.PhysicsState
 import com.meta.spatial.runtime.NetworkedAssetLoader
 import com.meta.spatial.runtime.SceneAudioAsset
 import com.meta.spatial.runtime.SceneAudioPlayer
+import com.meta.spatial.runtime.SceneMaterial
+import com.meta.spatial.runtime.SceneMaterialAttribute
+import com.meta.spatial.runtime.SceneMaterialDataType
+import com.meta.spatial.runtime.BlendMode
+import com.meta.spatial.runtime.SceneMesh
 import com.meta.spatial.runtime.SceneObject
+import com.meta.spatial.runtime.SceneTexture
 import com.meta.spatial.runtime.HitInfo
 import com.meta.spatial.runtime.InputListener
 import com.meta.spatial.toolkit.AppSystemActivity
@@ -122,6 +128,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Room boundary colliders
   private val roomColliderEntities = mutableListOf<Entity>()
+
+  // Custom wall material for transparent green walls
+  private lateinit var wallMaterial: SceneMaterial
 
   // AnchorProceduralMesh for automatic physics colliders on walls/floor/ceiling
   // This is the proper Meta SDK way to create room boundary colliders
@@ -336,6 +345,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Add a simple physics floor to catch dynamic objects (like the bone)
     createPhysicsFloor()
+
+    // Initialize custom wall material and mesh creator
+    initWallMeshCreator()
 
     // Walls are now created on-demand via "Setup Room" button
 
@@ -784,17 +796,13 @@ class ImmersiveActivity : AppSystemActivity() {
     )
     roomColliderEntities.add(physicsEntity)
 
-    // Visual mesh (semi-transparent green)
-    val visualEntity = Entity.create(
-        listOf(
-            Mesh(android.net.Uri.parse("mesh://box")),
-            Box(wallSize),
-            Transform(Pose(position, wallRotation)),
-            Material().apply {
-              baseColor = Color4(0f, 1f, 0f, 0.3f)  // Semi-transparent green
-              unlit = true
-            }
-        )
+    // Visual mesh - semi-transparent green walls using custom shader
+    val visualEntity = Entity.create(Transform(Pose(position, wallRotation)))
+    val sceneMesh = createWallSceneMesh(wallSize)
+    val sceneObject = SceneObject(scene, sceneMesh, "wall_visual", visualEntity)
+    systemManager.findSystem<SceneObjectSystem>().addSceneObject(
+        visualEntity,
+        java.util.concurrent.CompletableFuture<SceneObject>().apply { complete(sceneObject) }
     )
     roomColliderEntities.add(visualEntity)
   }
@@ -1097,6 +1105,33 @@ class ImmersiveActivity : AppSystemActivity() {
             }
         )
     )
+  }
+
+  /**
+   * Initialize custom wall material for transparent green walls.
+   */
+  private fun initWallMeshCreator() {
+    // Create custom material with solidColor shader (using Vector4 attribute)
+    wallMaterial = SceneMaterial.custom(
+        "solidColor",
+        arrayOf(
+            SceneMaterialAttribute("customColor", SceneMaterialDataType.Vector4)
+        )
+    ).apply {
+        setBlendMode(BlendMode.TRANSLUCENT)
+        setAttribute("customColor", Vector4(0f, 1f, 0f, 0.3f)) // RGBA: green with 30% alpha
+    }
+    Log.d(TAG, "Wall material initialized with custom solidColor shader")
+  }
+
+  /**
+   * Create a SceneMesh box with custom material for visual walls.
+   */
+  private fun createWallSceneMesh(wallSize: Vector3): SceneMesh {
+    val halfX = wallSize.x / 2f
+    val halfY = wallSize.y / 2f
+    val halfZ = wallSize.z / 2f
+    return SceneMesh.box(Vector3(-halfX, -halfY, -halfZ), Vector3(halfX, halfY, halfZ), wallMaterial)
   }
 
   /**
