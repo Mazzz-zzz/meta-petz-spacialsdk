@@ -597,6 +597,16 @@ class ImmersiveActivity : AppSystemActivity() {
           // Update locomotion system with new pet entity
           petLocomotion.setPetEntity(currentPetEntity, panel)
 
+          // Set wander area based on current head position
+          val headEntity = getHeadEntity()
+          val headTransform = headEntity?.tryGetComponent<Transform>()?.transform
+          val wanderCenterX = headTransform?.t?.x ?: 0f
+          val wanderCenterZ = headTransform?.t?.z ?: 0f
+          petLocomotion.setWanderArea(wanderCenterX, wanderCenterZ, 2.0f)
+
+          // Start idle wander mode
+          petLocomotion.startIdleWander()
+
           // Start spinning animation
           startSpinning()
         } catch (e: Exception) {
@@ -1001,6 +1011,7 @@ class ImmersiveActivity : AppSystemActivity() {
                         onClose = {
                           currentPet = null
                           currentPetData = null
+                          petLocomotion.stopIdleWander() // Stop idle wander
                           petLocomotion.setPetEntity(null, null) // Clear locomotion
                           currentPetEntity?.destroy()
                           currentPetEntity = null

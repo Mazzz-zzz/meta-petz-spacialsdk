@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.sqrt
+import kotlin.random.Random
 
 /**
  * PetLocomotion - Handles point-to-move functionality for pets
@@ -70,6 +71,13 @@ class PetLocomotion(
     // Walking state
     private var walkJob: Job? = null
     private var isWalking = false
+
+    // Idle wander state
+    private var idleWanderJob: Job? = null
+    private var isIdleWandering = false
+    private var wanderCenterX = 0f
+    private var wanderCenterZ = 0f
+    private var wanderRadius = 2.0f  // Default wander radius in meters
 
     // Target marker
     private var targetMarkerEntity: Entity? = null
@@ -283,6 +291,7 @@ class PetLocomotion(
      * Cleanup resources
      */
     fun cleanup() {
+        stopIdleWander()
         stopWalking()
         targetMarkerEntity?.destroy()
         targetMarkerEntity = null
@@ -290,6 +299,112 @@ class PetLocomotion(
         pointingSystem = null
         petEntity = null
         panelEntity = null
+    }
+
+    /**
+     * Set the wander area for idle mode
+     * @param centerX X coordinate of wander area center
+     * @param centerZ Z coordinate of wander area center
+     * @param radius Maximum distance from center the pet can wander
+     */
+    fun setWanderArea(centerX: Float, centerZ: Float, radius: Float) {
+        this.wanderCenterX = centerX
+        this.wanderCenterZ = centerZ
+        this.wanderRadius = radius
+        Log.d(TAG, "Wander area set: center=($centerX, $centerZ), radius=$radius")
+    }
+
+    /**
+     * Start idle wander mode - pet will randomly pick points and walk to them
+     * The pet will wait a random time between walks (2-6 seconds)
+     */
+    fun startIdleWander() {
+        if (petEntity == null) {
+            Log.w(TAG, "Cannot start idle wander - no pet entity set")
+            return
+        }
+
+        if (isIdleWandering) {
+            Log.d(TAG, "Idle wander already running")
+            return
+        }
+
+        Log.d(TAG, "Starting idle wander mode")
+        isIdleWandering = true
+
+        idleWanderJob = scope.launch {
+            while (isActive && isIdleWandering) {
+                // Wait random time before next wander (2-6 seconds)
+                val waitTime = Random.nextLong(2000, 6000)
+                Log.d(TAG, "Idle wander: waiting ${waitTime}ms before next move")
+                delay(waitTime)
+
+                // Skip if no longer wandering or walking
+                if (!isIdleWandering) break
+                if (isWalking) {
+                    Log.d(TAG, "Idle wander: pet is walking, waiting...")
+                    continue
+                }
+
+                // Pick a random point within the wander area
+                val randomAngle = Random.nextFloat() * 2f * Math.PI.toFloat()
+                val randomDistance = Random.nextFloat() * wanderRadius
+                val targetX = wanderCenterX + randomDistance * kotlin.math.cos(randomAngle)
+                val targetZ = wanderCenterZ + randomDistance * kotlin.math.sin(randomAngle)
+                val targetY = floorY
+
+                val target = Vector3(targetX, targetY, targetZ)
+                Log.d(TAG, "Idle wander: moving to random point $target")
+
+                // Move to the random point
+                moveTo(target)
+
+                // Wait for walk to complete
+                while (isWalking && isActive && isIdleWandering) {
+                    delay(100)
+                }
+            }
+
+            Log.d(TAG, "Idle wander loop ended")
+        }
+    }
+
+    /**
+     * Stop idle wander mode
+     */
+    fun stopIdleWander() {
+        if (isIdleWandering) {
+            Log.d(TAG, "Stopping idle wander mode")
+        }
+        isIdleWandering = false
+        idleWanderJob?.cancel()
+        idleWanderJob = null
+    }
+
+    /**
+     * Check if idle wander is active
+     */
+    fun isIdleWanderActive(): Boolean = isIdleWandering
+
+    /**
+     * Temporarily pause idle wander (e.g., when user interacts with pet)
+     * Call resumeIdleWander() to continue
+     */
+    fun pauseIdleWander() {
+        if (isIdleWandering) {
+            Log.d(TAG, "Pausing idle wander")
+            stopIdleWander()
+        }
+    }
+
+    /**
+     * Resume idle wander after pause
+     */
+    fun resumeIdleWander() {
+        if (!isIdleWandering && petEntity != null) {
+            Log.d(TAG, "Resuming idle wander")
+            startIdleWander()
+        }
     }
 
     /**
