@@ -75,6 +75,8 @@ import com.meta.spatial.mruk.MRUKLabel
 import com.meta.spatial.mruk.MRUKSceneEventListener
 import com.meta.spatial.mruk.AnchorProceduralMesh
 import com.meta.spatial.mruk.AnchorProceduralMeshConfig
+import com.meta.spatial.mruk.MRUKPlane
+import java.util.concurrent.CompletableFuture
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
@@ -139,6 +141,14 @@ class ImmersiveActivity : AppSystemActivity() {
   // MRUK scene event listener
   private var sceneEventListener: MRUKSceneEventListener? = null
 
+  // Edge geometry for room bounds (walls, floors, ceiling)
+  private val roomEdgeEntities = mutableListOf<Entity>()
+  private lateinit var edgeBoxMaterial: SceneMaterial
+  private lateinit var furnitureEdgeMaterial: SceneMaterial
+
+  // Labels that represent room bounds (walls, floor, ceiling)
+  private val roomBoundsLabels = setOf(MRUKLabel.WALL_FACE, MRUKLabel.FLOOR, MRUKLabel.CEILING)
+
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
     SceneAudioAsset.loadLocalFile("audio/bone_hit.wav")
@@ -183,6 +193,7 @@ class ImmersiveActivity : AppSystemActivity() {
     private const val TAG = "ImmersiveActivity"
     private const val SCENE_PERMISSION = "com.oculus.permission.USE_SCENE"
     private const val SCENE_PERMISSION_REQUEST = 1002
+    const val EDGE_THICKNESS = 0.02f // 2cm edge thickness for room bounds
   }
 
   // MRUK Feature for scene-aware raycasting
@@ -1089,9 +1100,13 @@ class ImmersiveActivity : AppSystemActivity() {
     // Remove MRUK scene event listener
     sceneEventListener?.let { mrukFeature.removeSceneEventListener(it) }
     sceneEventListener = null
+    // Clean up room bounds edge entities
+    clearRoomBoundsEdges()
     // Clean up any room boundary colliders
     roomColliderEntities.forEach { it.destroy() }
     roomColliderEntities.clear()
+    // Destroy procedural mesh spawner
+    procMeshSpawner?.destroy()
     super.onSpatialShutdown()
   }
 
@@ -1128,41 +1143,62 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Initialize custom wall material for transparent green walls and MRUK procedural mesh spawner.
+   * Uses a hybrid approach:
+   * - Room bounds (walls, floor, ceiling) use geometry-based edge boxes
+   * - Furniture uses UV-based edge shader
    */
   private fun initWallMeshCreator() {
-    // Create custom material with solidColor shader (using Vector4 attribute)
-    wallMaterial = SceneMaterial.custom(
+    // Create simple translucent green material for edge box geometry (room bounds)
+    // Uses solidColor shader - simple unlit color with alpha blending
+    edgeBoxMaterial = SceneMaterial.custom(
         "solidColor",
         arrayOf(
             SceneMaterialAttribute("customColor", SceneMaterialDataType.Vector4)
         )
     ).apply {
         setBlendMode(BlendMode.TRANSLUCENT)
-        setAttribute("customColor", Vector4(0f, 1f, 0f, 0.3f)) // RGBA: green with 30% alpha
+        setAttribute("customColor", Vector4(0f, 1f, 0f, 0.35f)) // green with 35% alpha
     }
-    Log.d(TAG, "Wall material initialized with custom solidColor shader")
+    Log.d(TAG, "Edge box material initialized (solidColor shader)")
 
-    // Create AnchorProceduralMesh to automatically render room anchors
-    // This follows the MixedRealitySample pattern for proper room mesh alignment
+    // Create edge-only shader material for furniture (box-like objects)
+    furnitureEdgeMaterial = SceneMaterial.custom(
+        "edgeOnly",
+        arrayOf(
+            SceneMaterialAttribute("customColor", SceneMaterialDataType.Vector4),
+            SceneMaterialAttribute("edgeParams", SceneMaterialDataType.Vector4)
+        )
+    ).apply {
+        setBlendMode(BlendMode.TRANSLUCENT)
+        setAttribute("customColor", Vector4(0f, 1f, 0f, 0.3f)) // green with 30% alpha
+        setAttribute("edgeParams", Vector4(EDGE_THICKNESS, 0f, 0f, 0f)) // thickness = 2cm
+    }
+    Log.d(TAG, "Furniture edge material initialized (edgeOnly shader)")
+
+    // Keep wallMaterial for backwards compatibility with manual wall creation
+    wallMaterial = edgeBoxMaterial
+
+    // Create AnchorProceduralMesh for FURNITURE ONLY - NOT room bounds
+    // Room bounds (FLOOR, WALL_FACE, CEILING) will use geometry-based edges via onAnchorAdded
     procMeshSpawner = AnchorProceduralMesh(
         mrukFeature,
         mapOf(
-            MRUKLabel.FLOOR to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.WALL_FACE to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.CEILING to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.TABLE to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.COUCH to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.BED to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.LAMP to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.PLANT to AnchorProceduralMeshConfig(wallMaterial, true),
-            MRUKLabel.OTHER to AnchorProceduralMeshConfig(wallMaterial, true),
+            // Furniture uses edge shader (works well for box-like objects with good UVs)
+            MRUKLabel.TABLE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.COUCH to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.BED to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.LAMP to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.PLANT to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            // Note: FLOOR, WALL_FACE, CEILING are NOT included here
+            // They will be handled by onAnchorAdded with geometry boxes
         )
     )
-    Log.d(TAG, "AnchorProceduralMesh initialized for MRUK room visualization")
+    Log.d(TAG, "AnchorProceduralMesh initialized for furniture with edge shader")
 
     // Register scene event listener to handle room loading events
     sceneEventListener = object : MRUKSceneEventListener {
@@ -1170,7 +1206,7 @@ class ImmersiveActivity : AppSystemActivity() {
             Log.d(TAG, "=== MRUK ROOM ADDED ===")
             Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
             Log.d(TAG, "Room has ${room.anchors.size} anchors")
-            // Procedural meshes are automatically created by AnchorProceduralMesh
+            // Procedural meshes are automatically created by AnchorProceduralMesh for furniture
         }
 
         override fun onRoomUpdated(room: MRUKRoom) {
@@ -1181,10 +1217,17 @@ class ImmersiveActivity : AppSystemActivity() {
         override fun onRoomRemoved(room: MRUKRoom) {
             Log.d(TAG, "=== MRUK ROOM REMOVED ===")
             Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+            // Clean up edge entities when room is removed
+            clearRoomBoundsEdges()
+        }
+
+        override fun onAnchorAdded(room: MRUKRoom, anchor: Entity) {
+            // Create edge geometry for room bounds anchors (walls, floor, ceiling)
+            onAnchorAddedHandler(room, anchor)
         }
     }
     mrukFeature.addSceneEventListener(sceneEventListener!!)
-    Log.d(TAG, "MRUKSceneEventListener registered")
+    Log.d(TAG, "MRUKSceneEventListener registered with onAnchorAdded for room bounds edges")
   }
 
   /**
@@ -1363,6 +1406,164 @@ class ImmersiveActivity : AppSystemActivity() {
     boneHand = null
     lastBonePos = null
     lastBoneSampleNs = 0L
+  }
+
+  // --- Room bounds edge geometry functions ---
+
+  private fun clearRoomBoundsEdges() {
+    for (entity in roomEdgeEntities) {
+      entity.destroy()
+    }
+    roomEdgeEntities.clear()
+    Log.d(TAG, "Cleared all room bounds edge entities")
+  }
+
+  /**
+   * Called when an anchor is added to a room. Creates edge geometry for room bounds anchors.
+   */
+  private fun onAnchorAddedHandler(room: MRUKRoom, anchorEntity: Entity) {
+    // Get the MRUKAnchor component to check its labels
+    val anchorComponent = anchorEntity.tryGetComponent<MRUKAnchor>() ?: return
+
+    // Check if this anchor has any room bounds labels (wall, floor, or ceiling)
+    val anchorLabels = mutableListOf<String>()
+    for (i in 0 until anchorComponent.labelsCount) {
+      anchorComponent.labels[i]?.let { anchorLabels.add(it) }
+    }
+
+    val hasRoomBoundsLabel = anchorLabels.any { labelName ->
+      roomBoundsLabels.any { it.name == labelName }
+    }
+
+    if (!hasRoomBoundsLabel) {
+      return
+    }
+
+    // Get the MRUKPlane component for plane bounds (walls, floors, ceilings have this)
+    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+    if (planeComponent == null) {
+      Log.d(TAG, "Anchor has no MRUKPlane component, skipping: $anchorLabels")
+      return
+    }
+
+    // Calculate width and height from plane min/max
+    val width = planeComponent.max.x - planeComponent.min.x
+    val height = planeComponent.max.y - planeComponent.min.y
+
+    // Get the anchor's transform/pose
+    val transform = anchorEntity.tryGetComponent<Transform>()
+    if (transform == null) {
+      Log.d(TAG, "Anchor has no Transform component, skipping: $anchorLabels")
+      return
+    }
+    val anchorPose = transform.transform
+
+    Log.d(TAG, "Creating edges for anchor: labels=$anchorLabels, size=${width}x${height}")
+
+    // Create the 4 edge boxes for this plane
+    val edges = createPlaneOutlineEdges(
+        centerPose = anchorPose,
+        width = width,
+        height = height,
+        thickness = EDGE_THICKNESS
+    )
+    roomEdgeEntities.addAll(edges)
+  }
+
+  /**
+   * Creates 4 edge box entities outlining a rectangular plane.
+   *
+   * The plane is defined by:
+   * - centerPose: position and orientation of the plane center
+   * - width: horizontal extent (along local X axis)
+   * - height: vertical extent (along local Y axis)
+   * - thickness: how thick the edge boxes should be
+   *
+   * The plane's local coordinate system:
+   * - X axis: horizontal (width direction)
+   * - Y axis: vertical (height direction)
+   * - Z axis: normal to the plane (points outward)
+   */
+  private fun createPlaneOutlineEdges(
+      centerPose: Pose,
+      width: Float,
+      height: Float,
+      thickness: Float
+  ): List<Entity> {
+    val entities = mutableListOf<Entity>()
+    val halfWidth = width / 2f
+    val halfHeight = height / 2f
+    val halfThick = thickness / 2f
+
+    // We need to create 4 edges: top, bottom, left, right
+    // Each edge is positioned relative to the plane center using the plane's orientation
+
+    // Edge definitions: (localOffset, boxSize)
+    // - Top edge: at +Y, spans full width
+    // - Bottom edge: at -Y, spans full width
+    // - Left edge: at -X, spans full height (minus corners to avoid overlap)
+    // - Right edge: at +X, spans full height (minus corners to avoid overlap)
+
+    data class EdgeDef(
+        val localOffset: Vector3,
+        val boxHalfSize: Vector3
+    )
+
+    val edgeDefs = listOf(
+        // Top edge: horizontal bar at top
+        EdgeDef(
+            localOffset = Vector3(0f, halfHeight, 0f),
+            boxHalfSize = Vector3(halfWidth, halfThick, halfThick)
+        ),
+        // Bottom edge: horizontal bar at bottom
+        EdgeDef(
+            localOffset = Vector3(0f, -halfHeight, 0f),
+            boxHalfSize = Vector3(halfWidth, halfThick, halfThick)
+        ),
+        // Left edge: vertical bar at left (shortened to fit between top/bottom)
+        EdgeDef(
+            localOffset = Vector3(-halfWidth, 0f, 0f),
+            boxHalfSize = Vector3(halfThick, halfHeight - thickness, halfThick)
+        ),
+        // Right edge: vertical bar at right (shortened to fit between top/bottom)
+        EdgeDef(
+            localOffset = Vector3(halfWidth, 0f, 0f),
+            boxHalfSize = Vector3(halfThick, halfHeight - thickness, halfThick)
+        )
+    )
+
+    for ((index, edgeDef) in edgeDefs.withIndex()) {
+      // Transform local offset to world position using the plane's pose
+      val worldOffset = centerPose.q.times(edgeDef.localOffset)
+      val worldPos = centerPose.t + worldOffset
+
+      // Create edge entity with transform only (SceneObject handles the mesh)
+      val edgePose = Pose(worldPos, centerPose.q)
+
+      val entity = Entity.create(
+          listOf(
+              Transform(edgePose)
+          )
+      )
+
+      // Create scene object with box mesh and material
+      val min = -edgeDef.boxHalfSize
+      val max = edgeDef.boxHalfSize
+      val boxMesh = SceneMesh.box(
+          Vector3(min.x, min.y, min.z),
+          Vector3(max.x, max.y, max.z),
+          edgeBoxMaterial
+      )
+      val sceneObject = SceneObject(scene, boxMesh, "roomEdge_${index}", entity)
+      systemManager.findSystem<SceneObjectSystem>().addSceneObject(
+          entity,
+          CompletableFuture<SceneObject>().apply { complete(sceneObject) }
+      )
+
+      entities.add(entity)
+    }
+
+    return entities
   }
 
 }
