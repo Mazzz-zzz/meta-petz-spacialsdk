@@ -33,7 +33,7 @@ import com.meta.spatial.uiset.theme.SpatialTheme
     heightDp = (PanelConstants.DEFAULT_DP_PER_METER * OPTIONS_PANEL_HEIGHT).toInt(),
 )
 fun OptionsPanelPreview() {
-    OptionsPanel(onSelectPet = {}, onSpawnBone = {})
+    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {})
 }
 
 @Composable
@@ -41,6 +41,7 @@ fun OptionsPanel(
     onSelectPet: (String) -> Unit,
     onSelectDemoPet: ((PetData) -> Unit)? = null,
     onSpawnBone: (() -> Unit)? = null,
+    onSetupRoom: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
@@ -77,6 +78,19 @@ fun OptionsPanel(
                     onClick = {
                         Log.d("OptionsPanel", "Spawn Bone button pressed")
                         onSpawnBone()
+                    }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Setup Room button
+            if (onSetupRoom != null) {
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Setup Room",
+                    onClick = {
+                        Log.d("OptionsPanel", "Setup Room button pressed")
+                        onSetupRoom()
                     }
                 )
                 Spacer(modifier = Modifier.height(12.dp))

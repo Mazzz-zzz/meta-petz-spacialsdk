@@ -66,11 +66,14 @@ import com.meta.spatial.mruk.MRUKStartEnvrionmentRaycasterResult
 import com.meta.spatial.mruk.MRUKAnchor
 import com.meta.spatial.mruk.MRUKRoom
 import com.meta.spatial.mruk.MRUKLabel
+import com.meta.spatial.mruk.AnchorProceduralMesh
+import com.meta.spatial.mruk.AnchorProceduralMeshConfig
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.core.Vector4
+import com.meta.spatial.toolkit.Material
 import com.meta.spatial.toolkit.Mesh
 import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Panel
@@ -97,6 +100,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.PI
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 import kotlin.random.Random
 
 class ImmersiveActivity : AppSystemActivity() {
@@ -115,6 +122,10 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Room boundary colliders
   private val roomColliderEntities = mutableListOf<Entity>()
+
+  // AnchorProceduralMesh for automatic physics colliders on walls/floor/ceiling
+  // This is the proper Meta SDK way to create room boundary colliders
+  private var procMeshSpawner: AnchorProceduralMesh? = null
 
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
@@ -177,7 +188,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
   override fun registerFeatures(): List<SpatialFeature> {
     // Initialize MRUK for scene-aware raycasting
+    Log.d(TAG, "=== REGISTERING MRUK FEATURE ===")
     mrukFeature = MRUKFeature(this, systemManager)
+    Log.d(TAG, "MRUKFeature created")
 
     val features =
         mutableListOf<SpatialFeature>(
@@ -223,14 +236,17 @@ class ImmersiveActivity : AppSystemActivity() {
   private var scenePermissionGranted = false
 
   private fun checkAndRequestScenePermission() {
-    // Request USE_SCENE permission for MRUK raycasting
-    if (ContextCompat.checkSelfPermission(this, SCENE_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
-      Log.d(TAG, "Requesting scene permission...")
+    Log.d(TAG, "=== CHECKING SCENE PERMISSION ===")
+    Log.d(TAG, "SCENE_PERMISSION = $SCENE_PERMISSION")
+    val currentPermission = ContextCompat.checkSelfPermission(this, SCENE_PERMISSION)
+    Log.d(TAG, "Current permission status: $currentPermission (GRANTED=${PackageManager.PERMISSION_GRANTED}, DENIED=${PackageManager.PERMISSION_DENIED})")
+
+    if (currentPermission != PackageManager.PERMISSION_GRANTED) {
+      Log.d(TAG, "Permission NOT granted - requesting...")
       ActivityCompat.requestPermissions(this, arrayOf(SCENE_PERMISSION), SCENE_PERMISSION_REQUEST)
     } else {
-      Log.d(TAG, "Scene permission already granted - will load in onSceneReady")
+      Log.d(TAG, "Permission ALREADY granted")
       scenePermissionGranted = true
-      // Don't load here - wait for onSceneReady when OpenXR is fully initialized
     }
   }
 
@@ -263,17 +279,11 @@ class ImmersiveActivity : AppSystemActivity() {
           }
         }
 
-        // Create debug visualization first so we can see where anchors are
-        createDebugBoundaryVisualization()
-
-        // Create physics colliders for room boundaries
-        Log.d(TAG, "=== CREATING ROOM BOUNDARY COLLIDERS ===")
-        createRoomBoundaryColliders()
+        // MRUK wall creation disabled - using simple 3x3 room instead
+        Log.d(TAG, "MRUK data loaded but not using it for walls yet")
       } else {
         Log.w(TAG, "Scene load result: $result - user may need to complete Space Setup")
         Log.e(TAG, "MRUK: Failed to load scene - result: $result")
-        // Still create debug visualization to show fallback box
-        createDebugBoundaryVisualization()
       }
       if (error != null) {
         Log.e(TAG, "Scene load error: ${error.message}", error)
@@ -283,18 +293,10 @@ class ImmersiveActivity : AppSystemActivity() {
 
   override fun onSceneReady() {
     super.onSceneReady()
-
-    // DEBUG: Create a guaranteed visible test object using bone model (we know it renders)
-    Log.d(TAG, "=== onSceneReady: Creating debug test bone ===")
-    Entity.create(
-        listOf(
-            Mesh("apk:///models/bonew.glb".toUri()),
-            Transform(Pose(Vector3(0f, 1.0f, -1.5f))),  // 1m high, 1.5m in front
-            Scale(Vector3(0.5f, 0.5f, 0.5f)),
-            Visible(true)
-        )
-    )
-    Log.d(TAG, "Debug test bone created at (0, 1, -1.5)")
+    Log.d(TAG, "=== ON SCENE READY ===")
+    Log.d(TAG, "mrukFeature initialized: ${::mrukFeature.isInitialized}")
+    Log.d(TAG, "mrukFeature.rooms.size: ${mrukFeature.rooms.size}")
+    Log.d(TAG, "scenePermissionGranted: $scenePermissionGranted")
 
     // MRUK DISABLED FOR DEBUGGING
     // Start the environment raycaster for DEPTH mode (works without Space Setup)
@@ -334,6 +336,8 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Add a simple physics floor to catch dynamic objects (like the bone)
     createPhysicsFloor()
+
+    // Walls are now created on-demand via "Setup Room" button
 
     // Grabbable handler: keeps physics while held and restores on release
     val inputSystem = systemManager.tryFindSystem<IsdkInputListenerSystem>()
@@ -468,15 +472,18 @@ class ImmersiveActivity : AppSystemActivity() {
       grantResults: IntArray
   ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    Log.d(TAG, "=== PERMISSION RESULT ===")
+    Log.d(TAG, "requestCode: $requestCode, permissions: ${permissions.toList()}, results: ${grantResults.toList()}")
+
     when (requestCode) {
       SCENE_PERMISSION_REQUEST -> {
         if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-          Log.d(TAG, "Scene permission granted - will load scene when ready")
+          Log.d(TAG, "Scene permission GRANTED")
           scenePermissionGranted = true
-          // If scene is already ready, load now
+          Log.d(TAG, "Calling loadSceneFromDevice()...")
           loadSceneFromDevice()
         } else {
-          Log.w(TAG, "Scene permission denied - MRUK raycasting will not work")
+          Log.e(TAG, "Scene permission DENIED - grantResults: ${grantResults.toList()}")
         }
       }
     }
@@ -669,6 +676,75 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
+   * Setup room walls using AnchorProceduralMesh - the proper Meta SDK way.
+   * This automatically creates physics colliders that are properly anchored to the room.
+   * The colliders stay fixed in world space because they're parented to room anchors.
+   */
+  private fun setupRoom() {
+    Log.d(TAG, "=== SETUP ROOM CALLED ===")
+
+    // Clear any existing walls
+    if (roomColliderEntities.isNotEmpty()) {
+      Log.d(TAG, "Clearing ${roomColliderEntities.size} existing room colliders")
+      roomColliderEntities.forEach { it.destroy() }
+      roomColliderEntities.clear()
+    }
+
+    // Create a single test wall - 1x1 meter, right in front at world origin
+    createTestWall()
+  }
+
+  /**
+   * Create a single 1x1 meter test wall at a fixed world position.
+   * This wall has NO parent - it should stay fixed in world space.
+   */
+  private fun createTestWall() {
+    Log.d(TAG, "=== CREATING TEST WALL ===")
+
+    // Create a 1x1 meter wall, 1 meter in front of world origin, at eye height
+    val wallPos = Vector3(0f, 1f, -1f)  // 1m high, 1m in front
+    val wallSize = Vector3(1f, 1f, 0.1f)  // 1m x 1m, 10cm thick (thicker for better collision)
+
+    Log.d(TAG, "Creating test wall at WORLD position: $wallPos")
+    Log.d(TAG, "Wall size: $wallSize")
+
+    // Create physics collider - matching the working floor pattern exactly
+    // Box + Transform + Physics in same order as createPhysicsFloor()
+    val physicsEntity = Entity.create(
+        listOf(
+            Box(wallSize),
+            Transform(Pose(wallPos, Quaternion())),
+            Physics().apply {
+              state = PhysicsState.KINEMATIC
+              shape = "box"
+              dimensions = wallSize
+              restitution = 0.8f
+            }
+        )
+    )
+    roomColliderEntities.add(physicsEntity)
+    Log.d(TAG, "Physics wall created with entity id: ${physicsEntity.id}")
+
+    // Create visible mesh separately (so we can see where the wall is)
+    val visualEntity = Entity.create(
+        listOf(
+            Mesh(android.net.Uri.parse("mesh://box")),
+            Box(wallSize),
+            Transform(Pose(wallPos, Quaternion())),
+            Material().apply {
+              baseColor = Color4(0f, 1f, 0f, 0.5f)  // Semi-transparent green
+              unlit = true
+            }
+        )
+    )
+    roomColliderEntities.add(visualEntity)
+    Log.d(TAG, "Visual wall created with entity id: ${visualEntity.id}")
+  }
+
+  // TODO: MRUK-based wall creation - not used yet
+  // private fun createProceduralMeshColliders() { ... }
+
+  /**
    * Spawn a physics-enabled bone near the player.
    * Randomizes a lateral offset and places it slightly forward of the head, clamped to floor.
    */
@@ -772,7 +848,7 @@ class ImmersiveActivity : AppSystemActivity() {
                         contentAlignment = Alignment.Center
                     ) {
                       Text(
-                          text = "Select a pet to get started! (v2)",
+                          text = "Select a pet to get started! (v4)",
                           fontSize = 24.sp,
                           color = Color.White,
                           textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -794,6 +870,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSelectPet = ::selectPet,
                       onSelectDemoPet = ::selectDemoPet,
                       onSpawnBone = ::spawnBoneToy,
+                      onSetupRoom = ::setupRoom,
                       firebaseManager = firebaseManager
                   )
                 }
@@ -815,7 +892,10 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
-    // Clean up room boundary colliders
+    // Clean up AnchorProceduralMesh spawner
+    procMeshSpawner?.destroy()
+    procMeshSpawner = null
+    // Clean up any manual room boundary colliders
     roomColliderEntities.forEach { it.destroy() }
     roomColliderEntities.clear()
     super.onSpatialShutdown()
@@ -845,194 +925,58 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Create visible debug geometry to show where Space Setup boundaries are.
-   * This creates a semi-transparent floor grid and wall markers.
+   * Create a quaternion for rotation around the Y axis (yaw).
    */
-  private fun createDebugBoundaryVisualization() {
-    Log.d(TAG, "=== CREATING DEBUG BOUNDARY VISUALIZATION ===")
-
-    val rooms = mrukFeature.rooms
-    if (rooms.isEmpty()) {
-      Log.w(TAG, "No rooms for debug visualization - creating fallback test box")
-      // Create a visible test box at origin so we know something is rendering
-      Entity.create(
-          listOf(
-              Box(Vector3(0.5f, 0.5f, 0.5f)),
-              Transform(Pose(Vector3(0f, 1f, -1f))),  // 1m high, 1m in front
-              Visible(true),
-              Physics().apply {
-                state = PhysicsState.KINEMATIC
-                shape = "box"
-                dimensions = Vector3(0.5f, 0.5f, 0.5f)
-                restitution = 0.5f
-              }
-          )
-      )
-      Log.d(TAG, "Created fallback test box at (0, 1, -1)")
-      return
-    }
-
-    rooms.forEachIndexed { roomIdx, room ->
-      Log.d(TAG, "Creating debug visualization for room $roomIdx with ${room.anchors.size} anchors")
-
-      // Try to find floor anchor and create a visible floor plane
-      room.anchors.forEachIndexed { anchorIdx, anchorEntity ->
-        try {
-          val transform = anchorEntity.tryGetComponent<Transform>()?.transform ?: return@forEachIndexed
-          val pos = transform.t
-
-          // Create a small visible marker at each anchor position
-          // Different colors/sizes based on position (floor anchors are typically at Y near 0)
-          val isLikelyFloor = pos.y < 0.3f && pos.y > -0.3f
-          val isLikelyCeiling = pos.y > 2.0f
-          val isLikelyWall = !isLikelyFloor && !isLikelyCeiling
-
-          val markerSize = if (isLikelyFloor) {
-            Vector3(0.3f, 0.02f, 0.3f)  // Flat for floor
-          } else if (isLikelyCeiling) {
-            Vector3(0.3f, 0.02f, 0.3f)  // Flat for ceiling
-          } else {
-            Vector3(0.02f, 0.3f, 0.3f)  // Tall for walls
-          }
-
-          // Create visible debug marker
-          val debugEntity = Entity.create(
-              listOf(
-                  Box(markerSize),
-                  Transform(transform),
-                  Visible(true)
-              )
-          )
-          roomColliderEntities.add(debugEntity)
-
-          Log.d(TAG, "Debug marker $anchorIdx: pos=$pos, type=${if (isLikelyFloor) "FLOOR" else if (isLikelyCeiling) "CEILING" else "WALL"}")
-
-        } catch (e: Exception) {
-          Log.e(TAG, "Error creating debug marker for anchor $anchorIdx: ${e.message}")
-        }
-      }
-
-      // Also create a large semi-transparent floor plane at Y=0 for reference
-      val floorPlane = Entity.create(
-          listOf(
-              Box(Vector3(6f, 0.01f, 6f)),  // 6m x 6m thin plane
-              Transform(Pose(Vector3(0f, 0.01f, 0f))),  // Slightly above floor
-              Visible(true)
-          )
-      )
-      roomColliderEntities.add(floorPlane)
-      Log.d(TAG, "Created debug floor plane at Y=0.01")
-    }
-
-    Log.d(TAG, "=== DEBUG VISUALIZATION COMPLETE ===")
+  private fun quaternionFromYaw(yaw: Float): Quaternion {
+    val half = yaw * 0.5f
+    val s = sin(half)
+    val c = cos(half)
+    // Rotation around Y axis: (0, sin(half), 0, cos(half))
+    return Quaternion(0f, s, 0f, c)
   }
 
   /**
-   * Create physics colliders for room boundaries (walls, floor, ceiling) from MRUK data.
-   * Uses AnchorProceduralMesh to automatically generate invisible physics colliders for
-   * all structural anchors (walls, floor, ceiling, doors, windows).
+   * Transform a point from local space to world space using a Pose.
    */
-  private fun createRoomBoundaryColliders() {
-    // Clear any existing colliders
-    roomColliderEntities.forEach { it.destroy() }
-    roomColliderEntities.clear()
+  private fun transformPoint(pose: Pose, localPoint: Vector3): Vector3 {
+    // Apply rotation then translation: worldPoint = rotation * localPoint + translation
+    val rotated = rotateVector(pose.q, localPoint)
+    return Vector3(
+        rotated.x + pose.t.x,
+        rotated.y + pose.t.y,
+        rotated.z + pose.t.z
+    )
+  }
 
-    val rooms = mrukFeature.rooms
-    if (rooms.isEmpty()) {
-      Log.w(TAG, "No rooms available for boundary colliders")
-      return
+  private fun createWall(position: Vector3, dimensions: Vector3, name: String) {
+    val components = mutableListOf(
+        Box(dimensions),
+        Transform(Pose(position)),
+        Physics().apply {
+          state = PhysicsState.KINEMATIC
+          shape = "box"
+          this.dimensions = dimensions
+          restitution = 0.8f  // Bouncy walls
+        }
+    )
+
+    // Add visible mesh with semi-transparent material for debugging
+    if (DEBUG_SHOW_COLLIDERS) {
+      components.add(Mesh(android.net.Uri.parse("mesh://box")))
+      components.add(Scale(dimensions))  // Scale the unit cube to wall dimensions
+      components.add(Material().apply {
+        baseColor = Color4(0.2f, 0.5f, 1f, 0.3f)  // Semi-transparent blue
+        unlit = true
+      })
     }
 
-    Log.d(TAG, "Creating boundary colliders for ${rooms.size} room(s)")
-
-    rooms.forEach { room ->
-      createCollidersForRoom(room)
-    }
-
-    Log.d(TAG, "Created ${roomColliderEntities.size} boundary collider entities")
+    val wallEntity = Entity.create(components)
+    roomColliderEntities.add(wallEntity)
+    Log.d(TAG, "Created $name at $position with size $dimensions")
   }
 
   // Debug flag - set to true to see collider boxes
   private val DEBUG_SHOW_COLLIDERS = true
-
-  /**
-   * Create physics colliders for a single room's anchors (walls, floor, ceiling).
-   * Uses the room.anchors list directly to get anchor entities for this specific room.
-   */
-  private fun createCollidersForRoom(room: MRUKRoom) {
-    var colliderCount = 0
-    val anchors = room.anchors
-
-    Log.d(TAG, "Processing ${anchors.size} anchors from room.anchors")
-
-    anchors.forEach { anchorEntity ->
-      try {
-        if (anchorEntity == Entity.nullEntity()) {
-          Log.w(TAG, "Skipping null anchor entity")
-          return@forEach
-        }
-
-        // Get transform from anchor entity
-        val anchorTransform = anchorEntity.tryGetComponent<Transform>()?.transform
-        if (anchorTransform == null) {
-          Log.w(TAG, "Anchor entity ${anchorEntity.id} has no transform, skipping")
-          return@forEach
-        }
-
-        // MRUKAnchor component contains the uuid
-        val mrukAnchor = anchorEntity.tryGetComponent<MRUKAnchor>()
-        val uuid = mrukAnchor?.uuid ?: "unknown"
-
-        // Create a large collider at the anchor position
-        // The anchor's rotation will orient it correctly (walls are vertical, floor is horizontal)
-        val colliderThickness = 0.1f // 10cm thick for better collision detection
-
-        // Use a large default size to cover typical wall/floor surfaces
-        val boxDimensions = Vector3(5f, 5f, colliderThickness)
-
-        // Create the physics collider entity - matching the working floor pattern
-        // NO Box component - only Physics with shape="box" (like createPhysicsFloor)
-        val colliderEntity = if (DEBUG_SHOW_COLLIDERS) {
-          // Debug mode: visible boxes to see where colliders are
-          Entity.create(
-              listOf(
-                  Box(boxDimensions),
-                  Transform(anchorTransform),
-                  Visible(true),
-                  Physics().apply {
-                    state = PhysicsState.KINEMATIC
-                    shape = "box"
-                    dimensions = boxDimensions
-                    restitution = 0.5f
-                  }
-              )
-          )
-        } else {
-          // Production: invisible physics-only colliders
-          Entity.create(
-              listOf(
-                  Transform(anchorTransform),
-                  Physics().apply {
-                    state = PhysicsState.KINEMATIC
-                    shape = "box"
-                    dimensions = boxDimensions
-                    restitution = 0.5f
-                  }
-              )
-          )
-        }
-
-        roomColliderEntities.add(colliderEntity)
-        colliderCount++
-        Log.d(TAG, "Created collider #$colliderCount for anchor uuid=$uuid at pos=${anchorTransform.t}, rot=${anchorTransform.q}")
-
-      } catch (e: Exception) {
-        Log.e(TAG, "Error creating collider for anchor: ${e.message}", e)
-      }
-    }
-
-    Log.d(TAG, "=== Total colliders created for room: $colliderCount ===")
-  }
   private fun attachToHand(ent: Entity, hand: Entity?) {
     val parent = hand ?: return
     if (parent == Entity.nullEntity()) return
