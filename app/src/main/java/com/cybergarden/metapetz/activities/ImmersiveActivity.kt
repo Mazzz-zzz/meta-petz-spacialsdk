@@ -625,6 +625,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
           // Update locomotion system with new pet entity
           petLocomotion.setPetEntity(currentPetEntity, panel)
+          petLocomotion.setMrukFeature(mrukFeature)  // Enable collision raycasting
 
           // Set wander area based on current head position
           val headEntity = getHeadEntity()

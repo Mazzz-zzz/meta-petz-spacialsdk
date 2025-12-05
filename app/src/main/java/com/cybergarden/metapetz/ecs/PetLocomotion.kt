@@ -204,6 +204,12 @@ class PetLocomotion(
     // Reference to the pointing system for cleanup
     private var pointingSystem: PointToMoveSystem? = null
 
+    // MRUK reference for collision raycasting
+    private var mrukFeature: MRUKFeature? = null
+
+    // Collision settings
+    private val collisionRadius = 0.15f  // Pet's collision radius in meters
+
     // Callbacks
     var onWalkStart: (() -> Unit)? = null
     var onWalkEnd: (() -> Unit)? = null
@@ -216,6 +222,14 @@ class PetLocomotion(
         petEntity = entity
         panelEntity = panel
         Log.d(TAG, "Pet entity set: ${entity != null}")
+    }
+
+    /**
+     * Set MRUK feature for collision raycasting
+     */
+    fun setMrukFeature(mruk: MRUKFeature) {
+        mrukFeature = mruk
+        Log.d(TAG, "MRUK feature set for collision raycasting")
     }
 
     /**
@@ -255,8 +269,8 @@ class PetLocomotion(
     }
 
     /**
-     * Move pet to target position with smooth interpolation
-     * Pet will face the direction of movement
+     * Move pet to target position with collision detection
+     * Uses MRUK raycast to detect obstacles and stop/slide along them
      */
     fun moveTo(target: Vector3) {
         val pet = petEntity ?: run {
@@ -282,64 +296,68 @@ class PetLocomotion(
             onWalkStart?.invoke()
 
             try {
-                // Get current position
-                val transform = pet.getComponent<Transform>()
-                val startPos = transform.transform.t
-
-                // Calculate distance and duration (using clamped target)
-                val dx = clampedTarget.x - startPos.x
-                val dz = clampedTarget.z - startPos.z
-                val distance = sqrt(dx * dx + dz * dz)
-
-                // Skip if already at target
-                if (distance < 0.05f) {
-                    isWalking = false
-                    onWalkEnd?.invoke()
-                    return@launch
-                }
-
-                val duration = (distance / walkSpeed * 1000).toLong().coerceAtLeast(100)
-
-                // Direction vector to target for lookRotationAroundY
-                val direction = Vector3(dx, 0f, dz)
-
-                Log.d(TAG, "Walking from $startPos to $clampedTarget, distance: $distance, duration: ${duration}ms")
-
-                val startTime = System.currentTimeMillis()
-                var prevTime = startTime
                 val smoothTime = 1f / 60f
-                val rotationSpeed = 0.15f // How fast to rotate (0-1, higher = faster)
+                val rotationSpeed = 0.15f
+                var prevTime = System.currentTimeMillis()
 
                 while (isActive) {
                     val currentTime = System.currentTimeMillis()
                     val deltaTime = (currentTime - prevTime) / 1000f
                     prevTime = currentTime
 
-                    val elapsed = currentTime - startTime
-                    val progress = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
+                    // Get current position
+                    val transform = pet.getComponent<Transform>()
+                    val currentPos = transform.transform.t
 
-                    // Interpolate position
+                    // Calculate direction to target
+                    val dx = clampedTarget.x - currentPos.x
+                    val dz = clampedTarget.z - currentPos.z
+                    val distanceToTarget = sqrt(dx * dx + dz * dz)
+
+                    // Check if arrived
+                    if (distanceToTarget < 0.1f) {
+                        Log.d(TAG, "Arrived at target")
+                        break
+                    }
+
+                    // Normalize direction
+                    val dirX = dx / distanceToTarget
+                    val dirZ = dz / distanceToTarget
+                    val direction = Vector3(dirX, 0f, dirZ)
+
+                    // Calculate step distance for this frame
+                    val stepDistance = walkSpeed * deltaTime.coerceIn(0.001f, 0.05f)
+
+                    // Raycast to check for obstacles
+                    val (canMove, allowedDistance) = checkCollision(currentPos, direction, stepDistance)
+
+                    // Calculate new position
+                    val actualStep = if (canMove) stepDistance else allowedDistance
                     val newPos = Vector3(
-                        startPos.x + dx * progress,
-                        startPos.y, // Keep same height (relative to parent)
-                        startPos.z + dz * progress
+                        currentPos.x + dirX * actualStep,
+                        currentPos.y,
+                        currentPos.z + dirZ * actualStep
                     )
 
-                    // Target rotation using lookRotationAroundY (like AnimationsSample DroneSystem)
+                    // Target rotation using lookRotationAroundY
                     val targetRotation = Quaternion.lookRotationAroundY(direction)
 
-                    // Smooth rotation with slerp (like AnimationsSample DroneSystem)
-                    val newTransform = pet.getComponent<Transform>()
-                    val currentRotation = newTransform.transform.q
+                    // Smooth rotation with slerp
+                    val currentRotation = transform.transform.q
                     val smoothFactor = smoothOver(deltaTime, rotationSpeed, smoothTime)
                     val smoothedRotation = currentRotation.slerp(targetRotation, smoothFactor)
 
                     // Update transform
-                    newTransform.transform.t = newPos
-                    newTransform.transform.q = smoothedRotation
-                    pet.setComponent(newTransform)
+                    transform.transform.t = newPos
+                    transform.transform.q = smoothedRotation
+                    pet.setComponent(transform)
 
-                    if (progress >= 1f) break
+                    // If we hit something and couldn't move, stop
+                    if (!canMove && allowedDistance < 0.01f) {
+                        Log.d(TAG, "Blocked by obstacle, stopping")
+                        break
+                    }
+
                     delay(16) // ~60 FPS
                 }
 
@@ -356,6 +374,49 @@ class PetLocomotion(
                 onWalkEnd?.invoke()
             }
         }
+    }
+
+    /**
+     * Check for collision in movement direction using MRUK raycast
+     * @return Pair(canMove, allowedDistance) - canMove is true if path is clear,
+     *         allowedDistance is how far we can move before hitting obstacle
+     */
+    private fun checkCollision(position: Vector3, direction: Vector3, desiredDistance: Float): Pair<Boolean, Float> {
+        val mruk = mrukFeature ?: return Pair(true, desiredDistance)  // No MRUK, allow movement
+        val currentRoom = mruk.getCurrentRoom() ?: return Pair(true, desiredDistance)
+
+        try {
+            // Raycast from pet position in movement direction
+            // Cast at pet height (slightly above floor)
+            val rayOrigin = Vector3(position.x, floorY + 0.1f, position.z)
+            val rayDistance = desiredDistance + collisionRadius  // Look ahead by collision radius
+
+            val hit = mruk.raycastRoom(
+                currentRoom.anchor.uuid,
+                rayOrigin,
+                direction,
+                rayDistance,
+                SurfaceType.PLANE_VOLUME
+            )
+
+            if (hit != null) {
+                // Calculate distance to obstacle (minus collision radius)
+                val hitDx = hit.hitPosition.x - position.x
+                val hitDz = hit.hitPosition.z - position.z
+                val hitDistance = sqrt(hitDx * hitDx + hitDz * hitDz) - collisionRadius
+
+                if (hitDistance <= desiredDistance) {
+                    // Obstacle in the way
+                    val allowedDistance = (hitDistance - 0.02f).coerceAtLeast(0f)  // Small buffer
+                    Log.d(TAG, "Collision detected at distance $hitDistance, allowing $allowedDistance")
+                    return Pair(false, allowedDistance)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Raycast error: ${e.message}")
+        }
+
+        return Pair(true, desiredDistance)  // Path is clear
     }
 
     /**
