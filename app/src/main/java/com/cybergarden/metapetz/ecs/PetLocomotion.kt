@@ -57,11 +57,12 @@ class PetLocomotion(
     companion object {
         private const val TAG = "PetLocomotion"
 
-        // Animation track indices (based on GLB animation order)
-        const val ANIM_IDLE = 0       // "sit"
-        const val ANIM_WALK = 1       // "walk " (GLB name has trailing space)
-        const val ANIM_WAG = 2        // "wag"
-        const val ANIM_WALKLOOP = 3   // "walkloop" (preferred for locomotion)
+        // Animation track indices (from metadog.glb)
+        const val ANIM_JUMP = 0       // "jump"
+        const val ANIM_IDLE = 1       // "sit"
+        const val ANIM_SWALK = 2      // "swalk" (defunct - do not use)
+        const val ANIM_WAG = 3        // "wag"
+        const val ANIM_WALKLOOP = 4   // "walkloop"
     }
 
     /**
@@ -207,8 +208,13 @@ class PetLocomotion(
     // MRUK reference for collision raycasting
     private var mrukFeature: MRUKFeature? = null
 
+    // Thrown bones reference for pushing
+    private var thrownBones: MutableList<Entity>? = null
+
     // Collision settings
     private val collisionRadius = 0.15f  // Pet's collision radius in meters
+    private val bonePushRadius = 0.25f   // Distance at which pet pushes bones
+    private val bonePushStrength = 0.08f // How hard to push bones per frame
 
     // Callbacks
     var onWalkStart: (() -> Unit)? = null
@@ -230,6 +236,53 @@ class PetLocomotion(
     fun setMrukFeature(mruk: MRUKFeature) {
         mrukFeature = mruk
         Log.d(TAG, "MRUK feature set for collision raycasting")
+    }
+
+    /**
+     * Set thrown bones list for pushing
+     */
+    fun setThrownBones(bones: MutableList<Entity>) {
+        thrownBones = bones
+        Log.d(TAG, "Thrown bones reference set")
+    }
+
+    /**
+     * Push nearby bones away from pet position
+     */
+    private fun pushNearbyBones(petPos: Vector3) {
+        val bones = thrownBones ?: return
+
+        for (bone in bones) {
+            try {
+                val boneTransform = bone.tryGetComponent<Transform>() ?: continue
+                val bonePos = boneTransform.transform.t
+
+                // Calculate distance (XZ plane only)
+                val dx = bonePos.x - petPos.x
+                val dz = bonePos.z - petPos.z
+                val distance = sqrt(dx * dx + dz * dz)
+
+                // Push bone if within radius
+                if (distance < bonePushRadius && distance > 0.01f) {
+                    // Push direction (away from pet)
+                    val pushX = dx / distance
+                    val pushZ = dz / distance
+
+                    // Push strength decreases with distance
+                    val pushAmount = bonePushStrength * (1f - distance / bonePushRadius)
+
+                    // Update bone position
+                    boneTransform.transform.t = Vector3(
+                        bonePos.x + pushX * pushAmount,
+                        bonePos.y,
+                        bonePos.z + pushZ * pushAmount
+                    )
+                    bone.setComponent(boneTransform)
+                }
+            } catch (e: Exception) {
+                // Bone might be destroyed
+            }
+        }
     }
 
     /**
@@ -328,18 +381,43 @@ class PetLocomotion(
                     // Calculate step distance for this frame
                     val stepDistance = walkSpeed * deltaTime.coerceIn(0.001f, 0.05f)
 
-                    // Raycast to check for obstacles
-                    val (canMove, allowedDistance) = checkCollision(currentPos, direction, stepDistance)
+                    // Check for obstacles in movement direction
+                    val collision = checkCollision(currentPos, direction, stepDistance)
 
-                    // Calculate new position
-                    val actualStep = if (canMove) stepDistance else allowedDistance
+                    // Calculate new position - with wall sliding
+                    var moveX = dirX * stepDistance
+                    var moveZ = dirZ * stepDistance
+                    var actualDirection = direction
+
+                    if (!collision.canMove) {
+                        // First move up to the wall
+                        moveX = dirX * collision.allowedDistance
+                        moveZ = dirZ * collision.allowedDistance
+
+                        // Then try to slide along the wall
+                        if (collision.slideDirection != null) {
+                            val remainingDistance = stepDistance - collision.allowedDistance
+                            if (remainingDistance > 0.001f) {
+                                // Check if slide direction is clear
+                                val slideCollision = checkCollision(
+                                    Vector3(currentPos.x + moveX, currentPos.y, currentPos.z + moveZ),
+                                    collision.slideDirection,
+                                    remainingDistance
+                                )
+                                val slideStep = if (slideCollision.canMove) remainingDistance else slideCollision.allowedDistance
+                                moveX += collision.slideDirection.x * slideStep
+                                moveZ += collision.slideDirection.z * slideStep
+                            }
+                        }
+                    }
+
                     val newPos = Vector3(
-                        currentPos.x + dirX * actualStep,
+                        currentPos.x + moveX,
                         currentPos.y,
-                        currentPos.z + dirZ * actualStep
+                        currentPos.z + moveZ
                     )
 
-                    // Target rotation using lookRotationAroundY
+                    // Target rotation - face movement direction
                     val targetRotation = Quaternion.lookRotationAroundY(direction)
 
                     // Smooth rotation with slerp
@@ -352,11 +430,8 @@ class PetLocomotion(
                     transform.transform.q = smoothedRotation
                     pet.setComponent(transform)
 
-                    // If we hit something and couldn't move, stop
-                    if (!canMove && allowedDistance < 0.01f) {
-                        Log.d(TAG, "Blocked by obstacle, stopping")
-                        break
-                    }
+                    // Push bones out of the way
+                    pushNearbyBones(newPos)
 
                     delay(16) // ~60 FPS
                 }
@@ -377,19 +452,26 @@ class PetLocomotion(
     }
 
     /**
-     * Check for collision in movement direction using MRUK raycast
-     * @return Pair(canMove, allowedDistance) - canMove is true if path is clear,
-     *         allowedDistance is how far we can move before hitting obstacle
+     * Collision result containing movement info and slide direction
      */
-    private fun checkCollision(position: Vector3, direction: Vector3, desiredDistance: Float): Pair<Boolean, Float> {
-        val mruk = mrukFeature ?: return Pair(true, desiredDistance)  // No MRUK, allow movement
-        val currentRoom = mruk.getCurrentRoom() ?: return Pair(true, desiredDistance)
+    data class CollisionResult(
+        val canMove: Boolean,
+        val allowedDistance: Float,
+        val slideDirection: Vector3?  // Direction to slide along wall (null if no collision)
+    )
+
+    /**
+     * Check for collision in movement direction using MRUK raycast
+     * @return CollisionResult with movement info and slide direction for wall sliding
+     */
+    private fun checkCollision(position: Vector3, direction: Vector3, desiredDistance: Float): CollisionResult {
+        val mruk = mrukFeature ?: return CollisionResult(true, desiredDistance, null)
+        val currentRoom = mruk.getCurrentRoom() ?: return CollisionResult(true, desiredDistance, null)
 
         try {
             // Raycast from pet position in movement direction
-            // Cast at pet height (slightly above floor)
             val rayOrigin = Vector3(position.x, floorY + 0.1f, position.z)
-            val rayDistance = desiredDistance + collisionRadius  // Look ahead by collision radius
+            val rayDistance = desiredDistance + collisionRadius
 
             val hit = mruk.raycastRoom(
                 currentRoom.anchor.uuid,
@@ -400,23 +482,34 @@ class PetLocomotion(
             )
 
             if (hit != null) {
-                // Calculate distance to obstacle (minus collision radius)
                 val hitDx = hit.hitPosition.x - position.x
                 val hitDz = hit.hitPosition.z - position.z
                 val hitDistance = sqrt(hitDx * hitDx + hitDz * hitDz) - collisionRadius
 
                 if (hitDistance <= desiredDistance) {
-                    // Obstacle in the way
-                    val allowedDistance = (hitDistance - 0.02f).coerceAtLeast(0f)  // Small buffer
-                    Log.d(TAG, "Collision detected at distance $hitDistance, allowing $allowedDistance")
-                    return Pair(false, allowedDistance)
+                    val allowedDistance = (hitDistance - 0.02f).coerceAtLeast(0f)
+
+                    // Calculate slide direction (perpendicular to wall normal)
+                    // Wall normal points away from wall, we want to slide parallel to wall
+                    val wallNormal = hit.hitNormal
+                    // Project movement direction onto wall plane: slide = dir - (dir·normal)*normal
+                    val dotProduct = direction.x * wallNormal.x + direction.z * wallNormal.z
+                    val slideX = direction.x - dotProduct * wallNormal.x
+                    val slideZ = direction.z - dotProduct * wallNormal.z
+                    val slideMag = sqrt(slideX * slideX + slideZ * slideZ)
+
+                    val slideDir = if (slideMag > 0.01f) {
+                        Vector3(slideX / slideMag, 0f, slideZ / slideMag)
+                    } else null
+
+                    return CollisionResult(false, allowedDistance, slideDir)
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Raycast error: ${e.message}")
         }
 
-        return Pair(true, desiredDistance)  // Path is clear
+        return CollisionResult(true, desiredDistance, null)
     }
 
     /**
