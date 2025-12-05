@@ -121,6 +121,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentPet by mutableStateOf<String?>(null)
   private var currentPetData by mutableStateOf<PetData?>(null)
   private var currentPetEntity: Entity? = null
+  private var isEnvironmentSetup by mutableStateOf(false)
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
   private var boneEntity: Entity? = null
@@ -756,6 +757,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Set floor polygon for pet locomotion (keep pet inside the room)
     petLocomotion.setFloorPolygonFromRect(roomCenterX, roomCenterZ, roomHalfSize, roomHalfSize)
+
+    // Mark environment as set up
+    isEnvironmentSetup = true
   }
 
   /**
@@ -892,6 +896,8 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
         Log.d(TAG, "AnchorProceduralMesh will now create visible meshes for all room anchors")
         logMrukRoomData()
+        // Mark environment as set up
+        isEnvironmentSetup = true
       } else {
         Log.e(TAG, "MRUK load failed with result: $result")
         Log.w(TAG, "Please set up your room in Quest Settings > Physical Space > Space Setup")
@@ -1087,7 +1093,8 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSetupRoom = ::setupRoom,
                       onScanRoom = ::scanRoom,
                       onQuit = ::quitApp,
-                      firebaseManager = firebaseManager
+                      firebaseManager = firebaseManager,
+                      isEnvironmentSetup = isEnvironmentSetup
                   )
                 }
               }

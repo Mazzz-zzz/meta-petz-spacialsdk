@@ -44,7 +44,8 @@ fun OptionsPanel(
     onSetupRoom: (() -> Unit)? = null,
     onScanRoom: (() -> Unit)? = null,
     onQuit: (() -> Unit)? = null,
-    firebaseManager: FirebaseManager? = null
+    firebaseManager: FirebaseManager? = null,
+    isEnvironmentSetup: Boolean = false
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
@@ -72,61 +73,84 @@ fun OptionsPanel(
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Spawn Bone button
-            if (onSpawnBone != null) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Spawn Bone Toy",
-                    onClick = {
-                        Log.d("OptionsPanel", "Spawn Bone button pressed")
-                        onSpawnBone()
-                    }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-            }
+            // Environment section header
+            Text(
+                text = "Environment",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.DarkGray,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Setup Room button
+            // Outside button (5x5 room)
             if (onSetupRoom != null) {
                 SecondaryButton(
                     modifier = Modifier.fillMaxWidth(),
-                    label = "Setup Room",
+                    label = if (isEnvironmentSetup) "Outside" else "Outside",
                     onClick = {
-                        Log.d("OptionsPanel", "Setup Room button pressed")
+                        Log.d("OptionsPanel", "Outside button pressed")
                         onSetupRoom()
                     }
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Scan Room button (MRUK data retrieval)
+            // Room Scan button (MRUK)
             if (onScanRoom != null) {
                 SecondaryButton(
                     modifier = Modifier.fillMaxWidth(),
-                    label = "Scan Room (MRUK)",
+                    label = "Room Scan",
                     onClick = {
-                        Log.d("OptionsPanel", "Scan Room button pressed")
+                        Log.d("OptionsPanel", "Room Scan button pressed")
                         onScanRoom()
                     }
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(16.dp))
             }
 
-            // Demo Pet button (from Firebase "demoUser")
-            if (demoPet != null && onSelectDemoPet != null) {
-                PrimaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Demo Pet: ${demoPet!!.name}",
-                    onClick = {
-                        Log.d("OptionsPanel", "Demo pet selected: ${demoPet!!.name}")
-                        onSelectDemoPet(demoPet!!)
-                    }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-            } else if (isLoadingDemoPet && firebaseManager != null) {
+            // Features section (disabled until environment is set up)
+            if (isEnvironmentSetup) {
+                // Spawn Bone button
+                if (onSpawnBone != null) {
+                    SecondaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Spawn Bone Toy",
+                        onClick = {
+                            Log.d("OptionsPanel", "Spawn Bone button pressed")
+                            onSpawnBone()
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                // Demo Pet button (from Firebase "demoUser")
+                if (demoPet != null && onSelectDemoPet != null) {
+                    PrimaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Demo Pet: ${demoPet!!.name}",
+                        onClick = {
+                            Log.d("OptionsPanel", "Demo pet selected: ${demoPet!!.name}")
+                            onSelectDemoPet(demoPet!!)
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                } else if (isLoadingDemoPet && firebaseManager != null) {
+                    Text(
+                        text = "Loading demo pet...",
+                        fontSize = 14.sp,
+                        color = Color.Gray
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            } else {
+                // Show hint when environment not set up
                 Text(
-                    text = "Loading demo pet...",
+                    text = "Select an environment to begin",
                     fontSize = 14.sp,
-                    color = Color.Gray
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(12.dp))
             }
