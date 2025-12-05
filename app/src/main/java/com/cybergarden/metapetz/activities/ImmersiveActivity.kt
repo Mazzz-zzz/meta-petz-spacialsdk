@@ -326,8 +326,10 @@ class ImmersiveActivity : AppSystemActivity() {
     //   loadSceneFromDevice()
     // }
 
-    // Enable recentering when user holds Meta button
-    scene.setReferenceSpace(com.meta.spatial.runtime.ReferenceSpace.LOCAL_FLOOR)
+    // NOTE: Do NOT call setReferenceSpace() or setViewOrigin() when using MRUK!
+    // MRUK anchors are stored in STAGE reference space. Changing reference space
+    // shifts the coordinate system but MRUK anchors don't get transformed, causing misalignment.
+    // scene.setReferenceSpace(com.meta.spatial.runtime.ReferenceSpace.LOCAL_FLOOR)  // DISABLED for MRUK
 
     // NOTE: Do NOT call setViewOrigin() when using MRUK!
     // MRUK anchors are in world space, so any view origin offset breaks alignment.
