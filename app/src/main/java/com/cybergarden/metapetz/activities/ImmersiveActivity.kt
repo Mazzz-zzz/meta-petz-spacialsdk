@@ -132,10 +132,6 @@ class ImmersiveActivity : AppSystemActivity() {
   // Custom wall material for transparent green walls
   private lateinit var wallMaterial: SceneMaterial
 
-  // AnchorProceduralMesh for automatic physics colliders on walls/floor/ceiling
-  // This is the proper Meta SDK way to create room boundary colliders
-  private var procMeshSpawner: AnchorProceduralMesh? = null
-
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
     SceneAudioAsset.loadLocalFile("audio/bone_hit.wav")
@@ -326,7 +322,9 @@ class ImmersiveActivity : AppSystemActivity() {
     // Enable recentering when user holds Meta button
     scene.setReferenceSpace(com.meta.spatial.runtime.ReferenceSpace.LOCAL_FLOOR)
 
-    scene.setViewOrigin(0.0f, 0.0f, 2.0f, 180.0f)
+    // NOTE: Do NOT call setViewOrigin() when using MRUK!
+    // MRUK anchors are in world space, so any view origin offset breaks alignment.
+    // scene.setViewOrigin(0.0f, 0.0f, 2.0f, 180.0f)  // DISABLED for MRUK compatibility
 
     // Configure bright lighting to illuminate the pet
     scene.setLightingEnvironment(
@@ -707,50 +705,60 @@ class ImmersiveActivity : AppSystemActivity() {
       roomColliderEntities.clear()
     }
 
-    // Create 5x5 meter room with 4 walls (no ceiling)
-    createRoomWalls()
+    // Get head position to center the room on the user
+    val headEntity = getHeadEntity()
+    val headTransform = headEntity?.tryGetComponent<Transform>()?.transform
+    val roomCenterX = headTransform?.t?.x ?: 0f
+    val roomCenterZ = headTransform?.t?.z ?: 0f
+
+    Log.d(TAG, "Centering room on head position: ($roomCenterX, $roomCenterZ)")
+
+    // Create 5x5 meter room with 4 walls (no ceiling) centered on head
+    createRoomWalls(roomCenterX, roomCenterZ)
   }
 
   /**
-   * Create a 5x5 meter room with 4 walls at world origin.
+   * Create a 5x5 meter room with 4 walls centered on the given position.
    * Each wall has physics collider + visible green mesh.
+   * @param centerX X coordinate of room center (from head position)
+   * @param centerZ Z coordinate of room center (from head position)
    */
-  private fun createRoomWalls() {
-    Log.d(TAG, "=== CREATING 5x5m ROOM WALLS ===")
+  private fun createRoomWalls(centerX: Float, centerZ: Float) {
+    Log.d(TAG, "=== CREATING 5x5m ROOM WALLS centered at ($centerX, $centerZ) ===")
 
     val floorY = floorHeight()
     val wallCenterY = floorY + roomWallHeight / 2
 
-    // Front wall (negative Z)
+    // Front wall (negative Z from center)
     createModularWall(
-        position = Vector3(0f, wallCenterY, -roomHalfSize),
+        position = Vector3(centerX, wallCenterY, centerZ - roomHalfSize),
         width = roomHalfSize * 2,
         height = roomWallHeight,
         rotation = 0f,
         name = "FrontWall"
     )
 
-    // Back wall (positive Z)
+    // Back wall (positive Z from center)
     createModularWall(
-        position = Vector3(0f, wallCenterY, roomHalfSize),
+        position = Vector3(centerX, wallCenterY, centerZ + roomHalfSize),
         width = roomHalfSize * 2,
         height = roomWallHeight,
         rotation = 0f,
         name = "BackWall"
     )
 
-    // Left wall (negative X)
+    // Left wall (negative X from center)
     createModularWall(
-        position = Vector3(-roomHalfSize, wallCenterY, 0f),
+        position = Vector3(centerX - roomHalfSize, wallCenterY, centerZ),
         width = roomHalfSize * 2,
         height = roomWallHeight,
         rotation = 90f,
         name = "LeftWall"
     )
 
-    // Right wall (positive X)
+    // Right wall (positive X from center)
     createModularWall(
-        position = Vector3(roomHalfSize, wallCenterY, 0f),
+        position = Vector3(centerX + roomHalfSize, wallCenterY, centerZ),
         width = roomHalfSize * 2,
         height = roomWallHeight,
         rotation = 90f,
@@ -808,62 +816,37 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Scan room using MRUK and log all boundary data.
-   * This retrieves the actual scanned room from Meta's Space Setup.
+   * Scan room using MRUK - loads scene data and triggers Space Setup if needed.
    */
   private fun scanRoom() {
-    Log.d(TAG, "")
-    Log.d(TAG, "╔══════════════════════════════════════════════════════════════╗")
-    Log.d(TAG, "║                    MRUK ROOM SCAN                            ║")
-    Log.d(TAG, "╚══════════════════════════════════════════════════════════════╝")
+    Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
 
-    // Check if MRUK is initialized
-    Log.d(TAG, "mrukFeature initialized: ${::mrukFeature.isInitialized}")
-    Log.d(TAG, "scenePermissionGranted: $scenePermissionGranted")
-
-    // Check current rooms
-    val currentRooms = mrukFeature.rooms
-    Log.d(TAG, "Current rooms count: ${currentRooms.size}")
-
-    if (currentRooms.isNotEmpty()) {
-      // Already have room data, log it
-      logMrukRoomData()
-    } else {
-      // Need to load scene first
-      Log.d(TAG, "No rooms loaded - calling loadSceneFromDevice()...")
-      try {
-        mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
-          Log.d(TAG, "loadSceneFromDevice result: $result")
-          if (error != null) {
-            Log.e(TAG, "loadSceneFromDevice error: ${error.message}", error)
-          }
-          if (result == MRUKLoadDeviceResult.SUCCESS) {
-            logMrukRoomData()
+    // Load scene data from device
+    mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
+      if (error != null) {
+        Log.e(TAG, "loadSceneFromDevice error: ${error.message}", error)
+      }
+      if (result == MRUKLoadDeviceResult.SUCCESS) {
+        Log.d(TAG, "Scene loaded successfully")
+        logMrukRoomData()
+      } else {
+        Log.e(TAG, "MRUK load failed: $result - launching Space Setup...")
+        // Prompt user to complete Space Setup
+        mrukFeature.requestSceneCapture().whenComplete { _, captureError ->
+          if (captureError != null) {
+            Log.e(TAG, "Scene capture error: ${captureError.message}")
           } else {
-            Log.e(TAG, "MRUK load failed: $result")
-            Log.d(TAG, "Launching Space Setup (Scene Capture)...")
-            // Prompt user to complete Space Setup
-            mrukFeature.requestSceneCapture().whenComplete { _, captureError ->
-              if (captureError != null) {
-                Log.e(TAG, "Scene capture error: ${captureError.message}")
+            Log.d(TAG, "Scene capture completed - reloading scene...")
+            mrukFeature.loadSceneFromDevice().whenComplete { reloadResult, _ ->
+              if (reloadResult == MRUKLoadDeviceResult.SUCCESS) {
+                Log.d(TAG, "Scene loaded after capture")
+                logMrukRoomData()
               } else {
-                Log.d(TAG, "Scene capture completed - reloading scene...")
-                // Stop any environment raycaster that might have been started
-                mrukFeature.stopEnvironmentRaycaster()
-                // After capture completes, try loading again
-                mrukFeature.loadSceneFromDevice().whenComplete { reloadResult, _ ->
-                  if (reloadResult == MRUKLoadDeviceResult.SUCCESS) {
-                    logMrukRoomData()
-                  } else {
-                    Log.e(TAG, "Still no rooms after capture: $reloadResult")
-                  }
-                }
+                Log.e(TAG, "Still no rooms after capture: $reloadResult")
               }
             }
           }
         }
-      } catch (e: Exception) {
-        Log.e(TAG, "Exception calling loadSceneFromDevice: ${e.message}", e)
       }
     }
   }
@@ -1054,6 +1037,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSpawnBone = ::spawnBoneToy,
                       onSetupRoom = ::setupRoom,
                       onScanRoom = ::scanRoom,
+                      onQuit = ::quitApp,
                       firebaseManager = firebaseManager
                   )
                 }
@@ -1075,13 +1059,18 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
-    // Clean up AnchorProceduralMesh spawner
-    procMeshSpawner?.destroy()
-    procMeshSpawner = null
-    // Clean up any manual room boundary colliders
+    // Clean up any room boundary colliders
     roomColliderEntities.forEach { it.destroy() }
     roomColliderEntities.clear()
     super.onSpatialShutdown()
+  }
+
+  /**
+   * Quit the app.
+   */
+  private fun quitApp() {
+    Log.d(TAG, "Quitting app...")
+    finish()
   }
 
   private fun loadGLXF(): Job {

@@ -33,7 +33,7 @@ import com.meta.spatial.uiset.theme.SpatialTheme
     heightDp = (PanelConstants.DEFAULT_DP_PER_METER * OPTIONS_PANEL_HEIGHT).toInt(),
 )
 fun OptionsPanelPreview() {
-    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {}, onScanRoom = {})
+    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {}, onScanRoom = {}, onQuit = {})
 }
 
 @Composable
@@ -43,6 +43,7 @@ fun OptionsPanel(
     onSpawnBone: (() -> Unit)? = null,
     onSetupRoom: (() -> Unit)? = null,
     onScanRoom: (() -> Unit)? = null,
+    onQuit: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
@@ -128,6 +129,19 @@ fun OptionsPanel(
                     color = Color.Gray
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Quit button
+            if (onQuit != null) {
+                Spacer(modifier = Modifier.weight(1f))
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Quit App",
+                    onClick = {
+                        Log.d("OptionsPanel", "Quit button pressed")
+                        onQuit()
+                    }
+                )
             }
         }
     }
