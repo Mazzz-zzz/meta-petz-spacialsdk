@@ -944,6 +944,21 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
         Log.d(TAG, "AnchorProceduralMesh will now create visible meshes for all room anchors")
         logMrukRoomData()
+
+        // Clear any room bounds that may have been created by onAnchorAdded callbacks during load
+        // This ensures we don't have duplicates when we manually process anchors below
+        clearRoomBoundsEdges()
+
+        // Manually process existing anchors to create wall colliders
+        // This is needed because onAnchorAdded only fires for NEW anchors,
+        // not anchors that already exist when re-scanning
+        for (room in mrukFeature.rooms) {
+          Log.d(TAG, "Processing ${room.anchors.size} existing anchors for room ${room.anchor.uuid}")
+          for (anchor in room.anchors) {
+            onAnchorAddedHandler(room, anchor)
+          }
+        }
+
         // Mark environment as set up
         isEnvironmentSetup = true
       } else {
