@@ -125,13 +125,23 @@ fun OptionsPanel(
                 }
 
                 // Demo Pet button (from Firebase "demoUser")
-                if (demoPet != null && onSelectDemoPet != null) {
+                if (demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
                     PrimaryButton(
                         modifier = Modifier.fillMaxWidth(),
                         label = "Demo Pet: ${demoPet!!.name}",
                         onClick = {
-                            Log.d("OptionsPanel", "Demo pet selected: ${demoPet!!.name}")
-                            onSelectDemoPet(demoPet!!)
+                            // Always fetch fresh data from Firebase when clicking
+                            Log.d("OptionsPanel", "Fetching fresh demo pet data...")
+                            firebaseManager.getFirstPetFromUser("demoUser") { freshPetData ->
+                                if (freshPetData != null) {
+                                    demoPet = freshPetData  // Update cached data too
+                                    Log.d("OptionsPanel", "Fresh demo pet loaded: ${freshPetData.name}, xp: ${freshPetData.xp}, level: ${freshPetData.level}")
+                                    onSelectDemoPet(freshPetData)
+                                } else {
+                                    Log.e("OptionsPanel", "Failed to fetch fresh pet data, using cached")
+                                    onSelectDemoPet(demoPet!!)
+                                }
+                            }
                         }
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -228,19 +238,19 @@ fun PetInfoPanel(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // XP Bar
+            // XP Bar - xp is stored as 0.0-1.0, displayed as percentage
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "XP: ${petData.xp} / ${petData.xpToNextLevel}",
+                    text = "XP: ${(petData.xp * 100).toInt()}%",
                     fontSize = 14.sp,
                     color = Color.DarkGray
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 LinearProgressIndicator(
-                    progress = { petData.xp.toFloat() / petData.xpToNextLevel.toFloat() },
+                    progress = { petData.xp / petData.xpToNextLevel },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(12.dp)

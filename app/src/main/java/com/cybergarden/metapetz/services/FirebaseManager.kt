@@ -106,6 +106,54 @@ class FirebaseManager(private val context: Context) {
     }
 
     /**
+     * Update a pet's XP value
+     * @param targetUserId The user who owns the pet
+     * @param petFirebaseKey The pet's Firebase key (the push ID like "-OfblJ9LlCzvl0nUDW0x")
+     * @param newXp The new XP value (0.0 to 1.0 representing 0% to 100%)
+     */
+    fun updatePetXp(targetUserId: String, petFirebaseKey: String, newXp: Float, onComplete: ((Boolean) -> Unit)? = null) {
+        db.reference
+            .child("users")
+            .child(targetUserId)
+            .child("pets")
+            .child(petFirebaseKey)
+            .child("xp")
+            .setValue(newXp)
+            .addOnSuccessListener {
+                Log.d(TAG, "Updated XP for $petFirebaseKey to $newXp")
+                onComplete?.invoke(true)
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "Error updating XP for $petFirebaseKey", e)
+                onComplete?.invoke(false)
+            }
+    }
+
+    /**
+     * Update a pet's level
+     * @param targetUserId The user who owns the pet
+     * @param petFirebaseKey The pet's Firebase key (the push ID like "-OfblJ9LlCzvl0nUDW0x")
+     * @param newLevel The new level value
+     */
+    fun updatePetLevel(targetUserId: String, petFirebaseKey: String, newLevel: Int, onComplete: ((Boolean) -> Unit)? = null) {
+        db.reference
+            .child("users")
+            .child(targetUserId)
+            .child("pets")
+            .child(petFirebaseKey)
+            .child("level")
+            .setValue(newLevel)
+            .addOnSuccessListener {
+                Log.d(TAG, "Updated level for $petFirebaseKey to $newLevel")
+                onComplete?.invoke(true)
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "Error updating level for $petFirebaseKey", e)
+                onComplete?.invoke(false)
+            }
+    }
+
+    /**
      * Parse a DataSnapshot into PetData
      */
     private fun parsePetData(snapshot: DataSnapshot): PetData {
@@ -117,13 +165,14 @@ class FirebaseManager(private val context: Context) {
         )
 
         return PetData(
+            firebaseKey = snapshot.key ?: "",  // The actual Firebase push ID (e.g., "-OfblJ9LlCzvl0nUDW0x")
             shortId = snapshot.child("shortId").getValue(String::class.java) ?: snapshot.key ?: "",
             name = snapshot.child("name").getValue(String::class.java) ?: "Unknown",
             description = snapshot.child("description").getValue(String::class.java) ?: "",
             colors = colors,
             level = snapshot.child("level").getValue(Int::class.java) ?: 1,
-            xp = snapshot.child("xp").getValue(Int::class.java) ?: 0,
-            xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Int::class.java) ?: 100
+            xp = snapshot.child("xp").getValue(Double::class.java)?.toFloat() ?: 0f,
+            xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Double::class.java)?.toFloat() ?: 1f
         )
     }
 }

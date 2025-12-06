@@ -212,6 +212,11 @@ class ImmersiveActivity : AppSystemActivity() {
   private var attentionResumeJob: Job? = null
   private val ATTENTION_TIMEOUT_MS = 5000L
 
+  // XP gain while attention is held (0.01 = 1%, 1.0 = 100% full bar)
+  private var xpGainJob: Job? = null
+  private val XP_GAIN_PER_TICK = 0.01f  // 1% per tick (stored as 0.01)
+  private val XP_GAIN_INTERVAL_MS = 2000L
+
   // Hand distance for debug UI (updated by clap detector)
   private var handDistance by mutableStateOf(0f)
   private var cumulativeDisplacement by mutableStateOf(0f)
@@ -631,7 +636,7 @@ class ImmersiveActivity : AppSystemActivity() {
       name = petName,
       description = "Your $petName companion",
       level = 1,
-      xp = 0
+      xp = 0f
     )
     val colors = currentPetData?.colors ?: PetColors()
     spawnPetModel(petName, colors)
@@ -1354,8 +1359,56 @@ class ImmersiveActivity : AppSystemActivity() {
     // Start continuously facing the player with smooth rotation
     petLocomotion.startFacingPlayer { getHeadEntity() }
 
+    // Start XP gain coroutine
+    startXpGain()
+
     // Reset the attention timeout
     resetAttentionTimeout()
+  }
+
+  /**
+   * Start gaining XP while pet has attention (1% per tick)
+   */
+  private fun startXpGain() {
+    xpGainJob?.cancel()
+    xpGainJob = activityScope.launch {
+      while (isActive && isPetAttentive) {
+        delay(XP_GAIN_INTERVAL_MS)
+
+        val petData = currentPetData ?: continue
+
+        // Add 1% XP per tick (0.01 stored, displayed as 1%)
+        var newXp = petData.xp + XP_GAIN_PER_TICK
+        var newLevel = petData.level
+
+        // Level up if XP >= 1.0 (100%)
+        if (newXp >= 1f) {
+          newXp = 0f
+          newLevel += 1
+          Log.d(TAG, "LEVEL UP! Now level $newLevel")
+        }
+
+        Log.d(TAG, "Adding 1% XP, new total: ${(newXp * 100).toInt()}%, level: $newLevel")
+
+        // Update local state
+        currentPetData = petData.copy(xp = newXp, level = newLevel)
+
+        // Update database using Firebase key (the actual path in the database)
+        firebaseManager.updatePetXp("demoUser", petData.firebaseKey, newXp)
+        if (newLevel != petData.level) {
+          firebaseManager.updatePetLevel("demoUser", petData.firebaseKey, newLevel)
+        }
+      }
+    }
+  }
+
+  /**
+   * Stop XP gain
+   */
+  private fun stopXpGain() {
+    xpGainJob?.cancel()
+    xpGainJob = null
+    Log.d(TAG, "XP gain stopped")
   }
 
   /**
@@ -1367,6 +1420,7 @@ class ImmersiveActivity : AppSystemActivity() {
       delay(ATTENTION_TIMEOUT_MS)
       Log.d(TAG, "Attention timeout - pet loses attention and resumes wandering")
       isPetAttentive = false
+      stopXpGain()  // Stop XP accumulation when attention is lost
       petLocomotion.stopFacingPlayer()
       petLocomotion.startIdleWander()
     }

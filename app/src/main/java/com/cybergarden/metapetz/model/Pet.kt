@@ -11,13 +11,14 @@ data class Pet(
  * Pet data from Firebase - simplified schema
  */
 data class PetData(
-    val shortId: String = "",
+    val firebaseKey: String = "",  // The actual Firebase push ID (e.g., "-OfblJ9LlCzvl0nUDW0x")
+    val shortId: String = "",      // The user-friendly ID (e.g., "DU666")
     val name: String = "Unknown",
     val description: String = "",
     val colors: PetColors = PetColors(),
     val level: Int = 1,
-    val xp: Int = 0,
-    val xpToNextLevel: Int = 100
+    val xp: Float = 0f,            // XP as decimal (0.0 to 1.0), displayed as percentage
+    val xpToNextLevel: Float = 1f  // 1.0 = 100%
 )
 
 data class PetColors(
