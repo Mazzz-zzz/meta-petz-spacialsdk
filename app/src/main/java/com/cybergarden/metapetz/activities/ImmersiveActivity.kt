@@ -172,6 +172,10 @@ class ImmersiveActivity : AppSystemActivity() {
   // Navigation grid for pathfinding (avoids furniture)
   private var navGrid: NavGrid? = null
 
+  // Pending wall data to block after NavGrid is created
+  data class PendingWall(val worldPos: Vector3, val worldRot: Quaternion, val width: Float)
+  private val pendingWalls = mutableListOf<PendingWall>()
+
   // Debug visibility toggles (reactive for Compose UI)
   private var isRoomMeshVisible by mutableStateOf(true)
 
@@ -1112,6 +1116,9 @@ class ImmersiveActivity : AppSystemActivity() {
             onAnchorAddedHandler(room, anchor)
           }
         }
+
+        // Process any walls that were queued before NavGrid was created
+        processPendingWalls()
 
         // After processing all anchors, keep only the largest connected walkable region
         navGrid?.let { grid ->
@@ -2218,17 +2225,32 @@ class ImmersiveActivity : AppSystemActivity() {
    * Walls are vertical planes, so we project their width onto the floor.
    */
   private fun blockWallInNavGrid(anchorEntity: Entity, anchorPose: Pose, width: Float) {
-    val grid = navGrid ?: return
-
     // Get the absolute world transform
     val worldTransform = getAbsoluteTransform(anchorEntity)
     val worldPos = worldTransform.t
     val worldRot = worldTransform.q
 
+    // If NavGrid doesn't exist yet, queue this wall for later processing
+    val grid = navGrid
+    if (grid == null) {
+      pendingWalls.add(PendingWall(worldPos, worldRot, width))
+      Log.d(TAG, "Queued wall for later blocking: width=$width at (${worldPos.x}, ${worldPos.z})")
+      return
+    }
+
+    // Process this wall now
+    processWallBlocking(grid, worldPos, worldRot, width)
+  }
+
+  /**
+   * Process wall blocking - creates debug spheres and blocks NavGrid cells.
+   */
+  private fun processWallBlocking(grid: NavGrid, worldPos: Vector3, worldRot: Quaternion, width: Float) {
+
     // Wall is a vertical plane - get the two bottom corners
     // In local space, wall extends from -width/2 to +width/2 along X axis
     val halfWidth = width / 2f
-    val wallThickness = 0.15f  // 15cm thick wall blocking
+    val wallThickness = 0.30f  // 30cm thick wall blocking (for visibility)
 
     // Local corners of wall footprint (a thin rectangle along the wall base)
     val localCorners = listOf(
@@ -2244,25 +2266,69 @@ class ImmersiveActivity : AppSystemActivity() {
       Pair(worldPos.x + rotated.x, worldPos.z + rotated.z)
     }
 
-    // Create blue debug spheres at each wall corner
+    // Get the two endpoints of the wall (left and right ends along the wall's width)
     val debugFloorY = grid.floorY
-    worldCorners.forEach { (wx, wz) ->
+    val leftEnd = Vector3(-halfWidth, 0f, 0f)
+    val rightEnd = Vector3(+halfWidth, 0f, 0f)
+
+    // Transform endpoints to world space
+    val leftRotated = worldRot.times(leftEnd)
+    val rightRotated = worldRot.times(rightEnd)
+    val leftWorld = Vector3(worldPos.x + leftRotated.x, debugFloorY, worldPos.z + leftRotated.z)
+    val rightWorld = Vector3(worldPos.x + rightRotated.x, debugFloorY, worldPos.z + rightRotated.z)
+
+    Log.d(TAG, "Wall endpoints: left=(${leftWorld.x}, ${leftWorld.z}), right=(${rightWorld.x}, ${rightWorld.z})")
+
+    // Create spheres every 15cm along the wall and block each point
+    val sphereSpacing = 0.15f  // 15cm spacing
+    val numSpheres = maxOf(2, (width / sphereSpacing).toInt() + 1)
+    val blockRadius = 0.20f  // 20cm blocking radius around each point
+
+    for (i in 0 until numSpheres) {
+      val t = if (numSpheres > 1) i.toFloat() / (numSpheres - 1) else 0.5f
+      val sphereX = leftWorld.x + (rightWorld.x - leftWorld.x) * t
+      val sphereZ = leftWorld.z + (rightWorld.z - leftWorld.z) * t
+
+      // Create visual sphere
+      val isEndpoint = (i == 0 || i == numSpheres - 1)
       val sphere = Entity.create(listOf(
         Mesh(android.net.Uri.parse("mesh://sphere")),
-        Sphere(0.05f),  // 5cm radius
+        Sphere(if (isEndpoint) 0.10f else 0.05f),
         Material().apply {
-          baseColor = Color4(0.2f, 0.4f, 1f, 1f)  // Blue
+          baseColor = Color4(1f, 0.2f, 0.2f, 1f)  // Red
           unlit = true
         },
-        Transform(Pose(Vector3(wx, debugFloorY, wz), Quaternion())),
-        Scale(Vector3(1f, 1f, 1f))
+        Transform(Pose(Vector3(sphereX, debugFloorY, sphereZ), Quaternion())),
+        Scale(Vector3(1f, 0.5f, 1f))
       ))
-      furnitureDebugSpheres.add(sphere)  // Reuse same list for cleanup
+      furnitureDebugSpheres.add(sphere)
+
+      // Block a small square around this point in the NavGrid with 15cm padding
+      val blockCorners = listOf(
+        Pair(sphereX - blockRadius, sphereZ - blockRadius),
+        Pair(sphereX + blockRadius, sphereZ - blockRadius),
+        Pair(sphereX + blockRadius, sphereZ + blockRadius),
+        Pair(sphereX - blockRadius, sphereZ + blockRadius)
+      )
+      grid.blockPolygon(blockCorners, padding = 0.15f)
     }
 
-    // Block the wall footprint in NavGrid (10cm padding)
-    grid.blockPolygon(worldCorners, padding = 0.10f)
-    Log.d(TAG, "Blocked wall in NavGrid at (${worldPos.x}, ${worldPos.z}), width=$width")
+    Log.d(TAG, "Created $numSpheres wall spheres every 15cm, each blocking ${(blockRadius + 0.15f)*2}m area")
+  }
+
+  /**
+   * Process any pending walls that were queued before NavGrid existed.
+   */
+  private fun processPendingWalls() {
+    val grid = navGrid ?: return
+    if (pendingWalls.isEmpty()) return
+
+    Log.d(TAG, "Processing ${pendingWalls.size} pending walls")
+    for (wall in pendingWalls) {
+      processWallBlocking(grid, wall.worldPos, wall.worldRot, wall.width)
+    }
+    pendingWalls.clear()
+    Log.d(TAG, "NavGrid after walls: ${grid.getWalkableCellCount()} walkable cells")
   }
 
   /**
