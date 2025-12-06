@@ -211,6 +211,9 @@ class PetLocomotion(
     // Thrown bones reference for pushing
     private var thrownBones: MutableList<Entity>? = null
 
+    // Navigation grid for avoiding furniture when wandering
+    private var navGrid: NavGrid? = null
+
     // Collision settings
     private val collisionRadius = 0.15f  // Pet's collision radius in meters
     private val bonePushRadius = 0.25f   // Distance at which pet pushes bones
@@ -247,6 +250,18 @@ class PetLocomotion(
     fun setThrownBones(bones: MutableList<Entity>) {
         thrownBones = bones
         Log.d(TAG, "Thrown bones reference set")
+    }
+
+    /**
+     * Set navigation grid for pathfinding (avoiding furniture)
+     */
+    fun setNavGrid(grid: NavGrid?) {
+        navGrid = grid
+        if (grid != null) {
+            Log.d(TAG, "NavGrid set: ${grid.gridWidth}x${grid.gridHeight} cells, ${grid.getWalkableCellCount()} walkable")
+        } else {
+            Log.d(TAG, "NavGrid cleared")
+        }
     }
 
     /**
@@ -769,6 +784,7 @@ class PetLocomotion(
     /**
      * Start idle wander mode - pet will randomly pick points and walk to them
      * The pet will wait a random time between walks (2-6 seconds)
+     * Uses NavGrid when available to pick walkable points that avoid furniture
      */
     fun startIdleWander() {
         if (petEntity == null) {
@@ -781,7 +797,7 @@ class PetLocomotion(
             return
         }
 
-        Log.d(TAG, "Starting idle wander mode")
+        Log.d(TAG, "Starting idle wander mode (navGrid=${navGrid != null})")
         isIdleWandering = true
 
         idleWanderJob = scope.launch {
@@ -798,18 +814,37 @@ class PetLocomotion(
                     continue
                 }
 
-                // Pick a random point within the wander area
-                val randomAngle = Random.nextFloat() * 2f * Math.PI.toFloat()
-                val randomDistance = Random.nextFloat() * wanderRadius
-                val targetX = wanderCenterX + randomDistance * kotlin.math.cos(randomAngle)
-                val targetZ = wanderCenterZ + randomDistance * kotlin.math.sin(randomAngle)
-                val targetY = floorY
+                // Pick a random walkable point
+                val target: Vector3? = if (navGrid != null) {
+                    // Use NavGrid to get a random walkable point (avoids furniture)
+                    val gridTarget = navGrid?.getRandomWalkablePoint()
+                    if (gridTarget != null) {
+                        Log.d(TAG, "Idle wander: NavGrid selected point $gridTarget")
+                        gridTarget
+                    } else {
+                        Log.w(TAG, "Idle wander: NavGrid has no walkable cells, falling back")
+                        null
+                    }
+                } else {
+                    null
+                }
 
-                val target = Vector3(targetX, targetY, targetZ)
-                Log.d(TAG, "Idle wander: moving to random point $target")
+                // Fallback to circular wander area if NavGrid unavailable
+                val finalTarget = target ?: run {
+                    val randomAngle = Random.nextFloat() * 2f * Math.PI.toFloat()
+                    val randomDistance = Random.nextFloat() * wanderRadius
+                    val targetX = wanderCenterX + randomDistance * kotlin.math.cos(randomAngle)
+                    val targetZ = wanderCenterZ + randomDistance * kotlin.math.sin(randomAngle)
+                    val targetY = floorY
+                    Vector3(targetX, targetY, targetZ).also {
+                        Log.d(TAG, "Idle wander: fallback circular point $it")
+                    }
+                }
+
+                Log.d(TAG, "Idle wander: moving to $finalTarget")
 
                 // Move to the random point
-                moveTo(target)
+                moveTo(finalTarget)
 
                 // Wait for walk to complete
                 while (isWalking && isActive && isIdleWandering) {

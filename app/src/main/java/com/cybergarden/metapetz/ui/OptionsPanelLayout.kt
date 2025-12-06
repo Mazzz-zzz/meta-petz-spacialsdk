@@ -3,7 +3,11 @@ package com.cybergarden.metapetz.ui
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -45,7 +49,11 @@ fun OptionsPanel(
     onScanRoom: (() -> Unit)? = null,
     onQuit: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null,
-    isEnvironmentSetup: Boolean = false
+    isEnvironmentSetup: Boolean = false,
+    isDebugGridEnabled: Boolean = false,
+    onDebugGridToggle: ((Boolean) -> Unit)? = null,
+    isRoomMeshVisible: Boolean = true,
+    onRoomMeshToggle: ((Boolean) -> Unit)? = null
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
@@ -64,12 +72,14 @@ fun OptionsPanel(
     }
 
     SpatialTheme(colorScheme = getPanelTheme()) {
+        val scrollState = rememberScrollState()
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(SpatialTheme.shapes.large)
                 .background(brush = LocalColorScheme.current.panel)
-                .padding(32.dp),
+                .padding(32.dp)
+                .verticalScroll(scrollState),
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -106,8 +116,61 @@ fun OptionsPanel(
                         onScanRoom()
                     }
                 )
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
             }
+
+            // Debug Grid toggle (only show when environment is set up)
+            if (isEnvironmentSetup && onDebugGridToggle != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = isDebugGridEnabled,
+                        onCheckedChange = { enabled ->
+                            Log.d("OptionsPanel", "Debug grid toggled: $enabled")
+                            onDebugGridToggle(enabled)
+                        },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF4CAF50),
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Text(
+                        text = "Show NavGrid Debug",
+                        fontSize = 14.sp,
+                        color = Color.DarkGray
+                    )
+                }
+            }
+
+            // Room Mesh visibility toggle (only show when environment is set up)
+            if (isEnvironmentSetup && onRoomMeshToggle != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = isRoomMeshVisible,
+                        onCheckedChange = { visible ->
+                            Log.d("OptionsPanel", "Room mesh toggled: $visible")
+                            onRoomMeshToggle(visible)
+                        },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF2196F3),
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Text(
+                        text = "Show Room Mesh",
+                        fontSize = 14.sp,
+                        color = Color.DarkGray
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Features section (disabled until environment is set up)
             if (isEnvironmentSetup) {

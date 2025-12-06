@@ -26,6 +26,7 @@ import androidx.core.net.toUri
 import com.cybergarden.metapetz.BuildConfig
 import com.cybergarden.metapetz.R
 import com.cybergarden.metapetz.ecs.ClapDetector
+import com.cybergarden.metapetz.ecs.NavGrid
 import com.cybergarden.metapetz.ecs.PetLocomotion
 import androidx.compose.ui.text.font.FontWeight
 import com.cybergarden.metapetz.model.PetData
@@ -129,6 +130,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentPetData by mutableStateOf<PetData?>(null)
   private var currentPetEntity: Entity? = null
   private var isEnvironmentSetup by mutableStateOf(false)
+  private var isDebugGridEnabled by mutableStateOf(false)
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
   private var boneEntity: Entity? = null
@@ -164,8 +166,20 @@ class ImmersiveActivity : AppSystemActivity() {
   // Physics colliders for room bounds (walls from room scan)
   private val roomBoundsPhysicsEntities = mutableListOf<Entity>()
 
+  // Navigation grid for pathfinding (avoids furniture)
+  private var navGrid: NavGrid? = null
+
+  // Debug visibility toggles (reactive for Compose UI)
+  private var isRoomMeshVisible by mutableStateOf(true)
+
   // Labels that represent room bounds (walls, floor, ceiling)
   private val roomBoundsLabels = setOf(MRUKLabel.WALL_FACE, MRUKLabel.FLOOR, MRUKLabel.CEILING)
+
+  // Labels that represent furniture to block in NavGrid
+  private val furnitureLabels = setOf(
+      MRUKLabel.TABLE, MRUKLabel.COUCH, MRUKLabel.BED, MRUKLabel.STORAGE,
+      MRUKLabel.SCREEN, MRUKLabel.LAMP, MRUKLabel.PLANT, MRUKLabel.OTHER
+  )
 
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
@@ -852,6 +866,12 @@ class ImmersiveActivity : AppSystemActivity() {
     // Clear any existing room scan data (mutual exclusivity)
     clearRoomBoundsEdges()
 
+    // Clear old NavGrid and debug visualization
+    navGrid?.clearDebugVisualization()
+    navGrid = null
+    petLocomotion.setNavGrid(null)
+    isDebugGridEnabled = false  // Reset checkbox state
+
     // Destroy procMeshSpawner to remove furniture meshes from room scan
     procMeshSpawner?.destroy()
     procMeshSpawner = null
@@ -996,6 +1016,12 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Clear any existing room scan data (in case re-scanning)
     clearRoomBoundsEdges()
+
+    // Clear old NavGrid and debug visualization
+    navGrid?.clearDebugVisualization()
+    navGrid = null
+    petLocomotion.setNavGrid(null)
+    isDebugGridEnabled = false  // Reset checkbox state
 
     // Recreate procMeshSpawner if it was destroyed (e.g., by setupRoom)
     if (procMeshSpawner == null) {
@@ -1282,7 +1308,11 @@ class ImmersiveActivity : AppSystemActivity() {
                       onScanRoom = ::scanRoom,
                       onQuit = ::quitApp,
                       firebaseManager = firebaseManager,
-                      isEnvironmentSetup = isEnvironmentSetup
+                      isEnvironmentSetup = isEnvironmentSetup,
+                      isDebugGridEnabled = isDebugGridEnabled,
+                      onDebugGridToggle = ::toggleDebugGrid,
+                      isRoomMeshVisible = isRoomMeshVisible,
+                      onRoomMeshToggle = ::toggleRoomMesh
                   )
                 }
               }
@@ -1329,6 +1359,59 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun quitApp() {
     Log.d(TAG, "Quitting app...")
     finish()
+  }
+
+  /**
+   * Toggle the NavGrid debug visualization.
+   */
+  private fun toggleDebugGrid(enabled: Boolean) {
+    Log.d(TAG, "Toggle debug grid: $enabled")
+    isDebugGridEnabled = enabled
+    val grid = navGrid
+    if (grid != null) {
+      if (enabled) {
+        grid.createDebugVisualization(showBlocked = true)
+      } else {
+        grid.clearDebugVisualization()
+      }
+    }
+  }
+
+  /**
+   * Toggle the room mesh visibility (walls, floor, furniture edges).
+   */
+  private fun toggleRoomMesh(visible: Boolean) {
+    Log.d(TAG, "Toggle room mesh visibility: $visible")
+    isRoomMeshVisible = visible
+
+    // Toggle visibility of room edge entities (walls, floor, ceiling)
+    for (entity in roomEdgeEntities) {
+      entity.setComponent(Visible(visible))
+    }
+
+    // Toggle visibility of furniture procedural meshes
+    // AnchorProceduralMesh doesn't have a visibility toggle, so we destroy/recreate
+    if (!visible) {
+      procMeshSpawner?.destroy()
+      procMeshSpawner = null
+    } else if (procMeshSpawner == null && isEnvironmentSetup) {
+      // Recreate procMeshSpawner when making visible again
+      procMeshSpawner = AnchorProceduralMesh(
+          mrukFeature,
+          mapOf(
+              MRUKLabel.TABLE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.COUCH to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.BED to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.LAMP to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.PLANT to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+          )
+      )
+    }
   }
 
   /**
@@ -1904,13 +1987,14 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Called when an anchor is added to a room. Creates edge geometry for room bounds anchors.
+   * Called when an anchor is added to a room. Creates edge geometry for room bounds anchors
+   * and blocks furniture in NavGrid.
    */
   private fun onAnchorAddedHandler(room: MRUKRoom, anchorEntity: Entity) {
     // Get the MRUKAnchor component to check its labels
     val anchorComponent = anchorEntity.tryGetComponent<MRUKAnchor>() ?: return
 
-    // Check if this anchor has any room bounds labels (wall, floor, or ceiling)
+    // Check anchor labels
     val anchorLabels = mutableListOf<String>()
     for (i in 0 until anchorComponent.labelsCount) {
       anchorComponent.labels[i]?.let { anchorLabels.add(it) }
@@ -1920,6 +2004,24 @@ class ImmersiveActivity : AppSystemActivity() {
       roomBoundsLabels.any { it.name == labelName }
     }
 
+    val hasFurnitureLabel = anchorLabels.any { labelName ->
+      furnitureLabels.any { it.name == labelName }
+    }
+
+    // Get the anchor's transform/pose
+    val transform = anchorEntity.tryGetComponent<Transform>()
+    if (transform == null) {
+      Log.d(TAG, "Anchor has no Transform component, skipping: $anchorLabels")
+      return
+    }
+    val anchorPose = transform.transform
+
+    // Block furniture in NavGrid
+    if (hasFurnitureLabel) {
+      blockFurnitureInNavGrid(anchorEntity, anchorPose, anchorLabels)
+    }
+
+    // Handle room bounds (walls, floor, ceiling)
     if (!hasRoomBoundsLabel) {
       return
     }
@@ -1934,14 +2036,6 @@ class ImmersiveActivity : AppSystemActivity() {
     // Calculate width and height from plane min/max
     val width = planeComponent.max.x - planeComponent.min.x
     val height = planeComponent.max.y - planeComponent.min.y
-
-    // Get the anchor's transform/pose
-    val transform = anchorEntity.tryGetComponent<Transform>()
-    if (transform == null) {
-      Log.d(TAG, "Anchor has no Transform component, skipping: $anchorLabels")
-      return
-    }
-    val anchorPose = transform.transform
 
     Log.d(TAG, "Creating edges for anchor: labels=$anchorLabels, size=${width}x${height}")
 
@@ -1968,10 +2062,53 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
+   * Block a furniture anchor's footprint in the NavGrid.
+   * Uses the anchor's bounds to mark cells as non-walkable.
+   */
+  private fun blockFurnitureInNavGrid(anchorEntity: Entity, anchorPose: Pose, labels: List<String>) {
+    val grid = navGrid ?: return
+
+    // Try to get bounds from MRUKPlane component (furniture usually has this)
+    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+
+    val halfSizeX: Float
+    val halfSizeZ: Float
+
+    if (planeComponent != null) {
+      // Use plane bounds
+      halfSizeX = (planeComponent.max.x - planeComponent.min.x) / 2f
+      halfSizeZ = (planeComponent.max.y - planeComponent.min.y) / 2f  // Y in plane = Z in world for floor-level
+    } else {
+      // No size info available, use default furniture size (0.5m x 0.5m)
+      halfSizeX = 0.25f
+      halfSizeZ = 0.25f
+      Log.d(TAG, "Furniture has no MRUKPlane, using default size: $labels")
+    }
+
+    // Block the footprint in NavGrid
+    grid.blockRect(anchorPose.t.x, anchorPose.t.z, halfSizeX, halfSizeZ)
+    Log.d(TAG, "Blocked furniture in NavGrid: $labels at (${anchorPose.t.x}, ${anchorPose.t.z}), size ${halfSizeX*2}x${halfSizeZ*2}")
+    Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
+
+    // Refresh debug visualization if enabled
+    if (isDebugGridEnabled) {
+      grid.createDebugVisualization(showBlocked = true)
+    }
+  }
+
+  /**
    * Extract the floor polygon from the FLOOR anchor's plane bounds.
    * Creates a polygon from the plane's min/max corners transformed to world space.
+   * Also creates the NavGrid for pathfinding.
    */
   private fun extractFloorPolygon(anchorPose: Pose, planeComponent: MRUKPlane) {
+    // Clear any existing NavGrid before creating a new one (ensures only 1 at a time)
+    navGrid?.let { existingGrid ->
+      Log.d(TAG, "Clearing existing NavGrid before creating new one")
+      existingGrid.clearDebugVisualization()
+    }
+    navGrid = null
+
     // Get the floor plane's local corners from min/max
     val minX = planeComponent.min.x
     val maxX = planeComponent.max.x
@@ -2008,6 +2145,17 @@ class ImmersiveActivity : AppSystemActivity() {
     Log.d(TAG, "Floor polygon set from FLOOR anchor with ${vertices.size} vertices")
     vertices.forEachIndexed { i, v ->
       Log.d(TAG, "  Vertex $i: (${v.x}, ${v.z})")
+    }
+
+    // Create NavGrid from floor polygon for pathfinding
+    val floorY = anchorPose.t.y
+    navGrid = NavGrid.fromFloorPolygon(floorPolygon, floorY)
+    petLocomotion.setNavGrid(navGrid)
+    Log.d(TAG, "NavGrid created: ${navGrid?.gridWidth}x${navGrid?.gridHeight} cells, ${navGrid?.getWalkableCellCount()} walkable")
+
+    // Create debug visualization if enabled
+    if (isDebugGridEnabled) {
+      navGrid?.createDebugVisualization(showBlocked = true)
     }
   }
 
