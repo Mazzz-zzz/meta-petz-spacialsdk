@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
@@ -56,7 +57,10 @@ fun OptionsPanel(
     isDebugGridEnabled: Boolean = false,
     onDebugGridToggle: ((Boolean) -> Unit)? = null,
     isRoomMeshVisible: Boolean = true,
-    onRoomMeshToggle: ((Boolean) -> Unit)? = null
+    onRoomMeshToggle: ((Boolean) -> Unit)? = null,
+    // Debug state values
+    isPetAttentive: Boolean = false,
+    hasBone: Boolean = false
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
@@ -329,6 +333,47 @@ fun OptionsPanel(
                         Text(
                             text = "Show Room Mesh",
                             fontSize = 14.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Pet state debug values
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(
+                                    if (isPetAttentive) Color(0xFF4CAF50) else Color.Gray,
+                                    shape = CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Attention",
+                            fontSize = 12.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(
+                                    if (hasBone) Color(0xFFFF9800) else Color.Gray,
+                                    shape = CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Has Bone",
+                            fontSize = 12.sp,
                             color = Color.DarkGray
                         )
                     }

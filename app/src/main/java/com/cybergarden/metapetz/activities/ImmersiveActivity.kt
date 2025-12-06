@@ -259,6 +259,9 @@ class ImmersiveActivity : AppSystemActivity() {
   private var attentionResumeJob: Job? = null
   private val ATTENTION_TIMEOUT_MS = 5000L
 
+  // Fetch system - pet has bone in mouth
+  private var petHasBone by mutableStateOf(false)
+
   // XP gain while attention is held (0.01 = 1%, 1.0 = 100% full bar)
   private var xpGainJob: Job? = null
   private val XP_GAIN_PER_TICK = 0.01f  // 1% per tick (stored as 0.01)
@@ -315,14 +318,17 @@ class ImmersiveActivity : AppSystemActivity() {
       }
       onFetchPickup = { bone ->
         Log.d(TAG, "Pet picked up bone id=${bone.id}")
+        petHasBone = true
       }
       onFetchComplete = { bone ->
         Log.d(TAG, "Pet completed fetch!")
+        petHasBone = false
         // Resume idle wander after fetch
         startIdleWander()
       }
       onFetchCancelled = {
         Log.d(TAG, "Fetch was cancelled")
+        petHasBone = false
         startIdleWander()
       }
       // Mouth bone callbacks
@@ -1394,7 +1400,9 @@ class ImmersiveActivity : AppSystemActivity() {
                       isDebugGridEnabled = isDebugGridEnabled,
                       onDebugGridToggle = ::toggleDebugGrid,
                       isRoomMeshVisible = isRoomMeshVisible,
-                      onRoomMeshToggle = ::toggleRoomMesh
+                      onRoomMeshToggle = ::toggleRoomMesh,
+                      isPetAttentive = isPetAttentive,
+                      hasBone = petHasBone
                   )
                 }
               }
