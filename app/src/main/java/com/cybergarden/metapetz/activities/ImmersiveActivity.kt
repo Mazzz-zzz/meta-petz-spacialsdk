@@ -254,13 +254,26 @@ class ImmersiveActivity : AppSystemActivity() {
   private var boneGrabTimeMs: Long = 0L
   private val BONE_THROW_COOLDOWN_MS = 1500L
 
-  // Attention system - pet pays attention when clapped at
+  // Attention system - activity-based attention tracking
+  enum class AttentionActivity {
+    NONE,           // No activity - can timeout
+    FACING_PLAYER,  // Just got attention, facing player - can timeout
+    FETCHING        // Actively fetching bone - NO timeout
+  }
+
   private var isPetAttentive by mutableStateOf(false)
+  private var currentActivity by mutableStateOf(AttentionActivity.NONE)
   private var attentionResumeJob: Job? = null
   private val ATTENTION_TIMEOUT_MS = 5000L
 
   // Fetch system - pet has bone in mouth
   private var petHasBone by mutableStateOf(false)
+
+  // Fetch debug states for UI
+  private var debugFetchState by mutableStateOf("IDLE")
+  private var debugDistanceToBone by mutableStateOf(-1f)
+  private var debugBonePickedUp by mutableStateOf(false)
+  private var debugReturningBone by mutableStateOf(false)
 
   // XP gain while attention is held (0.01 = 1%, 1.0 = 100% full bar)
   private var xpGainJob: Job? = null
@@ -314,22 +327,58 @@ class ImmersiveActivity : AppSystemActivity() {
       // Fetch callbacks
       onFetchStart = { bone ->
         Log.d(TAG, "Pet started fetching bone id=${bone.id}")
-        isPetAttentive = true  // Pet is focused on fetch
+        isPetAttentive = true
+        currentActivity = AttentionActivity.FETCHING  // Lock attention during fetch
+        attentionResumeJob?.cancel()  // Cancel any pending timeout
+        // Debug states
+        debugFetchState = "MOVING_TO_BONE"
+        debugBonePickedUp = false
+        debugReturningBone = false
+        // Start tracking distance to bone
+        startDistanceTracking(bone)
       }
       onFetchPickup = { bone ->
         Log.d(TAG, "Pet picked up bone id=${bone.id}")
         petHasBone = true
+        // Debug states
+        debugFetchState = "PICKING_UP"
+        debugBonePickedUp = true
+        debugDistanceToBone = 0f
+      }
+      onFetchReturning = { bone ->
+        Log.d(TAG, "Pet returning with bone id=${bone.id}")
+        // Debug states
+        debugFetchState = "RETURNING"
+        debugReturningBone = true
+        debugDistanceToBone = -1f  // No longer tracking bone distance
+        stopDistanceTracking()
       }
       onFetchComplete = { bone ->
         Log.d(TAG, "Pet completed fetch!")
         petHasBone = false
+        currentActivity = AttentionActivity.NONE
         // Resume idle wander after fetch
+        isPetAttentive = false
         startIdleWander()
+        // Debug states
+        debugFetchState = "IDLE"
+        debugBonePickedUp = false
+        debugReturningBone = false
+        debugDistanceToBone = -1f
+        stopDistanceTracking()
       }
       onFetchCancelled = {
         Log.d(TAG, "Fetch was cancelled")
         petHasBone = false
+        currentActivity = AttentionActivity.NONE
+        isPetAttentive = false
         startIdleWander()
+        // Debug states
+        debugFetchState = "IDLE"
+        debugBonePickedUp = false
+        debugReturningBone = false
+        debugDistanceToBone = -1f
+        stopDistanceTracking()
       }
       // Mouth bone callbacks
       onSpawnMouthBone = { petEntity, boneWorldPos ->
@@ -1402,7 +1451,13 @@ class ImmersiveActivity : AppSystemActivity() {
                       isRoomMeshVisible = isRoomMeshVisible,
                       onRoomMeshToggle = ::toggleRoomMesh,
                       isPetAttentive = isPetAttentive,
-                      hasBone = petHasBone
+                      hasBone = petHasBone,
+                      // Fetch debug states
+                      fetchState = debugFetchState,
+                      activityState = currentActivity.name,
+                      distanceToBone = debugDistanceToBone,
+                      bonePickedUp = debugBonePickedUp,
+                      returningBone = debugReturningBone
                   )
                 }
               }
@@ -1522,6 +1577,12 @@ class ImmersiveActivity : AppSystemActivity() {
       return
     }
 
+    // Don't interrupt fetching
+    if (currentActivity == AttentionActivity.FETCHING) {
+      Log.d(TAG, "Clap ignored - pet is fetching")
+      return
+    }
+
     Log.d(TAG, "Clap detected! Calling pet attention")
 
     // Play whistle sound at head position
@@ -1530,8 +1591,9 @@ class ImmersiveActivity : AppSystemActivity() {
       whistlePlayer.play(headPos, 1.0f, false)
     }
 
-    // Set pet as attentive
+    // Set pet as attentive with FACING_PLAYER activity
     isPetAttentive = true
+    currentActivity = AttentionActivity.FACING_PLAYER
 
     // Cancel any current walk and stop idle wander
     petLocomotion.stopWalking()
@@ -1592,15 +1654,65 @@ class ImmersiveActivity : AppSystemActivity() {
     Log.d(TAG, "XP gain stopped")
   }
 
+  // Distance tracking for fetch debug
+  private var distanceTrackingJob: Job? = null
+  private var trackedBone: Entity? = null
+
+  /**
+   * Start tracking distance from pet to target bone (for debug UI)
+   */
+  private fun startDistanceTracking(bone: Entity) {
+    stopDistanceTracking()
+    trackedBone = bone
+    distanceTrackingJob = activityScope.launch {
+      while (isActive) {
+        try {
+          val pet = currentPetEntity
+          val petPos = pet?.tryGetComponent<Transform>()?.transform?.t
+          val bonePos = trackedBone?.tryGetComponent<Transform>()?.transform?.t
+
+          if (petPos != null && bonePos != null) {
+            val dx = bonePos.x - petPos.x
+            val dz = bonePos.z - petPos.z
+            debugDistanceToBone = kotlin.math.sqrt(dx * dx + dz * dz)
+          } else {
+            debugDistanceToBone = -1f
+          }
+        } catch (e: Exception) {
+          debugDistanceToBone = -1f
+        }
+        delay(100)  // Update 10 times per second
+      }
+    }
+  }
+
+  /**
+   * Stop distance tracking
+   */
+  private fun stopDistanceTracking() {
+    distanceTrackingJob?.cancel()
+    distanceTrackingJob = null
+    trackedBone = null
+  }
+
   /**
    * Reset the attention timeout - pet will lose attention after ATTENTION_TIMEOUT_MS.
+   * Only applies when activity is FACING_PLAYER (not during FETCHING).
    */
   private fun resetAttentionTimeout() {
     attentionResumeJob?.cancel()
     attentionResumeJob = activityScope.launch {
       delay(ATTENTION_TIMEOUT_MS)
+
+      // Don't timeout during fetching or other locked activities
+      if (currentActivity == AttentionActivity.FETCHING) {
+        Log.d(TAG, "Attention timeout skipped - pet is fetching")
+        return@launch
+      }
+
       Log.d(TAG, "Attention timeout - pet loses attention and resumes wandering")
       isPetAttentive = false
+      currentActivity = AttentionActivity.NONE
       stopXpGain()  // Stop XP accumulation when attention is lost
       petLocomotion.stopFacingPlayer()
       petLocomotion.startIdleWander()
@@ -1899,14 +2011,9 @@ class ImmersiveActivity : AppSystemActivity() {
    * Pet will go fetch the bone and bring it back.
    */
   private fun triggerFetchWithDelay(bone: Entity) {
-    // Only trigger if pet exists and is paying attention
+    // Only trigger if pet exists
     if (currentPetEntity == null) {
       Log.d(TAG, "No pet spawned, skipping fetch trigger")
-      return
-    }
-
-    if (!isPetAttentive) {
-      Log.d(TAG, "Pet not attentive, skipping fetch trigger")
       return
     }
 
@@ -1916,6 +2023,19 @@ class ImmersiveActivity : AppSystemActivity() {
       return
     }
 
+    // Throwing a bone automatically triggers attention and fetch
+    // This is a command to the pet - no need to clap first!
+    Log.d(TAG, "Bone thrown - auto-activating attention for fetch")
+
+    // Stop any current activity
+    petLocomotion.stopIdleWander()
+    petLocomotion.stopFacingPlayer()
+
+    // Activate attention and set to fetching mode (locks attention during fetch)
+    isPetAttentive = true
+    currentActivity = AttentionActivity.FETCHING
+    attentionResumeJob?.cancel()  // No timeout during fetch
+
     activityScope.launch {
       // Wait for physics to settle (bone to land/stop bouncing)
       delay(1500)
@@ -1923,12 +2043,18 @@ class ImmersiveActivity : AppSystemActivity() {
       // Verify bone still exists and is in our list
       if (bone !in thrownBones) {
         Log.d(TAG, "Bone no longer exists, skipping fetch")
+        // Reset attention state if fetch didn't start
+        currentActivity = AttentionActivity.NONE
+        isPetAttentive = false
+        petLocomotion.startIdleWander()
         return@launch
       }
 
       // Verify pet is still available
       if (currentPetEntity == null) {
         Log.d(TAG, "Pet no longer exists, skipping fetch")
+        currentActivity = AttentionActivity.NONE
+        isPetAttentive = false
         return@launch
       }
 

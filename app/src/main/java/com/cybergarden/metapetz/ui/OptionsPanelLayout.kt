@@ -60,7 +60,13 @@ fun OptionsPanel(
     onRoomMeshToggle: ((Boolean) -> Unit)? = null,
     // Debug state values
     isPetAttentive: Boolean = false,
-    hasBone: Boolean = false
+    hasBone: Boolean = false,
+    // Fetch debug states
+    fetchState: String = "IDLE",  // IDLE, MOVING_TO_BONE, PICKING_UP, RETURNING
+    activityState: String = "NONE",  // NONE, FACING_PLAYER, FETCHING
+    distanceToBone: Float = -1f,  // -1 = no target bone
+    bonePickedUp: Boolean = false,
+    returningBone: Boolean = false
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
@@ -340,7 +346,7 @@ fun OptionsPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Pet state debug values
+                // Pet state debug values - Row 1: Attention & Activity
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -356,8 +362,86 @@ fun OptionsPanel(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Attention",
+                            text = "Attn",
                             fontSize = 12.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                    Text(
+                        text = "Act: $activityState",
+                        fontSize = 12.sp,
+                        color = when (activityState) {
+                            "FETCHING" -> Color(0xFF2196F3)
+                            "FACING_PLAYER" -> Color(0xFF4CAF50)
+                            else -> Color.Gray
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Row 2: Fetch State
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Fetch:",
+                        fontSize = 12.sp,
+                        color = Color.DarkGray
+                    )
+                    Text(
+                        text = fetchState,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when (fetchState) {
+                            "MOVING_TO_BONE" -> Color(0xFFFF9800)
+                            "PICKING_UP" -> Color(0xFF9C27B0)
+                            "RETURNING" -> Color(0xFF2196F3)
+                            else -> Color.Gray
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Row 3: Distance to bone
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Dist to bone:",
+                        fontSize = 12.sp,
+                        color = Color.DarkGray
+                    )
+                    Text(
+                        text = if (distanceToBone >= 0) String.format("%.2fm", distanceToBone) else "N/A",
+                        fontSize = 12.sp,
+                        color = if (distanceToBone in 0f..0.2f) Color(0xFF4CAF50) else Color.DarkGray
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Row 4: Bone states
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(
+                                    if (bonePickedUp) Color(0xFF9C27B0) else Color.Gray,
+                                    shape = CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Picked",
+                            fontSize = 11.sp,
                             color = Color.DarkGray
                         )
                     }
@@ -370,10 +454,26 @@ fun OptionsPanel(
                                     shape = CircleShape
                                 )
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Has Bone",
-                            fontSize = 12.sp,
+                            text = "InMouth",
+                            fontSize = 11.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(
+                                    if (returningBone) Color(0xFF2196F3) else Color.Gray,
+                                    shape = CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Return",
+                            fontSize = 11.sp,
                             color = Color.DarkGray
                         )
                     }

@@ -253,6 +253,7 @@ class PetLocomotion(
     // Fetch callbacks
     var onFetchStart: ((Entity) -> Unit)? = null           // Called when pet starts fetching bone
     var onFetchPickup: ((Entity) -> Unit)? = null          // Called when pet picks up bone
+    var onFetchReturning: ((Entity) -> Unit)? = null       // Called when pet starts returning with bone
     var onFetchComplete: ((Entity) -> Unit)? = null        // Called when pet returns with bone
     var onFetchCancelled: (() -> Unit)? = null             // Called if fetch is interrupted
 
@@ -319,11 +320,15 @@ class PetLocomotion(
 
     /**
      * Push nearby bones away from pet position
+     * Skips the fetch target bone so pet can reach it
      */
     private fun pushNearbyBones(petPos: Vector3) {
         val bones = thrownBones ?: return
 
         for (bone in bones) {
+            // Skip the bone we're trying to fetch!
+            if (bone == fetchTargetBone) continue
+
             try {
                 val boneTransform = bone.tryGetComponent<Transform>() ?: continue
                 val bonePos = boneTransform.transform.t
@@ -1267,6 +1272,9 @@ class PetLocomotion(
                     moveTo(bonePos)
                 }
 
+                // Wait for walk coroutine to start (it sets isWalking = true internally)
+                delay(100)
+
                 // Wait for movement to complete
                 while (isWalking && isActive) {
                     delay(50)
@@ -1325,6 +1333,12 @@ class PetLocomotion(
                 fetchState = FetchState.RETURNING
                 Log.d(TAG, "Phase 3: Returning to player")
 
+                // Notify that pet is returning with bone
+                val targetBone = fetchTargetBone
+                if (targetBone != null) {
+                    onFetchReturning?.invoke(targetBone)
+                }
+
                 // Start walk animation (with bone in mouth)
                 playAnimation(ANIM_WALKLOOP, loop = true)
 
@@ -1365,6 +1379,9 @@ class PetLocomotion(
                     // OUTSIDE MODE: Direct movement
                     moveTo(returnPos)
                 }
+
+                // Wait for walk coroutine to start
+                delay(100)
 
                 // Wait for return movement to complete
                 while (isWalking && isActive) {
