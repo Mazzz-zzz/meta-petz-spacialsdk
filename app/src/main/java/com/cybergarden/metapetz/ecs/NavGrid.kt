@@ -792,6 +792,72 @@ class NavGrid(
      */
     fun getTotalCellCount(): Int = gridWidth * gridHeight
 
+    /**
+     * Find the nearest walkable cell (floor or elevated surface) to a world position.
+     * Searches within a maximum 3D distance and returns the closest valid cell.
+     *
+     * @param worldX World X coordinate of the target position
+     * @param worldY World Y coordinate of the target position (height)
+     * @param worldZ World Z coordinate of the target position
+     * @param maxDistance Maximum 3D distance to search (default 0.5m = 50cm)
+     * @return World position of nearest walkable cell, or null if none found within range
+     */
+    fun findNearestWalkableCell(worldX: Float, worldY: Float, worldZ: Float, maxDistance: Float = 0.5f): Vector3? {
+        // Convert to grid coordinates for center of search
+        val centerGx = worldToGridX(worldX)
+        val centerGz = worldToGridZ(worldZ)
+
+        // Calculate search radius in cells
+        val searchRadiusCells = (maxDistance / cellSize).toInt() + 1
+
+        var nearestPos: Vector3? = null
+        var nearestDistSq = Float.MAX_VALUE
+        val maxDistSq = maxDistance * maxDistance
+
+        // Search in a square area around the center
+        for (gx in (centerGx - searchRadiusCells)..(centerGx + searchRadiusCells)) {
+            for (gz in (centerGz - searchRadiusCells)..(centerGz + searchRadiusCells)) {
+                // Skip out of bounds
+                if (gx < 0 || gx >= gridWidth || gz < 0 || gz >= gridHeight) continue
+
+                // Check if this cell is walkable (floor or elevated surface)
+                val isFloorWalkable = grid[gx][gz]
+                val isElevatedWalkable = isWalkableElevatedSurface(gx, gz)
+
+                if (!isFloorWalkable && !isElevatedWalkable) continue
+
+                // Get world position with correct height
+                val cellHeight = getCellHeight(gx, gz)
+                val cellWorldPos = Vector3(
+                    minX + (gx + 0.5f) * cellSize,
+                    cellHeight,
+                    minZ + (gz + 0.5f) * cellSize
+                )
+
+                // Calculate 3D distance
+                val dx = cellWorldPos.x - worldX
+                val dy = cellWorldPos.y - worldY
+                val dz = cellWorldPos.z - worldZ
+                val distSq = dx * dx + dy * dy + dz * dz
+
+                // Check if within range and closer than current nearest
+                if (distSq <= maxDistSq && distSq < nearestDistSq) {
+                    nearestDistSq = distSq
+                    nearestPos = cellWorldPos
+                }
+            }
+        }
+
+        if (nearestPos != null) {
+            val dist = sqrt(nearestDistSq)
+            Log.d(TAG, "Found nearest walkable cell at ${"%.2f".format(dist)}m from raycast hit")
+        } else {
+            Log.d(TAG, "No walkable cell found within ${"%.2f".format(maxDistance)}m of raycast hit")
+        }
+
+        return nearestPos
+    }
+
     // Debug visualization entities
     private val debugEntities = mutableListOf<Entity>()
     private var debugVisualizationCreated = false

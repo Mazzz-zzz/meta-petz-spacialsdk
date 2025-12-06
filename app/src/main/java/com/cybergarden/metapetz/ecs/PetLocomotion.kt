@@ -923,7 +923,8 @@ class PetLocomotion(
      *
      * Features:
      * - Persistent pointer that updates every frame showing where you're pointing
-     * - DEPTH mode raycasting (works without Space Setup)
+     * - DEPTH mode raycasting (hits furniture surfaces)
+     * - Snaps to nearest walkable grid cell within 50cm
      * - Trigger press to confirm target and move pet
      * - Attention-gated: pointer only works when pet has attention
      *
@@ -933,11 +934,12 @@ class PetLocomotion(
         val system = PointToMoveSystem(
             mrukFeature = mrukFeature,
             floorY = floorY,
+            navGrid = navGrid,
             isAttentive = { isAttentive?.invoke() ?: false },
             onTargetFound = { hitPoint ->
                 onTargetSet?.invoke(hitPoint)
                 showTargetMarker(hitPoint)
-                moveTo(hitPoint)
+                moveToWithPathfinding(hitPoint)
             }
         )
         pointingSystem = system
@@ -1152,6 +1154,7 @@ class PetLocomotion(
 class PointToMoveSystem(
     private val mrukFeature: MRUKFeature,
     private val floorY: Float = 0f,
+    private val navGrid: NavGrid? = null,
     private val isAttentive: () -> Boolean = { true },
     private val onTargetFound: (Vector3) -> Unit
 ) : SystemBase() {
@@ -1242,20 +1245,24 @@ class PointToMoveSystem(
         // Get pointing direction using quaternion * operator (like MrukSample)
         val rightHandDirection = (rightHandPose.q * Vector3(0f, 0f, 1f)).normalize()
 
-        // ALWAYS raycast to update pointer position (every frame)
-        // DISABLED: MRUK raycasting hits invisible walls and blocks UI interaction
-        // Only use floor plane raycast for now
-        val hitPoint = tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
-        // val hitPoint = tryDepthRaycast(rightHandPose.t, rightHandDirection)
-        //     ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
-        //     ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+        // Raycast to find hit point - try depth first (hits furniture), then scene, then floor
+        val rawHitPoint = tryDepthRaycast(rightHandPose.t, rightHandDirection)
+            ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
+            ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+
+        // Snap to nearest walkable grid cell within 50cm if NavGrid is available
+        val hitPoint = if (rawHitPoint != null && navGrid != null) {
+            navGrid.findNearestWalkableCell(rawHitPoint.x, rawHitPoint.y, rawHitPoint.z, 0.5f)
+        } else {
+            rawHitPoint
+        }
 
         if (hitPoint != null) {
             // Update pointer position and make visible
             pointer.setComponent(Transform(Pose(hitPoint, Quaternion())))
             pointer.setComponent(Visible(true))
         } else {
-            // No hit - hide pointer
+            // No hit or no walkable cell nearby - hide pointer
             pointer.setComponent(Visible(false))
         }
 
@@ -1272,7 +1279,7 @@ class PointToMoveSystem(
 
         if (isPressDetected && hitPoint != null && (currentTime - lastTriggerTime > triggerCooldown)) {
             lastTriggerTime = currentTime
-            Log.d(TAG, "Trigger pressed - moving to: $hitPoint")
+            Log.d(TAG, "Trigger pressed - moving to: $hitPoint (snapped to grid)")
             onTargetFound(hitPoint)
         }
     }
