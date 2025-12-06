@@ -2197,23 +2197,6 @@ class ImmersiveActivity : AppSystemActivity() {
       Log.d(TAG, "  Corner $i: (${"%.3f".format(x)}, ${"%.3f".format(z)})")
     }
 
-    // Create purple debug spheres at each furniture corner
-    val debugFloorY = navGrid?.floorY ?: 0f
-    worldCorners.forEach { (wx, wz) ->
-      val sphere = Entity.create(listOf(
-        Mesh(android.net.Uri.parse("mesh://sphere")),
-        Sphere(0.05f),  // 5cm radius = 10cm diameter
-        Material().apply {
-          baseColor = Color4(0.8f, 0.2f, 0.8f, 1f)  // Purple
-          unlit = true
-        },
-        Transform(Pose(Vector3(wx, debugFloorY, wz), Quaternion())),
-        Scale(Vector3(1f, 1f, 1f))
-      ))
-      furnitureDebugSpheres.add(sphere)
-    }
-    Log.d(TAG, "Created ${worldCorners.size} purple debug spheres at floor Y=$debugFloorY")
-
     // Block the footprint in NavGrid using the actual world corners (15cm padding)
     grid.blockPolygon(worldCorners, padding = 0.15f)
     Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners")
@@ -2267,53 +2250,38 @@ class ImmersiveActivity : AppSystemActivity() {
     }
 
     // Get the two endpoints of the wall (left and right ends along the wall's width)
-    val debugFloorY = grid.floorY
     val leftEnd = Vector3(-halfWidth, 0f, 0f)
     val rightEnd = Vector3(+halfWidth, 0f, 0f)
 
     // Transform endpoints to world space
     val leftRotated = worldRot.times(leftEnd)
     val rightRotated = worldRot.times(rightEnd)
-    val leftWorld = Vector3(worldPos.x + leftRotated.x, debugFloorY, worldPos.z + leftRotated.z)
-    val rightWorld = Vector3(worldPos.x + rightRotated.x, debugFloorY, worldPos.z + rightRotated.z)
+    val leftWorldX = worldPos.x + leftRotated.x
+    val leftWorldZ = worldPos.z + leftRotated.z
+    val rightWorldX = worldPos.x + rightRotated.x
+    val rightWorldZ = worldPos.z + rightRotated.z
 
-    Log.d(TAG, "Wall endpoints: left=(${leftWorld.x}, ${leftWorld.z}), right=(${rightWorld.x}, ${rightWorld.z})")
-
-    // Create spheres every 15cm along the wall and block each point
-    val sphereSpacing = 0.15f  // 15cm spacing
-    val numSpheres = maxOf(2, (width / sphereSpacing).toInt() + 1)
+    // Block points every 15cm along the wall
+    val pointSpacing = 0.15f  // 15cm spacing
+    val numPoints = maxOf(2, (width / pointSpacing).toInt() + 1)
     val blockRadius = 0.075f  // 7.5cm blocking radius (15cm total diameter)
 
-    for (i in 0 until numSpheres) {
-      val t = if (numSpheres > 1) i.toFloat() / (numSpheres - 1) else 0.5f
-      val sphereX = leftWorld.x + (rightWorld.x - leftWorld.x) * t
-      val sphereZ = leftWorld.z + (rightWorld.z - leftWorld.z) * t
-
-      // Create visual sphere
-      val isEndpoint = (i == 0 || i == numSpheres - 1)
-      val sphere = Entity.create(listOf(
-        Mesh(android.net.Uri.parse("mesh://sphere")),
-        Sphere(if (isEndpoint) 0.10f else 0.05f),
-        Material().apply {
-          baseColor = Color4(1f, 0.2f, 0.2f, 1f)  // Red
-          unlit = true
-        },
-        Transform(Pose(Vector3(sphereX, debugFloorY, sphereZ), Quaternion())),
-        Scale(Vector3(1f, 0.5f, 1f))
-      ))
-      furnitureDebugSpheres.add(sphere)
+    for (i in 0 until numPoints) {
+      val t = if (numPoints > 1) i.toFloat() / (numPoints - 1) else 0.5f
+      val pointX = leftWorldX + (rightWorldX - leftWorldX) * t
+      val pointZ = leftWorldZ + (rightWorldZ - leftWorldZ) * t
 
       // Block a small square around this point in the NavGrid (no padding)
       val blockCorners = listOf(
-        Pair(sphereX - blockRadius, sphereZ - blockRadius),
-        Pair(sphereX + blockRadius, sphereZ - blockRadius),
-        Pair(sphereX + blockRadius, sphereZ + blockRadius),
-        Pair(sphereX - blockRadius, sphereZ + blockRadius)
+        Pair(pointX - blockRadius, pointZ - blockRadius),
+        Pair(pointX + blockRadius, pointZ - blockRadius),
+        Pair(pointX + blockRadius, pointZ + blockRadius),
+        Pair(pointX - blockRadius, pointZ + blockRadius)
       )
       grid.blockPolygon(blockCorners, padding = 0f)
     }
 
-    Log.d(TAG, "Created $numSpheres wall spheres every 15cm, each blocking ${blockRadius*2}m area")
+    Log.d(TAG, "Blocked wall with $numPoints points every 15cm, each blocking ${blockRadius*2}m area")
   }
 
   /**
