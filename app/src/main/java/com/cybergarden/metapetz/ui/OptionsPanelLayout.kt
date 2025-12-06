@@ -2,6 +2,7 @@ package com.cybergarden.metapetz.ui
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -107,12 +108,28 @@ fun OptionsPanel(
             // Outside button (5x5 room) - highlighted when active (not in room mode)
             if (onSetupRoom != null) {
                 val isOutsideActive = isEnvironmentSetup && !isRoomMode
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isOutsideActive) Color(0xFF1B5E20) else Color.Transparent)
-                ) {
+                if (isOutsideActive) {
+                    // Active state: dark green button with white text
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF1B5E20))
+                            .clickable {
+                                Log.d("OptionsPanel", "Outside button pressed")
+                                onSetupRoom()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Outside",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                } else {
                     SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
                         label = "Outside",
@@ -128,12 +145,28 @@ fun OptionsPanel(
             // Room Scan button (MRUK) - highlighted when active (in room mode)
             if (onScanRoom != null) {
                 val isRoomScanActive = isEnvironmentSetup && isRoomMode
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isRoomScanActive) Color(0xFF1B5E20) else Color.Transparent)
-                ) {
+                if (isRoomScanActive) {
+                    // Active state: dark green button with white text
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF1B5E20))
+                            .clickable {
+                                Log.d("OptionsPanel", "Room Scan button pressed")
+                                onScanRoom()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Room Scan",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                } else {
                     SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
                         label = "Room Scan",
