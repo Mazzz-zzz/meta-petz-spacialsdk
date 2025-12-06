@@ -617,6 +617,10 @@ class PetLocomotion(
     private val gravity = 9.8f  // m/s^2
     private var verticalVelocity = 0f
 
+    // Vertical offset for pet model (origin at center, not feet)
+    // This raises the pet so its feet are on the surface instead of its center
+    private val petModelYOffset = 0.08f  // Adjust based on pet model height at current scale
+
     /**
      * Move pet to target using A* pathfinding with jump support.
      * Uses smooth waypoint-based movement - no snapping.
@@ -698,8 +702,8 @@ class PetLocomotion(
                     val newX = currentPos.x + dirX * stepDistance
                     val newZ = currentPos.z + dirZ * stepDistance
 
-                    // Handle vertical movement
-                    val targetY = targetWaypoint.y
+                    // Handle vertical movement (apply offset for model center origin)
+                    val targetY = targetWaypoint.y + petModelYOffset
                     val heightDiff = targetY - currentPos.y
                     var newY = currentPos.y
 
@@ -707,7 +711,7 @@ class PetLocomotion(
                         // Need to jump UP - perform jump arc
                         isJumping = true
                         playAnimation(ANIM_JUMP, loop = false)
-                        performJumpArc(currentPos, targetWaypoint)
+                        performJumpArc(currentPos, Vector3(targetWaypoint.x, targetWaypoint.y + petModelYOffset, targetWaypoint.z))
                         isJumping = false
                         playAnimation(ANIM_WALKLOOP, loop = true)
                         // After jump, continue to next iteration
