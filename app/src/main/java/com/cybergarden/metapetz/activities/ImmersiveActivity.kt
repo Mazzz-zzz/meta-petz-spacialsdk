@@ -688,7 +688,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
           Log.d(TAG, "Loading pet model from: $meshUri")
 
-          // Create pet entity with basic components
+          // Create pet entity with basic components and kinematic collider
           currentPetEntity = Entity.create(
               listOf(
                   Mesh(meshUri.toUri()),
@@ -707,7 +707,14 @@ class ImmersiveActivity : AppSystemActivity() {
                       playbackState = PlaybackState.PLAYING,
                       playbackType = PlaybackType.LOOP,
                       track = PetLocomotion.ANIM_WAG
-                  )
+                  ),
+                  // Kinematic collider for pushing bones
+                  Box(Vector3(0.2f, 0.2f, 0.2f)),  // Pet-sized box collider
+                  Physics().apply {
+                      state = PhysicsState.KINEMATIC
+                      shape = "box"
+                      dimensions = Vector3(0.2f, 0.2f, 0.2f)
+                  }
               )
           )
 
@@ -1624,12 +1631,12 @@ class ImmersiveActivity : AppSystemActivity() {
               Scale(Vector3(0.2f, 0.2f, 0.2f)),
               Visible(true),
               Hittable(MeshCollision.LineTest),
-              Box(Vector3(0.2f, 0.06f, 0.35f)),
+              Box(Vector3(0.04f, 0.03f, 0.12f)),  // Smaller bone collider
               Physics().apply {
                 state = PhysicsState.DYNAMIC
                 shape = "box"
-                dimensions = Vector3(0.2f, 0.06f, 0.35f)
-                restitution = 0.4f
+                dimensions = Vector3(0.04f, 0.03f, 0.12f)
+                restitution = 0.1f  // Less bouncy
                 linearVelocity = velocity
               }
           )
