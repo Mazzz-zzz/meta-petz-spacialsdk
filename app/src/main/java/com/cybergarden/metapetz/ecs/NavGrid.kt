@@ -11,6 +11,7 @@ import com.meta.spatial.toolkit.Mesh
 import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Sphere
 import com.meta.spatial.toolkit.Transform
+import com.meta.spatial.toolkit.Visible
 import kotlin.random.Random
 
 /**
@@ -26,7 +27,7 @@ import kotlin.random.Random
  * 4. Use getRandomWalkablePoint() for wander destinations
  */
 class NavGrid(
-    val cellSize: Float = 0.3f,  // 30cm cells
+    val cellSize: Float = 0.15f,  // 15cm cells
     val minX: Float,
     val maxX: Float,
     val minZ: Float,
@@ -39,7 +40,7 @@ class NavGrid(
         /**
          * Create a NavGrid from a FloorPolygon's bounding box.
          */
-        fun fromFloorPolygon(polygon: PetLocomotion.FloorPolygon, floorY: Float = 0f, cellSize: Float = 0.3f): NavGrid {
+        fun fromFloorPolygon(polygon: PetLocomotion.FloorPolygon, floorY: Float = 0f, cellSize: Float = 0.15f): NavGrid {
             // Find bounding box of polygon
             var minX = Float.MAX_VALUE
             var maxX = Float.MIN_VALUE
@@ -103,31 +104,42 @@ class NavGrid(
     }
 
     /**
-     * Block a rectangular area (furniture footprint).
-     * All cells overlapping the rectangle are marked as non-walkable.
+     * Block cells inside a polygon defined by world-space corners.
+     * Uses ray-casting algorithm for point-in-polygon test.
      *
-     * @param centerX World X coordinate of rectangle center
-     * @param centerZ World Z coordinate of rectangle center
-     * @param halfSizeX Half-width in X direction
-     * @param halfSizeZ Half-width in Z direction
-     * @param padding Extra padding around furniture (default 5cm)
+     * @param corners List of (x, z) world coordinates forming the polygon (in order)
+     * @param padding Extra padding around furniture in meters (default 5cm)
      */
-    fun blockRect(centerX: Float, centerZ: Float, halfSizeX: Float, halfSizeZ: Float, padding: Float = 0.05f) {
-        val paddedHalfX = halfSizeX + padding
-        val paddedHalfZ = halfSizeZ + padding
+    fun blockPolygon(corners: List<Pair<Float, Float>>, padding: Float = 0.05f) {
+        if (corners.size < 3) {
+            Log.w(TAG, "blockPolygon requires at least 3 corners, got ${corners.size}")
+            return
+        }
 
-        val minGx = worldToGridX(centerX - paddedHalfX)
-        val maxGx = worldToGridX(centerX + paddedHalfX)
-        val minGz = worldToGridZ(centerZ - paddedHalfZ)
-        val maxGz = worldToGridZ(centerZ + paddedHalfZ)
+        // Expand polygon outward by padding amount
+        val paddedCorners = expandPolygon(corners, padding)
+
+        // Find bounding box of padded polygon for efficient grid search
+        val minX = paddedCorners.minOf { it.first }
+        val maxX = paddedCorners.maxOf { it.first }
+        val minZ = paddedCorners.minOf { it.second }
+        val maxZ = paddedCorners.maxOf { it.second }
+
+        val minGx = worldToGridX(minX)
+        val maxGx = worldToGridX(maxX)
+        val minGz = worldToGridZ(minZ)
+        val maxGz = worldToGridZ(maxZ)
 
         var blockedCount = 0
         for (gx in minGx..maxGx) {
             for (gz in minGz..maxGz) {
                 if (gx in 0 until gridWidth && gz in 0 until gridHeight) {
                     if (grid[gx][gz]) {
-                        grid[gx][gz] = false
-                        blockedCount++
+                        val cellWorld = gridToWorld(gx, gz)
+                        if (pointInPolygon(cellWorld.x, cellWorld.z, paddedCorners)) {
+                            grid[gx][gz] = false
+                            blockedCount++
+                        }
                     }
                 }
             }
@@ -135,7 +147,192 @@ class NavGrid(
 
         if (blockedCount > 0) {
             walkableCellsDirty = true
-            Log.d(TAG, "Blocked rect at ($centerX, $centerZ) size ${halfSizeX*2}x${halfSizeZ*2}: $blockedCount cells")
+            Log.d(TAG, "Blocked polygon with ${corners.size} corners: $blockedCount cells")
+        }
+    }
+
+    /**
+     * Point-in-polygon test using ray casting algorithm.
+     * Casts a ray from the point to the right and counts edge crossings.
+     */
+    private fun pointInPolygon(x: Float, z: Float, polygon: List<Pair<Float, Float>>): Boolean {
+        var inside = false
+        val n = polygon.size
+        var j = n - 1
+
+        for (i in 0 until n) {
+            val xi = polygon[i].first
+            val zi = polygon[i].second
+            val xj = polygon[j].first
+            val zj = polygon[j].second
+
+            // Check if edge crosses the horizontal ray from (x, z) going right
+            if ((zi > z) != (zj > z)) {
+                // Calculate x-coordinate of intersection
+                val intersectX = (xj - xi) * (z - zi) / (zj - zi) + xi
+                if (x < intersectX) {
+                    inside = !inside
+                }
+            }
+            j = i
+        }
+        return inside
+    }
+
+    /**
+     * Expand polygon outward by a padding distance.
+     * Moves each vertex outward along the angle bisector.
+     * Automatically detects polygon winding order.
+     */
+    private fun expandPolygon(corners: List<Pair<Float, Float>>, padding: Float): List<Pair<Float, Float>> {
+        if (padding <= 0f) return corners
+
+        val n = corners.size
+        val expanded = mutableListOf<Pair<Float, Float>>()
+
+        // Calculate signed area to determine winding order
+        // Positive = CCW, Negative = CW
+        var signedArea = 0f
+        for (i in 0 until n) {
+            val curr = corners[i]
+            val next = corners[(i + 1) % n]
+            signedArea += (next.first - curr.first) * (next.second + curr.second)
+        }
+        // Flip direction if polygon is CW (negative area means we need to reverse normals)
+        val windingSign = if (signedArea > 0) -1f else 1f
+
+        for (i in 0 until n) {
+            val prev = corners[(i - 1 + n) % n]
+            val curr = corners[i]
+            val next = corners[(i + 1) % n]
+
+            // Edge vectors
+            val e1x = curr.first - prev.first
+            val e1z = curr.second - prev.second
+            val e2x = next.first - curr.first
+            val e2z = next.second - curr.second
+
+            // Normalize edge vectors
+            val len1 = kotlin.math.sqrt(e1x * e1x + e1z * e1z)
+            val len2 = kotlin.math.sqrt(e2x * e2x + e2z * e2z)
+
+            if (len1 < 0.0001f || len2 < 0.0001f) {
+                expanded.add(curr)
+                continue
+            }
+
+            val n1x = e1x / len1
+            val n1z = e1z / len1
+            val n2x = e2x / len2
+            val n2z = e2z / len2
+
+            // Outward normals (perpendicular, adjusted for winding order)
+            val out1x = n1z * windingSign
+            val out1z = -n1x * windingSign
+            val out2x = n2z * windingSign
+            val out2z = -n2x * windingSign
+
+            // Bisector direction (average of outward normals)
+            var bisectX = out1x + out2x
+            var bisectZ = out1z + out2z
+            val bisectLen = kotlin.math.sqrt(bisectX * bisectX + bisectZ * bisectZ)
+
+            if (bisectLen < 0.0001f) {
+                // Edges are parallel, just use one normal
+                expanded.add(Pair(curr.first + out1x * padding, curr.second + out1z * padding))
+            } else {
+                bisectX /= bisectLen
+                bisectZ /= bisectLen
+
+                // Scale by padding / cos(half-angle) to maintain distance from edges
+                val dot = out1x * bisectX + out1z * bisectZ
+                val scale = if (dot > 0.1f) padding / dot else padding
+
+                expanded.add(Pair(curr.first + bisectX * scale, curr.second + bisectZ * scale))
+            }
+        }
+
+        return expanded
+    }
+
+    /**
+     * Keep only the largest connected walkable region.
+     * Uses flood-fill to find all connected regions, then blocks all but the largest.
+     * Call this after blocking all furniture and walls.
+     */
+    fun keepLargestConnectedRegion() {
+        // Track which cells have been visited
+        val visited = Array(gridWidth) { BooleanArray(gridHeight) { false } }
+        val regions = mutableListOf<MutableList<Pair<Int, Int>>>()
+
+        // Find all connected regions using flood-fill
+        for (gx in 0 until gridWidth) {
+            for (gz in 0 until gridHeight) {
+                if (grid[gx][gz] && !visited[gx][gz]) {
+                    // Start a new region
+                    val region = mutableListOf<Pair<Int, Int>>()
+                    floodFill(gx, gz, visited, region)
+                    regions.add(region)
+                }
+            }
+        }
+
+        if (regions.isEmpty()) {
+            Log.w(TAG, "No walkable regions found!")
+            return
+        }
+
+        // Find the largest region
+        val largestRegion = regions.maxByOrNull { it.size }!!
+        val largestSize = largestRegion.size
+        val totalRemoved = regions.sumOf { it.size } - largestSize
+
+        Log.d(TAG, "Found ${regions.size} walkable regions. Largest: $largestSize cells. Removing $totalRemoved cells from smaller regions.")
+
+        // Convert largest region to a set for fast lookup
+        val keepCells = largestRegion.toSet()
+
+        // Block all cells not in the largest region
+        for (gx in 0 until gridWidth) {
+            for (gz in 0 until gridHeight) {
+                if (grid[gx][gz] && !keepCells.contains(Pair(gx, gz))) {
+                    grid[gx][gz] = false
+                }
+            }
+        }
+
+        walkableCellsDirty = true
+        Log.d(TAG, "Kept largest region with $largestSize walkable cells")
+    }
+
+    /**
+     * Flood-fill helper using iterative BFS to avoid stack overflow.
+     */
+    private fun floodFill(startX: Int, startZ: Int, visited: Array<BooleanArray>, region: MutableList<Pair<Int, Int>>) {
+        val queue = ArrayDeque<Pair<Int, Int>>()
+        queue.add(Pair(startX, startZ))
+        visited[startX][startZ] = true
+
+        while (queue.isNotEmpty()) {
+            val (gx, gz) = queue.removeFirst()
+            region.add(Pair(gx, gz))
+
+            // Check 4-connected neighbors
+            val neighbors = listOf(
+                Pair(gx - 1, gz),
+                Pair(gx + 1, gz),
+                Pair(gx, gz - 1),
+                Pair(gx, gz + 1)
+            )
+
+            for ((nx, nz) in neighbors) {
+                if (nx in 0 until gridWidth && nz in 0 until gridHeight) {
+                    if (grid[nx][nz] && !visited[nx][nz]) {
+                        visited[nx][nz] = true
+                        queue.add(Pair(nx, nz))
+                    }
+                }
+            }
         }
     }
 
@@ -253,19 +450,26 @@ class NavGrid(
 
     // Debug visualization entities
     private val debugEntities = mutableListOf<Entity>()
+    private var debugVisualizationCreated = false
+    private var debugVisualizationVisible = false
 
     /**
-     * Create debug visualization spheres for each grid cell.
+     * Create debug visualization spheres for each grid cell (hidden by default).
+     * Call this once after the room is fully loaded and furniture is blocked.
+     * Use showDebugVisualization() and hideDebugVisualization() to toggle visibility.
+     *
      * Green = walkable (far from furniture)
      * Yellow = walkable but near blocked cells
      * Red = blocked (furniture)
      *
      * @param showBlocked Whether to show blocked cells (red spheres)
-     * @return List of created entities for cleanup
      */
-    fun createDebugVisualization(showBlocked: Boolean = true): List<Entity> {
-        // Clear any existing debug entities
-        clearDebugVisualization()
+    fun createDebugVisualization(showBlocked: Boolean = true) {
+        // Don't recreate if already exists
+        if (debugVisualizationCreated) {
+            Log.d(TAG, "Debug visualization already created, skipping")
+            return
+        }
 
         val sphereRadius = cellSize * 0.3f  // Small spheres
         val sphereScale = Vector3(1f, 0.3f, 1f)  // Flatten to disc
@@ -303,15 +507,50 @@ class NavGrid(
                             unlit = true
                         },
                         Transform(Pose(worldPos, Quaternion())),
-                        Scale(sphereScale)
+                        Scale(sphereScale),
+                        Visible(false)  // Start hidden
                     )
                 )
                 debugEntities.add(entity)
             }
         }
 
-        Log.d(TAG, "Created ${debugEntities.size} debug visualization entities")
-        return debugEntities.toList()
+        debugVisualizationCreated = true
+        debugVisualizationVisible = false
+        Log.d(TAG, "Created ${debugEntities.size} debug visualization entities (hidden)")
+    }
+
+    /**
+     * Show the debug visualization (toggle Visible component).
+     * Fast operation - just toggles visibility on existing entities.
+     */
+    fun showDebugVisualization() {
+        if (!debugVisualizationCreated) {
+            Log.w(TAG, "Debug visualization not created yet")
+            return
+        }
+        if (debugVisualizationVisible) return
+
+        for (entity in debugEntities) {
+            entity.setComponent(Visible(true))
+        }
+        debugVisualizationVisible = true
+        Log.d(TAG, "Showing debug visualization (${debugEntities.size} entities)")
+    }
+
+    /**
+     * Hide the debug visualization (toggle Visible component).
+     * Fast operation - just toggles visibility on existing entities.
+     */
+    fun hideDebugVisualization() {
+        if (!debugVisualizationCreated) return
+        if (!debugVisualizationVisible) return
+
+        for (entity in debugEntities) {
+            entity.setComponent(Visible(false))
+        }
+        debugVisualizationVisible = false
+        Log.d(TAG, "Hiding debug visualization")
     }
 
     /**
@@ -351,11 +590,18 @@ class NavGrid(
     fun clearDebugVisualization() {
         debugEntities.forEach { it.destroy() }
         debugEntities.clear()
+        debugVisualizationCreated = false
+        debugVisualizationVisible = false
         Log.d(TAG, "Cleared debug visualization")
     }
 
     /**
      * Check if debug visualization is currently active.
      */
-    fun isDebugVisualizationActive(): Boolean = debugEntities.isNotEmpty()
+    fun isDebugVisualizationActive(): Boolean = debugVisualizationCreated
+
+    /**
+     * Check if debug visualization is currently visible.
+     */
+    fun isDebugVisualizationVisible(): Boolean = debugVisualizationVisible
 }

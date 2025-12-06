@@ -61,6 +61,7 @@ import com.meta.spatial.runtime.HitInfo
 import com.meta.spatial.runtime.InputListener
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.Box
+import com.meta.spatial.toolkit.Sphere
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
 import com.meta.spatial.toolkit.PanelRegistration
 import com.meta.spatial.toolkit.PanelStyleOptions
@@ -84,6 +85,8 @@ import com.meta.spatial.mruk.MRUKSceneEventListener
 import com.meta.spatial.mruk.AnchorProceduralMesh
 import com.meta.spatial.mruk.AnchorProceduralMeshConfig
 import com.meta.spatial.mruk.MRUKPlane
+import com.meta.spatial.mruk.MRUKVolume
+import com.meta.spatial.toolkit.getAbsoluteTransform
 import java.util.concurrent.CompletableFuture
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
@@ -181,6 +184,31 @@ class ImmersiveActivity : AppSystemActivity() {
       MRUKLabel.SCREEN, MRUKLabel.LAMP, MRUKLabel.PLANT, MRUKLabel.OTHER
   )
 
+  // Debug: Furniture footprints as 4 world-space XZ corners
+  data class FurnitureQuad(
+      val corners: List<Pair<Float, Float>>,  // 4 corners in XZ world space
+      val label: String
+  ) {
+    // Point-in-polygon using cross product (works for convex quads)
+    fun containsPoint(px: Float, pz: Float): Boolean {
+      if (corners.size != 4) return false
+      var sign: Int? = null
+      for (i in 0 until 4) {
+        val (x1, z1) = corners[i]
+        val (x2, z2) = corners[(i + 1) % 4]
+        val cross = (x2 - x1) * (pz - z1) - (z2 - z1) * (px - x1)
+        val currentSign = if (cross > 0) 1 else if (cross < 0) -1 else 0
+        if (currentSign != 0) {
+          if (sign == null) sign = currentSign
+          else if (sign != currentSign) return false
+        }
+      }
+      return true
+    }
+  }
+  private val furnitureQuads = mutableListOf<FurnitureQuad>()
+  private val furnitureDebugSpheres = mutableListOf<Entity>()  // Purple corner spheres
+
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
     SceneAudioAsset.loadLocalFile("audio/bone_hit.wav")
@@ -247,19 +275,11 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "CLAP TRIGGERED! Playing bone sound and getting attention")
         callPetAttention()
       }
-      // Debug sounds for entering/leaving active range
+      // Debug callbacks for entering/leaving active range
       onHandsTogether = {
-        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-        if (headPos != null) {
-          bark1Player.play(headPos, 1.0f, false)
-        }
         Log.d(TAG, "Entered active range")
       }
       onHandsApart = {
-        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-        if (headPos != null) {
-          bark2Player.play(headPos, 1.0f, false)
-        }
         Log.d(TAG, "Left active range")
       }
     }
@@ -871,6 +891,9 @@ class ImmersiveActivity : AppSystemActivity() {
     navGrid = null
     petLocomotion.setNavGrid(null)
     isDebugGridEnabled = false  // Reset checkbox state
+    furnitureQuads.clear()  // Clear furniture debug data
+    furnitureDebugSpheres.forEach { it.destroy() }  // Destroy purple corner spheres
+    furnitureDebugSpheres.clear()
 
     // Destroy procMeshSpawner to remove furniture meshes from room scan
     procMeshSpawner?.destroy()
@@ -1022,6 +1045,9 @@ class ImmersiveActivity : AppSystemActivity() {
     navGrid = null
     petLocomotion.setNavGrid(null)
     isDebugGridEnabled = false  // Reset checkbox state
+    furnitureQuads.clear()  // Clear furniture debug data
+    furnitureDebugSpheres.forEach { it.destroy() }  // Destroy purple corner spheres
+    furnitureDebugSpheres.clear()
 
     // Recreate procMeshSpawner if it was destroyed (e.g., by setupRoom)
     if (procMeshSpawner == null) {
@@ -1085,6 +1111,17 @@ class ImmersiveActivity : AppSystemActivity() {
           for (anchor in room.anchors) {
             onAnchorAddedHandler(room, anchor)
           }
+        }
+
+        // After processing all anchors, keep only the largest connected walkable region
+        navGrid?.let { grid ->
+          grid.keepLargestConnectedRegion()
+          Log.d(TAG, "NavGrid finalized: ${grid.getWalkableCellCount()} walkable cells")
+
+          // Create debug visualization once after all furniture/walls are blocked
+          // (hidden by default - checkbox toggles visibility, not entity creation)
+          grid.createDebugVisualization(showBlocked = true)
+          Log.d(TAG, "NavGrid debug visualization created (hidden)")
         }
 
         // Mark environment as set up
@@ -1362,18 +1399,17 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Toggle the NavGrid debug visualization.
+   * Toggle the NavGrid debug visualization visibility.
+   * Uses Visible component toggle for fast performance (no entity creation/destruction).
    */
   private fun toggleDebugGrid(enabled: Boolean) {
     Log.d(TAG, "Toggle debug grid: $enabled")
     isDebugGridEnabled = enabled
-    val grid = navGrid
-    if (grid != null) {
-      if (enabled) {
-        grid.createDebugVisualization(showBlocked = true)
-      } else {
-        grid.clearDebugVisualization()
-      }
+    val grid = navGrid ?: return
+    if (enabled) {
+      grid.showDebugVisualization()
+    } else {
+      grid.hideDebugVisualization()
     }
   }
 
@@ -1386,6 +1422,11 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Toggle visibility of room edge entities (walls, floor, ceiling)
     for (entity in roomEdgeEntities) {
+      entity.setComponent(Visible(visible))
+    }
+
+    // Toggle visibility of outside mode room colliders (manual walls)
+    for (entity in roomColliderEntities) {
       entity.setComponent(Visible(visible))
     }
 
@@ -2052,6 +2093,8 @@ class ImmersiveActivity : AppSystemActivity() {
     val isWall = anchorLabels.any { it == MRUKLabel.WALL_FACE.name }
     if (isWall) {
       createWallPhysicsCollider(anchorPose, width, height)
+      // Also block wall footprint in NavGrid
+      blockWallInNavGrid(anchorEntity, anchorPose, width)
     }
 
     // Extract floor polygon from FLOOR anchor
@@ -2063,37 +2106,163 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Block a furniture anchor's footprint in the NavGrid.
-   * Uses the anchor's bounds to mark cells as non-walkable.
+   * Uses MRUKVolume bounds and getAbsoluteTransform for accurate world-space positioning.
    */
   private fun blockFurnitureInNavGrid(anchorEntity: Entity, anchorPose: Pose, labels: List<String>) {
     val grid = navGrid ?: return
 
-    // Try to get bounds from MRUKPlane component (furniture usually has this)
+    // Get the absolute world transform for this anchor entity
+    val worldTransform = getAbsoluteTransform(anchorEntity)
+    val worldPos = worldTransform.t
+    val worldRot = worldTransform.q
+
+    // Only include furniture that sits on the ground
+    // Skip wall-mounted/floating items (> 1.5m above floor)
+    val floorY = grid.floorY
+    val heightAboveFloor = worldPos.y - floorY
+    if (heightAboveFloor > 1.5f) {
+      Log.d(TAG, "Skipping wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
+      return
+    }
+
+    // Try to get volume bounds first (preferred for 3D furniture)
+    val volumeComponent = anchorEntity.tryGetComponent<MRUKVolume>()
     val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
 
-    val halfSizeX: Float
-    val halfSizeZ: Float
+    val localCorners: List<Vector3>
 
-    if (planeComponent != null) {
-      // Use plane bounds
-      halfSizeX = (planeComponent.max.x - planeComponent.min.x) / 2f
-      halfSizeZ = (planeComponent.max.y - planeComponent.min.y) / 2f  // Y in plane = Z in world for floor-level
+    if (volumeComponent != null) {
+      // Use MRUKVolume - get the bottom face (floor footprint) corners
+      // In anchor-local space: X = width, Y = depth, Z = height
+      // Bottom face is at Z = min.z
+      val min = volumeComponent.min
+      val max = volumeComponent.max
+      Log.d(TAG, "=== FURNITURE (Volume): $labels ===")
+      Log.d(TAG, "  Volume min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)}, ${"%.3f".format(min.z)})")
+      Log.d(TAG, "  Volume max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)}, ${"%.3f".format(max.z)})")
+
+      // Bottom face corners (z = min.z for floor footprint)
+      // X and Y define the horizontal footprint
+      localCorners = listOf(
+        Vector3(min.x, min.y, min.z),
+        Vector3(max.x, min.y, min.z),
+        Vector3(max.x, max.y, min.z),
+        Vector3(min.x, max.y, min.z)
+      )
+    } else if (planeComponent != null) {
+      // Fallback to MRUKPlane for 2D surfaces
+      val min = planeComponent.min
+      val max = planeComponent.max
+      Log.d(TAG, "=== FURNITURE (Plane): $labels ===")
+      Log.d(TAG, "  Plane min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)})")
+      Log.d(TAG, "  Plane max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)})")
+
+      // Plane corners (X = width, Y = depth in plane's local 2D space, Z = 0)
+      localCorners = listOf(
+        Vector3(min.x, min.y, 0f),
+        Vector3(max.x, min.y, 0f),
+        Vector3(max.x, max.y, 0f),
+        Vector3(min.x, max.y, 0f)
+      )
     } else {
-      // No size info available, use default furniture size (0.5m x 0.5m)
-      halfSizeX = 0.25f
-      halfSizeZ = 0.25f
-      Log.d(TAG, "Furniture has no MRUKPlane, using default size: $labels")
+      // No volume or plane - use default size
+      Log.d(TAG, "Furniture has no MRUKVolume/MRUKPlane, using default 0.5x0.5m: $labels")
+      localCorners = listOf(
+        Vector3(-0.25f, 0f, -0.25f),
+        Vector3(+0.25f, 0f, -0.25f),
+        Vector3(+0.25f, 0f, +0.25f),
+        Vector3(-0.25f, 0f, +0.25f)
+      )
     }
 
-    // Block the footprint in NavGrid
-    grid.blockRect(anchorPose.t.x, anchorPose.t.z, halfSizeX, halfSizeZ)
-    Log.d(TAG, "Blocked furniture in NavGrid: $labels at (${anchorPose.t.x}, ${anchorPose.t.z}), size ${halfSizeX*2}x${halfSizeZ*2}")
+    // Transform local corners to world space using the absolute transform
+    val worldCorners = localCorners.map { local ->
+      // Rotate the local point by the world rotation, then add world position
+      val rotated = worldRot.times(local)
+      Pair(worldPos.x + rotated.x, worldPos.z + rotated.z)
+    }
+
+    // Store for debug
+    furnitureQuads.add(FurnitureQuad(worldCorners, labels.firstOrNull() ?: "unknown"))
+    Log.d(TAG, "=== FURNITURE QUAD: ${labels.firstOrNull()} ===")
+    Log.d(TAG, "  World pos: (${"%.3f".format(worldPos.x)}, ${"%.3f".format(worldPos.y)}, ${"%.3f".format(worldPos.z)})")
+    worldCorners.forEachIndexed { i, (x, z) ->
+      Log.d(TAG, "  Corner $i: (${"%.3f".format(x)}, ${"%.3f".format(z)})")
+    }
+
+    // Create purple debug spheres at each furniture corner
+    val debugFloorY = navGrid?.floorY ?: 0f
+    worldCorners.forEach { (wx, wz) ->
+      val sphere = Entity.create(listOf(
+        Mesh(android.net.Uri.parse("mesh://sphere")),
+        Sphere(0.05f),  // 5cm radius = 10cm diameter
+        Material().apply {
+          baseColor = Color4(0.8f, 0.2f, 0.8f, 1f)  // Purple
+          unlit = true
+        },
+        Transform(Pose(Vector3(wx, debugFloorY, wz), Quaternion())),
+        Scale(Vector3(1f, 1f, 1f))
+      ))
+      furnitureDebugSpheres.add(sphere)
+    }
+    Log.d(TAG, "Created ${worldCorners.size} purple debug spheres at floor Y=$debugFloorY")
+
+    // Block the footprint in NavGrid using the actual world corners (15cm padding)
+    grid.blockPolygon(worldCorners, padding = 0.15f)
+    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners")
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
+  }
 
-    // Refresh debug visualization if enabled
-    if (isDebugGridEnabled) {
-      grid.createDebugVisualization(showBlocked = true)
+  /**
+   * Block a wall's footprint in the NavGrid.
+   * Walls are vertical planes, so we project their width onto the floor.
+   */
+  private fun blockWallInNavGrid(anchorEntity: Entity, anchorPose: Pose, width: Float) {
+    val grid = navGrid ?: return
+
+    // Get the absolute world transform
+    val worldTransform = getAbsoluteTransform(anchorEntity)
+    val worldPos = worldTransform.t
+    val worldRot = worldTransform.q
+
+    // Wall is a vertical plane - get the two bottom corners
+    // In local space, wall extends from -width/2 to +width/2 along X axis
+    val halfWidth = width / 2f
+    val wallThickness = 0.15f  // 15cm thick wall blocking
+
+    // Local corners of wall footprint (a thin rectangle along the wall base)
+    val localCorners = listOf(
+      Vector3(-halfWidth, -wallThickness / 2f, 0f),
+      Vector3(+halfWidth, -wallThickness / 2f, 0f),
+      Vector3(+halfWidth, +wallThickness / 2f, 0f),
+      Vector3(-halfWidth, +wallThickness / 2f, 0f)
+    )
+
+    // Transform to world space
+    val worldCorners = localCorners.map { local ->
+      val rotated = worldRot.times(local)
+      Pair(worldPos.x + rotated.x, worldPos.z + rotated.z)
     }
+
+    // Create blue debug spheres at each wall corner
+    val debugFloorY = grid.floorY
+    worldCorners.forEach { (wx, wz) ->
+      val sphere = Entity.create(listOf(
+        Mesh(android.net.Uri.parse("mesh://sphere")),
+        Sphere(0.05f),  // 5cm radius
+        Material().apply {
+          baseColor = Color4(0.2f, 0.4f, 1f, 1f)  // Blue
+          unlit = true
+        },
+        Transform(Pose(Vector3(wx, debugFloorY, wz), Quaternion())),
+        Scale(Vector3(1f, 1f, 1f))
+      ))
+      furnitureDebugSpheres.add(sphere)  // Reuse same list for cleanup
+    }
+
+    // Block the wall footprint in NavGrid (10cm padding)
+    grid.blockPolygon(worldCorners, padding = 0.10f)
+    Log.d(TAG, "Blocked wall in NavGrid at (${worldPos.x}, ${worldPos.z}), width=$width")
   }
 
   /**
@@ -2152,11 +2321,6 @@ class ImmersiveActivity : AppSystemActivity() {
     navGrid = NavGrid.fromFloorPolygon(floorPolygon, floorY)
     petLocomotion.setNavGrid(navGrid)
     Log.d(TAG, "NavGrid created: ${navGrid?.gridWidth}x${navGrid?.gridHeight} cells, ${navGrid?.getWalkableCellCount()} walkable")
-
-    // Create debug visualization if enabled
-    if (isDebugGridEnabled) {
-      navGrid?.createDebugVisualization(showBlocked = true)
-    }
   }
 
   /**
