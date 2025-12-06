@@ -1317,27 +1317,6 @@ class ImmersiveActivity : AppSystemActivity() {
               ComposeView(context).apply {
                 setContent {
                   Column(modifier = Modifier.fillMaxSize()) {
-                    // Debug overlay - attention state and hand distance
-                    Text(
-                        text = "ATTENTION: ${if (isPetAttentive) "TRUE" else "FALSE"}",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isPetAttentive) Color.Green else Color.Red,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
-                    )
-                    Text(
-                        text = "DIST: ${String.format("%.2f", handDistance)}m  CUMUL: ${String.format("%.2f", cumulativeDisplacement)}/0.40",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = when {
-                            handDistance >= 0.10f -> Color.Red        // Outside active range
-                            cumulativeDisplacement >= 0.30f -> Color.Green  // Almost triggered
-                            cumulativeDisplacement > 0f -> Color.Yellow     // Accumulating
-                            else -> Color.White                        // In range, not accumulating
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
-                    )
-
                     if (currentPetData != null) {
                       PetInfoPanel(
                           petData = currentPetData!!,
