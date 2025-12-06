@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -57,6 +58,7 @@ fun OptionsPanel(
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
+    var spawnCooldownRemaining by remember { mutableStateOf(0) }  // Seconds remaining in cooldown
 
     // Load first pet from "demoUser" user on mount
     LaunchedEffect(firebaseManager) {
@@ -68,6 +70,14 @@ fun OptionsPanel(
             }
         } else {
             isLoadingDemoPet = false
+        }
+    }
+
+    // Cooldown timer - counts down every second
+    LaunchedEffect(spawnCooldownRemaining) {
+        if (spawnCooldownRemaining > 0) {
+            kotlinx.coroutines.delay(1000)
+            spawnCooldownRemaining -= 1
         }
     }
 
@@ -189,10 +199,18 @@ fun OptionsPanel(
 
                 // Demo Pet button (from Firebase "demoUser")
                 if (demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
+                    val isOnCooldown = spawnCooldownRemaining > 0
                     PrimaryButton(
-                        modifier = Modifier.fillMaxWidth(),
-                        label = "Demo Pet: ${demoPet!!.name}",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (isOnCooldown) Modifier.alpha(0.5f) else Modifier),
+                        label = if (isOnCooldown) "Spawning... (${spawnCooldownRemaining}s)" else "Spawn Dog",
                         onClick = {
+                            if (isOnCooldown) return@PrimaryButton  // Ignore clicks during cooldown
+
+                            // Start 5-second cooldown
+                            spawnCooldownRemaining = 5
+
                             // Always fetch fresh data from Firebase when clicking
                             Log.d("OptionsPanel", "Fetching fresh demo pet data...")
                             firebaseManager.getFirstPetFromUser("demoUser") { freshPetData ->

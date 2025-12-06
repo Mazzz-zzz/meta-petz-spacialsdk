@@ -681,7 +681,17 @@ class ImmersiveActivity : AppSystemActivity() {
     spawnPetModel(petName, colors)
   }
 
+  // Flag to prevent multiple concurrent pet spawns
+  private var isSpawningPet = false
+
   private fun spawnPetModel(petName: String, colors: PetColors) {
+    // Prevent multiple concurrent spawns
+    if (isSpawningPet) {
+      Log.d(TAG, "Already spawning a pet, ignoring duplicate spawn request")
+      return
+    }
+    isSpawningPet = true
+
     // Cancel previous spinning animation
     spinningJob?.cancel()
     spinningJob = null
@@ -779,10 +789,18 @@ class ImmersiveActivity : AppSystemActivity() {
 
           // Start spinning animation
           startSpinning()
+
+          // Spawn complete - allow new spawns after a brief delay
+          delay(500)  // Small delay to ensure everything is set up
+          isSpawningPet = false
+          Log.d(TAG, "Pet spawn complete, ready for new spawns")
         } catch (e: Exception) {
           Log.e(TAG, "Error loading pet model: ${e.message}", e)
+          isSpawningPet = false  // Reset on error too
         }
       }
+    } else {
+      isSpawningPet = false  // Reset if model path not found
     }
   }
 
@@ -1453,11 +1471,12 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Toggle visibility of furniture procedural meshes
     // AnchorProceduralMesh doesn't have a visibility toggle, so we destroy/recreate
+    // ONLY applies in ROOM MODE - outside mode has no furniture meshes
     if (!visible) {
       procMeshSpawner?.destroy()
       procMeshSpawner = null
-    } else if (procMeshSpawner == null && isEnvironmentSetup) {
-      // Recreate procMeshSpawner when making visible again
+    } else if (procMeshSpawner == null && isEnvironmentSetup && isRoomMode) {
+      // Recreate procMeshSpawner when making visible again - ONLY in room mode
       procMeshSpawner = AnchorProceduralMesh(
           mrukFeature,
           mapOf(
@@ -1473,6 +1492,9 @@ class ImmersiveActivity : AppSystemActivity() {
               MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
           )
       )
+      Log.d(TAG, "Recreated procMeshSpawner for room mode")
+    } else if (!isRoomMode) {
+      Log.d(TAG, "Skipping procMeshSpawner recreation - outside mode has no furniture meshes")
     }
   }
 
