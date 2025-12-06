@@ -613,10 +613,14 @@ class PetLocomotion(
 
     // ==================== PATHFINDING WITH JUMPS ====================
 
+    // Gravity for falling
+    private val gravity = 9.8f  // m/s^2
+    private var verticalVelocity = 0f
+
     /**
      * Move pet to target using A* pathfinding with jump support.
-     * Uses NavGrid to find path across floor AND elevated surfaces.
-     * Automatically jumps when transitioning between height levels.
+     * Uses smooth waypoint-based movement - no snapping.
+     * Automatically jumps UP when needed, falls with gravity when going DOWN.
      */
     fun moveToWithPathfinding(target: Vector3) {
         val pet = petEntity ?: run {
@@ -641,7 +645,7 @@ class PetLocomotion(
             return
         }
 
-        Log.d(TAG, "Path found with ${path.size} nodes, starting pathfinding movement")
+        Log.d(TAG, "Path found with ${path.size} nodes, starting smooth pathfinding")
 
         // Cancel any existing walk
         walkJob?.cancel()
@@ -649,27 +653,96 @@ class PetLocomotion(
         walkJob = scope.launch {
             isWalking = true
             onWalkStart?.invoke()
+            playAnimation(ANIM_WALKLOOP, loop = true)
 
             try {
-                var currentIndex = 0
+                // Convert path to world positions
+                val waypoints = path.map { node ->
+                    grid.gridToWorldWithHeight(node.gx, node.gz)
+                }.toMutableList()
 
-                while (isActive && currentIndex < path.size - 1) {
-                    val fromNode = path[currentIndex]
-                    val toNode = path[currentIndex + 1]
+                var currentWaypointIndex = 1  // Start heading toward second waypoint (first is current pos)
+                val waypointReachThreshold = 0.10f  // 10cm - when to advance to next waypoint
+                val smoothTime = 1f / 60f
+                val rotationSpeed = 0.15f
+                var prevTime = System.currentTimeMillis()
+                verticalVelocity = 0f
 
-                    val fromPos = grid.gridToWorldWithHeight(fromNode.gx, fromNode.gz)
-                    val toPos = grid.gridToWorldWithHeight(toNode.gx, toNode.gz)
+                while (isActive && currentWaypointIndex < waypoints.size) {
+                    val currentTime = System.currentTimeMillis()
+                    val deltaTime = (currentTime - prevTime) / 1000f
+                    prevTime = currentTime
 
-                    // Check if this segment requires a jump
-                    if (grid.requiresJump(fromNode, toNode)) {
-                        Log.d(TAG, "Jump required from height ${fromNode.height} to ${toNode.height}")
-                        performJump(fromPos, toPos)
-                    } else {
-                        // Walk to next node
-                        walkToPoint(toPos)
+                    val transform = pet.getComponent<Transform>()
+                    val currentPos = transform.transform.t
+                    val targetWaypoint = waypoints[currentWaypointIndex]
+
+                    // Calculate horizontal direction to waypoint
+                    val dx = targetWaypoint.x - currentPos.x
+                    val dz = targetWaypoint.z - currentPos.z
+                    val horizontalDist = sqrt(dx * dx + dz * dz)
+
+                    // Check if we've reached this waypoint (horizontal only)
+                    if (horizontalDist < waypointReachThreshold) {
+                        currentWaypointIndex++
+                        Log.d(TAG, "Reached waypoint, advancing to $currentWaypointIndex/${waypoints.size}")
+                        continue
                     }
 
-                    currentIndex++
+                    // Normalize horizontal direction
+                    val dirX = dx / horizontalDist
+                    val dirZ = dz / horizontalDist
+
+                    // Calculate horizontal step
+                    val stepDistance = walkSpeed * deltaTime.coerceIn(0.001f, 0.05f)
+                    val newX = currentPos.x + dirX * stepDistance
+                    val newZ = currentPos.z + dirZ * stepDistance
+
+                    // Handle vertical movement
+                    val targetY = targetWaypoint.y
+                    val heightDiff = targetY - currentPos.y
+                    var newY = currentPos.y
+
+                    if (heightDiff > 0.1f && !isJumping) {
+                        // Need to jump UP - perform jump arc
+                        isJumping = true
+                        playAnimation(ANIM_JUMP, loop = false)
+                        performJumpArc(currentPos, targetWaypoint)
+                        isJumping = false
+                        playAnimation(ANIM_WALKLOOP, loop = true)
+                        // After jump, continue to next iteration
+                        continue
+                    } else if (heightDiff < -0.1f) {
+                        // Falling DOWN - apply gravity
+                        verticalVelocity += gravity * deltaTime
+                        newY = currentPos.y - verticalVelocity * deltaTime
+
+                        // Don't fall below target
+                        if (newY <= targetY) {
+                            newY = targetY
+                            verticalVelocity = 0f
+                        }
+                    } else {
+                        // Same level or small difference - smoothly interpolate
+                        newY = currentPos.y + (targetY - currentPos.y) * 0.1f
+                        verticalVelocity = 0f
+                    }
+
+                    // Smooth rotation toward movement direction
+                    val direction = Vector3(dirX, 0f, dirZ)
+                    val targetRotation = Quaternion.lookRotationAroundY(direction)
+                    val currentRotation = transform.transform.q
+                    val smoothFactor = smoothOver(deltaTime, rotationSpeed, smoothTime)
+                    val smoothedRotation = currentRotation.slerp(targetRotation, smoothFactor)
+
+                    // Update transform - NO SNAPPING
+                    transform.transform.t = Vector3(newX, newY, newZ)
+                    transform.transform.q = smoothedRotation
+                    pet.setComponent(transform)
+
+                    pushNearbyBones(Vector3(newX, newY, newZ))
+
+                    delay(16)
                 }
 
                 Log.d(TAG, "Pathfinding movement complete")
@@ -679,6 +752,7 @@ class PetLocomotion(
             } finally {
                 isWalking = false
                 isJumping = false
+                verticalVelocity = 0f
                 playAnimation(ANIM_WAG, loop = true)
                 onWalkEnd?.invoke()
             }
@@ -686,30 +760,15 @@ class PetLocomotion(
     }
 
     /**
-     * Perform a jump from one position to another with parabolic arc.
-     * Plays jump animation and interpolates position smoothly.
+     * Perform a jump arc from current position to target.
+     * Only used for jumping UP onto surfaces.
      */
-    private suspend fun performJump(from: Vector3, to: Vector3) {
+    private suspend fun performJumpArc(from: Vector3, to: Vector3) {
         val pet = petEntity ?: return
 
-        isJumping = true
-        playAnimation(ANIM_JUMP, loop = false)
-
-        val duration = 400L  // milliseconds
-        val heightDiff = to.y - from.y
-        val arcHeight = 0.25f + heightDiff.coerceAtLeast(0f) * 0.5f  // Higher arc for jumping up
-
-        // Face the jump direction
-        val dx = to.x - from.x
-        val dz = to.z - from.z
-        val distance = sqrt(dx * dx + dz * dz)
-        if (distance > 0.01f) {
-            val direction = Vector3(dx / distance, 0f, dz / distance)
-            val targetRotation = Quaternion.lookRotationAroundY(direction)
-            val transform = pet.getComponent<Transform>()
-            transform.transform.q = targetRotation
-            pet.setComponent(transform)
-        }
+        val duration = 450L  // milliseconds
+        val heightDiff = (to.y - from.y).coerceAtLeast(0f)
+        val arcHeight = 0.2f + heightDiff * 0.6f  // Arc peaks above the target
 
         val startTime = System.currentTimeMillis()
 
@@ -717,93 +776,42 @@ class PetLocomotion(
             val elapsed = System.currentTimeMillis() - startTime
             val t = (elapsed / duration.toFloat()).coerceIn(0f, 1f)
 
-            // Horizontal: linear interpolation
-            val x = lerp(from.x, to.x, t)
-            val z = lerp(from.z, to.z, t)
+            // Smooth easing for more natural jump
+            val easedT = t * t * (3f - 2f * t)  // Smoothstep
 
-            // Vertical: parabolic arc
-            val baseY = lerp(from.y, to.y, t)
-            val arc = arcHeight * 4f * t * (1f - t)  // peaks at t=0.5
+            // Horizontal: smooth interpolation
+            val x = lerp(from.x, to.x, easedT)
+            val z = lerp(from.z, to.z, easedT)
+
+            // Vertical: parabolic arc that lands at target height
+            val baseY = lerp(from.y, to.y, easedT)
+            val arc = arcHeight * 4f * t * (1f - t)  // Peaks at t=0.5
             val y = baseY + arc
 
-            // Update position
-            val transform = pet.getComponent<Transform>()
-            transform.transform.t = Vector3(x, y, z)
-            pet.setComponent(transform)
+            // Face jump direction
+            val dx = to.x - from.x
+            val dz = to.z - from.z
+            val dist = sqrt(dx * dx + dz * dz)
+            if (dist > 0.01f) {
+                val direction = Vector3(dx / dist, 0f, dz / dist)
+                val targetRotation = Quaternion.lookRotationAroundY(direction)
+                val transform = pet.getComponent<Transform>()
+                transform.transform.t = Vector3(x, y, z)
+                transform.transform.q = targetRotation
+                pet.setComponent(transform)
+            } else {
+                val transform = pet.getComponent<Transform>()
+                transform.transform.t = Vector3(x, y, z)
+                pet.setComponent(transform)
+            }
 
-            // Push bones while jumping
             pushNearbyBones(Vector3(x, y, z))
 
             if (t >= 1f) break
-            delay(16)  // ~60 FPS
-        }
-
-        isJumping = false
-        Log.d(TAG, "Jump complete: ${from.y} -> ${to.y}")
-    }
-
-    /**
-     * Walk to a single point (used by pathfinding for each segment).
-     */
-    private suspend fun walkToPoint(target: Vector3) {
-        val pet = petEntity ?: return
-
-        playAnimation(ANIM_WALKLOOP, loop = true)
-
-        val smoothTime = 1f / 60f
-        val rotationSpeed = 0.15f
-        var prevTime = System.currentTimeMillis()
-
-        while (coroutineContext.isActive) {
-            val currentTime = System.currentTimeMillis()
-            val deltaTime = (currentTime - prevTime) / 1000f
-            prevTime = currentTime
-
-            val transform = pet.getComponent<Transform>()
-            val currentPos = transform.transform.t
-
-            // Calculate direction to target
-            val dx = target.x - currentPos.x
-            val dz = target.z - currentPos.z
-            val distanceToTarget = sqrt(dx * dx + dz * dz)
-
-            // Check if arrived (within 1 cell = 15cm)
-            if (distanceToTarget < 0.15f) {
-                // Snap to target position
-                transform.transform.t = target
-                pet.setComponent(transform)
-                break
-            }
-
-            // Normalize direction
-            val dirX = dx / distanceToTarget
-            val dirZ = dz / distanceToTarget
-            val direction = Vector3(dirX, 0f, dirZ)
-
-            // Calculate step
-            val stepDistance = walkSpeed * deltaTime.coerceIn(0.001f, 0.05f)
-            val actualStep = minOf(stepDistance, distanceToTarget)
-
-            val newPos = Vector3(
-                currentPos.x + dirX * actualStep,
-                target.y,  // Use target height (important for staying on surfaces)
-                currentPos.z + dirZ * actualStep
-            )
-
-            // Rotation
-            val targetRotation = Quaternion.lookRotationAroundY(direction)
-            val currentRotation = transform.transform.q
-            val smoothFactor = smoothOver(deltaTime, rotationSpeed, smoothTime)
-            val smoothedRotation = currentRotation.slerp(targetRotation, smoothFactor)
-
-            transform.transform.t = newPos
-            transform.transform.q = smoothedRotation
-            pet.setComponent(transform)
-
-            pushNearbyBones(newPos)
-
             delay(16)
         }
+
+        Log.d(TAG, "Jump arc complete: ${from.y} -> ${to.y}")
     }
 
     /**
