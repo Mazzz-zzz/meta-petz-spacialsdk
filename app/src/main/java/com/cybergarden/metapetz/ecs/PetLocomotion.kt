@@ -359,6 +359,76 @@ class PetLocomotion(
         }
     }
 
+    // Continuous face player tracking
+    private var facePlayerJob: Job? = null
+    private var isFacingPlayer = false
+
+    /**
+     * Start continuously facing the player with smooth rotation
+     */
+    fun startFacingPlayer(headEntityProvider: () -> Entity?) {
+        if (isFacingPlayer) return
+
+        Log.d(TAG, "Starting continuous face player mode")
+        isFacingPlayer = true
+
+        facePlayerJob = scope.launch {
+            val rotationSpeed = 0.1f  // Slerp factor per frame
+
+            while (isActive && isFacingPlayer) {
+                try {
+                    // Skip rotation when pet is walking - walk has its own rotation code
+                    if (isWalking) {
+                        delay(16)
+                        continue
+                    }
+
+                    val pet = petEntity ?: continue
+                    val headEntity = headEntityProvider()
+                    val headPos = headEntity?.tryGetComponent<Transform>()?.transform?.t
+
+                    if (headPos != null) {
+                        val transform = pet.getComponent<Transform>()
+                        val petPos = transform.transform.t
+
+                        // Calculate direction to head (XZ plane only)
+                        val dx = headPos.x - petPos.x
+                        val dz = headPos.z - petPos.z
+                        val distance = sqrt(dx * dx + dz * dz)
+
+                        if (distance > 0.01f) {
+                            val direction = Vector3(dx / distance, 0f, dz / distance)
+                            val targetRotation = Quaternion.lookRotationAroundY(direction)
+
+                            // Smooth slerp towards target
+                            val currentRotation = transform.transform.q
+                            val smoothedRotation = currentRotation.slerp(targetRotation, rotationSpeed)
+
+                            transform.transform.q = smoothedRotation
+                            pet.setComponent(transform)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Ignore errors, keep trying
+                }
+
+                delay(16) // ~60 FPS
+            }
+        }
+    }
+
+    /**
+     * Stop continuously facing the player
+     */
+    fun stopFacingPlayer() {
+        if (isFacingPlayer) {
+            Log.d(TAG, "Stopping continuous face player mode")
+        }
+        isFacingPlayer = false
+        facePlayerJob?.cancel()
+        facePlayerJob = null
+    }
+
     /**
      * Move pet to target position with collision detection
      * Uses MRUK raycast to detect obstacles and stop/slide along them
@@ -391,6 +461,14 @@ class PetLocomotion(
                 val rotationSpeed = 0.15f
                 var prevTime = System.currentTimeMillis()
 
+                // Stuck detection
+                var lastProgressCheckTime = System.currentTimeMillis()
+                var lastProgressPos: Vector3? = null
+                val STUCK_CHECK_INTERVAL_MS = 1000L  // Check every 1 second
+                val STUCK_TIMEOUT_MS = 2000L         // Cancel if stuck for 2 seconds
+                val MIN_PROGRESS_DISTANCE = 0.05f    // Must move at least 5cm per check
+                var stuckStartTime: Long? = null
+
                 while (isActive) {
                     val currentTime = System.currentTimeMillis()
                     val deltaTime = (currentTime - prevTime) / 1000f
@@ -399,6 +477,31 @@ class PetLocomotion(
                     // Get current position
                     val transform = pet.getComponent<Transform>()
                     val currentPos = transform.transform.t
+
+                    // Stuck detection - check progress periodically
+                    if (currentTime - lastProgressCheckTime >= STUCK_CHECK_INTERVAL_MS) {
+                        if (lastProgressPos != null) {
+                            val progressDx = currentPos.x - lastProgressPos!!.x
+                            val progressDz = currentPos.z - lastProgressPos!!.z
+                            val progressDistance = sqrt(progressDx * progressDx + progressDz * progressDz)
+
+                            if (progressDistance < MIN_PROGRESS_DISTANCE) {
+                                // Not making progress
+                                if (stuckStartTime == null) {
+                                    stuckStartTime = currentTime
+                                    Log.d(TAG, "Pet appears stuck, starting timeout")
+                                } else if (currentTime - stuckStartTime!! >= STUCK_TIMEOUT_MS) {
+                                    Log.d(TAG, "Pet stuck for too long, canceling walk")
+                                    break
+                                }
+                            } else {
+                                // Making progress, reset stuck timer
+                                stuckStartTime = null
+                            }
+                        }
+                        lastProgressPos = Vector3(currentPos.x, currentPos.y, currentPos.z)
+                        lastProgressCheckTime = currentTime
+                    }
 
                     // Calculate direction to target
                     val dx = clampedTarget.x - currentPos.x

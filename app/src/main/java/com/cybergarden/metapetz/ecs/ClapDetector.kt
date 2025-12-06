@@ -11,13 +11,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * ClapDetector - Detects clapping gestures using hand tracking
+ * ClapDetector - Detects clapping gestures using cumulative hand displacement
  *
- * Detects when hands come together and apart in a clapping motion.
- * Requires at least 3 clap cycles within a time window to trigger.
+ * When hands are close together (< ACTIVE_RANGE), tracks total movement.
+ * If cumulative displacement exceeds threshold within time window, triggers clap.
  *
  * Usage:
  * 1. Create instance with coroutine scope and system manager
@@ -32,35 +33,50 @@ class ClapDetector(
     companion object {
         private const val TAG = "ClapDetector"
 
-        // Distance thresholds in meters (palm-to-palm distances from hand tracking)
-        private const val TOGETHER_THRESHOLD = 0.30f  // Hands considered "together" when closer than this
-        private const val APART_THRESHOLD = 0.50f     // Hands considered "apart" when further than this
+        // Only track displacement when hands are closer than this
+        private const val ACTIVE_RANGE = 0.10f
 
-        // Timing
-        private const val CLAP_WINDOW_MS = 3000L      // Time window to complete 3 claps
-        private const val REQUIRED_CLAPS = 3          // Number of clap cycles required
-        private const val COOLDOWN_MS = 2000L         // Cooldown after successful detection
-        private const val SAMPLE_DELAY_MS = 30L       // How often to check hand positions
-    }
+        // Cumulative displacement threshold to trigger clap
+        private const val DISPLACEMENT_THRESHOLD = 0.40f
 
-    // Detection state
-    private enum class HandState {
-        UNKNOWN,
-        TOGETHER,
-        APART
+        // Time window - reset cumulative displacement after this
+        private const val WINDOW_MS = 2000L
+
+        // Cooldown after successful detection
+        private const val COOLDOWN_MS = 2000L
+
+        // How often to check hand positions
+        private const val SAMPLE_DELAY_MS = 30L
     }
 
     private var detectionJob: Job? = null
     private var isRunning = false
 
-    // State tracking
-    private var currentState = HandState.UNKNOWN
-    private var clapCount = 0
-    private var firstClapTimeMs = 0L
-    private var lastDetectionTimeMs = 0L
+    // Cumulative displacement tracking
+    private var lastDistance: Float = -1f
+    private var cumulativeDisplacement: Float = 0f
+    private var windowStartTimeMs: Long = 0L
+    private var lastDetectionTimeMs: Long = 0L
+
+    // Current hand distance (exposed for debug UI)
+    var currentDistance: Float = 0f
+        private set
+
+    // Cumulative displacement (exposed for debug UI)
+    var currentCumulative: Float = 0f
+        private set
 
     // Callback when clap is detected
     var onClapDetected: (() -> Unit)? = null
+
+    // Callback when hands enter active range (for debug)
+    var onHandsTogether: (() -> Unit)? = null
+
+    // Callback when hands leave active range (for debug)
+    var onHandsApart: (() -> Unit)? = null
+
+    // Track if we're in active range
+    private var wasInRange = false
 
     /**
      * Start clap detection
@@ -73,9 +89,7 @@ class ClapDetector(
 
         Log.d(TAG, "Starting clap detection")
         isRunning = true
-        currentState = HandState.UNKNOWN
-        clapCount = 0
-        firstClapTimeMs = 0L
+        resetTracking()
 
         detectionJob = scope.launch {
             while (isActive && isRunning) {
@@ -98,8 +112,15 @@ class ClapDetector(
         isRunning = false
         detectionJob?.cancel()
         detectionJob = null
-        currentState = HandState.UNKNOWN
-        clapCount = 0
+        resetTracking()
+    }
+
+    private fun resetTracking() {
+        lastDistance = -1f
+        cumulativeDisplacement = 0f
+        windowStartTimeMs = 0L
+        currentCumulative = 0f
+        wasInRange = false
     }
 
     /**
@@ -125,73 +146,81 @@ class ClapDetector(
         val leftHandPos = getLeftHandPosition()
         val rightHandPos = getRightHandPosition()
 
-        // Log periodically for debugging
-        if (currentTime - lastLogTime > 2000) {
-            lastLogTime = currentTime
-            Log.d(TAG, "Hand positions: left=$leftHandPos, right=$rightHandPos")
-        }
-
         if (leftHandPos == null || rightHandPos == null) {
             return
         }
 
-        // Calculate distance between hands
-        val distance = vectorDistance(leftHandPos, rightHandPos)
-
-        // Log distance periodically
-        if (currentTime - lastLogTime < 50) {
-            Log.d(TAG, "Hand distance: $distance, state: $currentState")
+        // Check for invalid hand positions (at origin means tracking lost)
+        if (isNearOrigin(leftHandPos) || isNearOrigin(rightHandPos)) {
+            return
         }
 
-        // Determine new state based on distance
-        val newState = when {
-            distance < TOGETHER_THRESHOLD -> HandState.TOGETHER
-            distance > APART_THRESHOLD -> HandState.APART
-            else -> currentState // Hysteresis - keep current state in between thresholds
+        // Calculate horizontal plane distance (X + Z, ignoring Y height)
+        val dx = rightHandPos.x - leftHandPos.x
+        val dz = rightHandPos.z - leftHandPos.z
+        val distance = sqrt(dx * dx + dz * dz)
+
+        // Ignore invalid readings (0 distance = tracking glitch)
+        if (distance < 0.01f) {
+            return
         }
 
-        // Detect state transitions
-        if (newState != currentState && currentState != HandState.UNKNOWN) {
-            Log.d(TAG, "State transition: $currentState -> $newState")
-            // State changed - check for clap cycle
-            if (currentState == HandState.APART && newState == HandState.TOGETHER) {
-                // Hands came together - this is a clap!
-                handleClapCycle(currentTime)
+        currentDistance = distance  // Store for debug UI
+
+        // Check if hands are within active range
+        val inRange = distance < ACTIVE_RANGE
+
+        // Detect entering/leaving range for debug sounds
+        if (inRange && !wasInRange) {
+            onHandsTogether?.invoke()
+            Log.d(TAG, "Entered active range, distance: $distance")
+        } else if (!inRange && wasInRange) {
+            onHandsApart?.invoke()
+            Log.d(TAG, "Left active range, distance: $distance")
+        }
+        wasInRange = inRange
+
+        // Only track displacement when in range
+        if (inRange) {
+            // Reset window if expired
+            if (windowStartTimeMs == 0L) {
+                windowStartTimeMs = currentTime
+            } else if (currentTime - windowStartTimeMs > WINDOW_MS) {
+                Log.d(TAG, "Window expired, resetting. Cumulative was: $cumulativeDisplacement")
+                cumulativeDisplacement = 0f
+                windowStartTimeMs = currentTime
             }
-        }
 
-        currentState = newState
-    }
+            // Calculate displacement from last reading
+            if (lastDistance >= 0) {
+                val displacement = abs(distance - lastDistance)
+                cumulativeDisplacement += displacement
+                currentCumulative = cumulativeDisplacement  // For debug UI
 
-    /**
-     * Handle a completed clap cycle (apart -> together)
-     */
-    private fun handleClapCycle(currentTime: Long) {
-        // Reset if too much time has passed since first clap
-        if (clapCount > 0 && currentTime - firstClapTimeMs > CLAP_WINDOW_MS) {
-            Log.d(TAG, "Clap sequence timed out, resetting")
-            clapCount = 0
-            firstClapTimeMs = 0L
-        }
+                // Log periodically
+                if (currentTime - lastLogTime > 500) {
+                    lastLogTime = currentTime
+                    Log.d(TAG, "Cumulative: $cumulativeDisplacement / $DISPLACEMENT_THRESHOLD")
+                }
 
-        // Record this clap
-        clapCount++
-        if (clapCount == 1) {
-            firstClapTimeMs = currentTime
-        }
+                // Check if threshold reached
+                if (cumulativeDisplacement >= DISPLACEMENT_THRESHOLD) {
+                    Log.d(TAG, "CLAP DETECTED! Cumulative displacement: $cumulativeDisplacement")
+                    lastDetectionTimeMs = currentTime
+                    cumulativeDisplacement = 0f
+                    windowStartTimeMs = 0L
+                    currentCumulative = 0f
 
-        Log.d(TAG, "Clap detected! Count: $clapCount/$REQUIRED_CLAPS")
+                    // Trigger callback
+                    onClapDetected?.invoke()
+                }
+            }
 
-        // Check if we have enough claps
-        if (clapCount >= REQUIRED_CLAPS) {
-            Log.d(TAG, "Clap sequence complete! Triggering callback")
-            lastDetectionTimeMs = currentTime
-            clapCount = 0
-            firstClapTimeMs = 0L
-            currentState = HandState.UNKNOWN
-
-            // Trigger callback
-            onClapDetected?.invoke()
+            lastDistance = distance
+        } else {
+            // Outside range - reset tracking
+            lastDistance = -1f
+            // Don't reset cumulative here - it resets on window timeout
         }
     }
 
@@ -222,12 +251,9 @@ class ClapDetector(
     }
 
     /**
-     * Calculate distance between two vectors
+     * Check if a position is near origin (0,0,0) - indicates tracking loss
      */
-    private fun vectorDistance(a: Vector3, b: Vector3): Float {
-        val dx = b.x - a.x
-        val dy = b.y - a.y
-        val dz = b.z - a.z
-        return sqrt(dx * dx + dy * dy + dz * dz)
+    private fun isNearOrigin(pos: Vector3): Boolean {
+        return pos.x * pos.x + pos.y * pos.y + pos.z * pos.z < 0.01f
     }
 }

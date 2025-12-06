@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import kotlin.math.sqrt
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
@@ -188,6 +189,20 @@ class ImmersiveActivity : AppSystemActivity() {
     SceneAudioPlayer(scene, whistleSound)
   }
 
+  // Bark sounds for debug feedback
+  private val bark1Sound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/bark1.wav")
+  }
+  private val bark1Player: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, bark1Sound)
+  }
+  private val bark2Sound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/bark2.wav")
+  }
+  private val bark2Player: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, bark2Sound)
+  }
+
   // Bone throw cooldown - prevent immediate re-grab after throwing
   private var boneGrabTimeMs: Long = 0L
   private val BONE_THROW_COOLDOWN_MS = 1500L
@@ -197,10 +212,37 @@ class ImmersiveActivity : AppSystemActivity() {
   private var attentionResumeJob: Job? = null
   private val ATTENTION_TIMEOUT_MS = 5000L
 
+  // Hand distance for debug UI (updated by clap detector)
+  private var handDistance by mutableStateOf(0f)
+  private var cumulativeDisplacement by mutableStateOf(0f)
+
   // Clap detector for calling pet's attention
   private val clapDetector: ClapDetector by lazy {
     ClapDetector(activityScope, systemManager).apply {
-      onClapDetected = { callPetAttention() }
+      // Play bone sound when cumulative displacement threshold reached
+      onClapDetected = {
+        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+        if (headPos != null) {
+          boneSoundPlayer.play(headPos, 1.0f, false)
+        }
+        Log.d(TAG, "CLAP TRIGGERED! Playing bone sound and getting attention")
+        callPetAttention()
+      }
+      // Debug sounds for entering/leaving active range
+      onHandsTogether = {
+        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+        if (headPos != null) {
+          bark1Player.play(headPos, 1.0f, false)
+        }
+        Log.d(TAG, "Entered active range")
+      }
+      onHandsApart = {
+        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+        if (headPos != null) {
+          bark2Player.play(headPos, 1.0f, false)
+        }
+        Log.d(TAG, "Left active range")
+      }
     }
   }
 
@@ -510,6 +552,15 @@ class ImmersiveActivity : AppSystemActivity() {
     // Start clap detection for calling pet's attention
     clapDetector.start()
     Log.d(TAG, "Clap detector started")
+
+    // Start periodic distance updates for debug UI
+    activityScope.launch {
+      while (true) {
+        handDistance = clapDetector.currentDistance
+        cumulativeDisplacement = clapDetector.currentCumulative
+        delay(100) // Update 10 times per second
+      }
+    }
   }
 
   /**
@@ -1152,13 +1203,25 @@ class ImmersiveActivity : AppSystemActivity() {
               ComposeView(context).apply {
                 setContent {
                   Column(modifier = Modifier.fillMaxSize()) {
-                    // Debug overlay - attention state
+                    // Debug overlay - attention state and hand distance
                     Text(
                         text = "ATTENTION: ${if (isPetAttentive) "TRUE" else "FALSE"}",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (isPetAttentive) Color.Green else Color.Red,
-                        modifier = Modifier.fillMaxWidth().padding(8.dp)
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                    Text(
+                        text = "DIST: ${String.format("%.2f", handDistance)}m  CUMUL: ${String.format("%.2f", cumulativeDisplacement)}/0.40",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            handDistance >= 0.10f -> Color.Red        // Outside active range
+                            cumulativeDisplacement >= 0.30f -> Color.Green  // Almost triggered
+                            cumulativeDisplacement > 0f -> Color.Yellow     // Accumulating
+                            else -> Color.White                        // In range, not accumulating
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
                     )
 
                     if (currentPetData != null) {
@@ -1271,9 +1334,12 @@ class ImmersiveActivity : AppSystemActivity() {
     // Set pet as attentive
     isPetAttentive = true
 
-    // Stop idle wander and turn to face player
+    // Cancel any current walk and stop idle wander
+    petLocomotion.stopWalking()
     petLocomotion.stopIdleWander()
-    petLocomotion.turnToFacePlayer(getHeadEntity())
+
+    // Start continuously facing the player with smooth rotation
+    petLocomotion.startFacingPlayer { getHeadEntity() }
 
     // Reset the attention timeout
     resetAttentionTimeout()
@@ -1288,6 +1354,7 @@ class ImmersiveActivity : AppSystemActivity() {
       delay(ATTENTION_TIMEOUT_MS)
       Log.d(TAG, "Attention timeout - pet loses attention and resumes wandering")
       isPetAttentive = false
+      petLocomotion.stopFacingPlayer()
       petLocomotion.startIdleWander()
     }
   }
