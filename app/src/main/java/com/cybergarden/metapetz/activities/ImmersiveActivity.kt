@@ -1330,6 +1330,12 @@ class ImmersiveActivity : AppSystemActivity() {
    * Called when clap is detected - pet turns to face player and pays attention.
    */
   private fun callPetAttention() {
+    // Don't do anything if no pet is spawned
+    if (currentPetEntity == null) {
+      Log.d(TAG, "Clap detected but no pet spawned - ignoring")
+      return
+    }
+
     Log.d(TAG, "Clap detected! Calling pet attention")
 
     // Play whistle sound at head position

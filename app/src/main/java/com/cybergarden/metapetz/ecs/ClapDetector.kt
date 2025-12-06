@@ -3,6 +3,8 @@ package com.cybergarden.metapetz.ecs
 import android.util.Log
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Vector3
+import com.meta.spatial.runtime.ButtonBits
+import com.meta.spatial.toolkit.Controller
 import com.meta.spatial.toolkit.PlayerBodyAttachmentSystem
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.core.SystemManager
@@ -78,6 +80,9 @@ class ClapDetector(
     // Track if we're in active range
     private var wasInRange = false
 
+    // Track grip button state for controller input
+    private var wasGripPressed = false
+
     /**
      * Start clap detection
      */
@@ -141,6 +146,9 @@ class ClapDetector(
         if (currentTime - lastDetectionTimeMs < COOLDOWN_MS) {
             return
         }
+
+        // Check for controller grip button press (adds 0.1 to cumulative)
+        checkControllerGripButton(currentTime)
 
         // Get hand positions
         val leftHandPos = getLeftHandPosition()
@@ -255,5 +263,45 @@ class ClapDetector(
      */
     private fun isNearOrigin(pos: Vector3): Boolean {
         return pos.x * pos.x + pos.y * pos.y + pos.z * pos.z < 0.01f
+    }
+
+    /**
+     * Check for controller grip button press and add to cumulative displacement
+     */
+    private fun checkControllerGripButton(currentTime: Long) {
+        val rightHand = systemManager
+            .tryFindSystem<PlayerBodyAttachmentSystem>()
+            ?.tryGetLocalPlayerAvatarBody()
+            ?.rightHand ?: return
+
+        val controller = rightHand.tryGetComponent<Controller>() ?: return
+
+        // Use right trigger - controller only
+        val isGripPressed = (controller.buttonState and ButtonBits.ButtonTriggerR) != 0
+
+        // Detect press (transition from not pressed to pressed)
+        if (isGripPressed && !wasGripPressed) {
+            // Start window if not started
+            if (windowStartTimeMs == 0L) {
+                windowStartTimeMs = currentTime
+            }
+
+            // Add 0.1 to cumulative
+            cumulativeDisplacement += 0.1f
+            currentCumulative = cumulativeDisplacement
+            Log.d(TAG, "Grip pressed! Cumulative: $cumulativeDisplacement / $DISPLACEMENT_THRESHOLD")
+
+            // Check if threshold reached
+            if (cumulativeDisplacement >= DISPLACEMENT_THRESHOLD) {
+                Log.d(TAG, "CLAP DETECTED via grip button! Cumulative: $cumulativeDisplacement")
+                lastDetectionTimeMs = currentTime
+                cumulativeDisplacement = 0f
+                windowStartTimeMs = 0L
+                currentCumulative = 0f
+                onClapDetected?.invoke()
+            }
+        }
+
+        wasGripPressed = isGripPressed
     }
 }
