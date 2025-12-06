@@ -8,9 +8,9 @@ A mixed reality pet companion built with Meta Spatial SDK for Meta Quest. Featur
 
 ### Customizable Pets
 
-Create unique virtual companions with full color customization:
+Create unique virtual companions with full color and accessory customization:
 
-- **Multiple pet types** - Dogs, cats, and more with animated GLB models
+- **Variety of hats** - Customize your dog with different hat accessories
 - **Color picker UI** - Customize coat, eye, and snout colors via hex values
 - **Runtime recoloring** - Colors applied by modifying GLB materials on-the-fly
 - **Persistent customization** - Pet appearance saved to Firebase, restored on launch
