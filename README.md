@@ -2,6 +2,24 @@
 
 A mixed reality pet companion built with Meta Spatial SDK for Meta Quest. Features advanced spatial awareness with real-time room understanding, dynamic pathfinding, and physics-based interactions.
 
+## Features
+
+### Customizable Pets
+
+Create unique virtual companions with full color customization:
+
+- **Multiple pet types** - Dogs, cats, and more with animated GLB models
+- **Color picker UI** - Customize coat, eye, and snout colors via hex values
+- **Runtime recoloring** - Colors applied by modifying GLB materials on-the-fly
+- **Persistent customization** - Pet appearance saved to Firebase, restored on launch
+
+### Tamagotchi-Style Care
+
+- **Stat system** - Hunger, happiness, and health decay over time
+- **Care actions** - Feed, play, and heal to maintain pet wellbeing
+- **XP progression** - Earn experience from interactions, level up your pet
+- **Visual feedback** - Pet animations respond to stat levels
+
 ## Technical Highlights
 
 ### NavGrid Pathfinding System
