@@ -257,8 +257,8 @@ class PetLocomotion(
     var onFetchCancelled: (() -> Unit)? = null             // Called if fetch is interrupted
 
     // Mouth bone callbacks - ImmersiveActivity handles actual entity creation
-    var onSpawnMouthBone: ((Entity) -> Entity?)? = null    // Spawn bone in pet's mouth, returns mouth bone entity
-    var onDropBone: ((Vector3) -> Unit)? = null            // Drop bone at position as pickupable
+    var onSpawnMouthBone: ((Entity, Vector3?) -> Entity?)? = null  // Spawn bone, tween from world pos to mouth
+    var onDropBone: ((Vector3) -> Unit)? = null                    // Drop bone at position as pickupable
 
     // Head entity provider for returning to player during fetch
     var getHeadEntity: (() -> Entity?)? = null
@@ -576,8 +576,8 @@ class PetLocomotion(
                     val dz = clampedTarget.z - currentPos.z
                     val distanceToTarget = sqrt(dx * dx + dz * dz)
 
-                    // Check if arrived
-                    if (distanceToTarget < 0.1f) {
+                    // Check if arrived (5cm threshold for close approach)
+                    if (distanceToTarget < 0.05f) {
                         Log.d(TAG, "Arrived at target")
                         break
                     }
@@ -1277,54 +1277,49 @@ class PetLocomotion(
                     return@launch
                 }
 
-                // === PHASE 1b: Fine approach - get really close to bone ===
-                // Re-check bone position (it might have moved)
-                bonePos = boneEntity.tryGetComponent<Transform>()?.transform?.t
-                if (bonePos != null) {
-                    val petPos = pet.tryGetComponent<Transform>()?.transform?.t
-                    if (petPos != null) {
-                        val dx = bonePos.x - petPos.x
-                        val dz = bonePos.z - petPos.z
-                        val dist = sqrt(dx * dx + dz * dz)
+                // Verify pet is actually close to bone before picking up
+                val PICKUP_DISTANCE = 0.20f  // Must be within 20cm to pick up
+                val petPos = pet.tryGetComponent<Transform>()?.transform?.t
+                val currentBonePos = boneEntity.tryGetComponent<Transform>()?.transform?.t
 
-                        // If still more than 5cm away, do a final close approach
-                        if (dist > 0.05f) {
-                            Log.d(TAG, "Phase 1b: Fine approach to bone (dist=$dist)")
-                            // Direct movement for fine approach (no pathfinding needed for short distance)
-                            moveTo(bonePos)
-                            while (isWalking && isActive) {
-                                delay(50)
-                            }
-                        }
+                if (petPos != null && currentBonePos != null) {
+                    val dx = currentBonePos.x - petPos.x
+                    val dz = currentBonePos.z - petPos.z
+                    val distToBone = sqrt(dx * dx + dz * dz)
+
+                    Log.d(TAG, "Distance to bone: $distToBone (need < $PICKUP_DISTANCE)")
+
+                    if (distToBone > PICKUP_DISTANCE) {
+                        Log.w(TAG, "Too far from bone ($distToBone), cancelling fetch")
+                        cancelFetchInternal()
+                        return@launch
                     }
                 }
 
-                if (!isActive || !isFetching) {
-                    Log.d(TAG, "Fetch cancelled during fine approach")
-                    return@launch
-                }
+                // Get tween start position (at bone location, which is now close to pet)
+                val tweenStartPos = currentBonePos?.let { Vector3(it.x, it.y, it.z) }
+                Log.d(TAG, "Bone is close enough, tween will start from: $tweenStartPos")
 
                 // === PHASE 2: Pick up bone ===
                 fetchState = FetchState.PICKING_UP
                 Log.d(TAG, "Phase 2: Picking up bone")
 
+                // FIRST: Destroy the physics bone immediately (remove from physics world)
+                onFetchPickup?.invoke(boneEntity)
+                onBoneDestroy(boneEntity)
+                Log.d(TAG, "Physics bone destroyed")
+
+                // THEN: Spawn mouth bone that tweens from pet's feet to mouth
+                mouthBoneEntity = onSpawnMouthBone?.invoke(pet, tweenStartPos)
+                if (mouthBoneEntity != null) {
+                    Log.d(TAG, "Mouth bone spawned, will tween from $tweenStartPos to mouth")
+                }
+
                 // Play eat animation for bone pickup
                 playAnimation(ANIM_EAT, loop = false)
 
-                // Wait for eat animation to complete
+                // Wait for eat animation and tween to complete
                 delay(1000)
-
-                // Notify that bone was picked up (ImmersiveActivity should destroy it)
-                onFetchPickup?.invoke(boneEntity)
-                onBoneDestroy(boneEntity)
-
-                Log.d(TAG, "Bone picked up, destroying bone entity")
-
-                // Spawn bone in mouth for carrying
-                mouthBoneEntity = onSpawnMouthBone?.invoke(pet)
-                if (mouthBoneEntity != null) {
-                    Log.d(TAG, "Mouth bone spawned and parented to pet")
-                }
 
                 // === PHASE 3: Return to player ===
                 fetchState = FetchState.RETURNING

@@ -326,8 +326,8 @@ class ImmersiveActivity : AppSystemActivity() {
         startIdleWander()
       }
       // Mouth bone callbacks
-      onSpawnMouthBone = { petEntity ->
-        spawnMouthBone(petEntity)
+      onSpawnMouthBone = { petEntity, boneWorldPos ->
+        spawnMouthBoneWithTween(petEntity, boneWorldPos)
       }
       onDropBone = { position ->
         spawnDroppedBone(position)
@@ -1949,32 +1949,125 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Spawn a bone mesh parented to pet's mouth for carrying during fetch.
-   * The bone is positioned at the front of the pet (mouth area).
+   * Spawn a bone that tweens from world position to pet's mouth.
+   * The bone starts at boneWorldPos and animates to the mouth over ~300ms.
    */
-  private fun spawnMouthBone(petEntity: Entity): Entity? {
+  private fun spawnMouthBoneWithTween(petEntity: Entity, boneWorldPos: Vector3?): Entity? {
     try {
-      // Create bone mesh parented to pet
-      // Position offset: forward (Z) and slightly up (Y) to be at mouth level
-      val mouthOffset = Pose(
-          Vector3(0f, 0.05f, 0.12f),  // 5cm up, 12cm forward (mouth area)
-          Quaternion(0f, 90f, 0f)      // Rotate bone to be sideways in mouth
+      // Mouth offset in pet's local space
+      val mouthLocalOffset = Vector3(0f, 0f, 0.14f)  // 0 up, 14cm forward
+      val mouthRotation = Quaternion(0f, 90f, 0f)        // Sideways in mouth
+
+      // Get pet's current world transform
+      val petTransform = petEntity.tryGetComponent<Transform>()?.transform
+      if (petTransform == null) {
+        Log.w(TAG, "Pet has no transform, spawning directly at mouth")
+        return spawnMouthBoneDirectly(petEntity)
+      }
+
+      // Calculate mouth world position
+      val mouthWorldPos = Vector3(
+          petTransform.t.x + (petTransform.q * mouthLocalOffset).x,
+          petTransform.t.y + mouthLocalOffset.y,
+          petTransform.t.z + (petTransform.q * mouthLocalOffset).z
       )
 
+      // Start position (bone's last world position, or mouth if unknown)
+      val startPos = boneWorldPos ?: mouthWorldPos
+
+      // Create bone at start position (NOT parented yet - world space for tween)
+      val entity = Entity.create(
+          listOf(
+              Mesh("apk:///models/bonew.glb".toUri()),
+              Transform(Pose(startPos, Quaternion())),
+              Scale(Vector3(0.3f, 0.3f, 0.3f)),
+              Visible(true)
+          )
+      )
+
+      Log.d(TAG, "Spawned tween bone at $startPos, tweening to mouth at $mouthWorldPos")
+
+      // Animate bone from start to mouth, then parent it
+      activityScope.launch {
+        val tweenDuration = 300L  // 300ms tween
+        val startTime = System.currentTimeMillis()
+
+        while (isActive) {
+          val elapsed = System.currentTimeMillis() - startTime
+          val t = (elapsed.toFloat() / tweenDuration).coerceIn(0f, 1f)
+
+          // Smooth easing
+          val easedT = t * t * (3f - 2f * t)
+
+          // Get current pet position for mouth target (pet may be moving)
+          val currentPetTransform = petEntity.tryGetComponent<Transform>()?.transform
+          val currentMouthWorld = if (currentPetTransform != null) {
+            val rotatedOffset = currentPetTransform.q * mouthLocalOffset
+            Vector3(
+                currentPetTransform.t.x + rotatedOffset.x,
+                currentPetTransform.t.y + mouthLocalOffset.y,
+                currentPetTransform.t.z + rotatedOffset.z
+            )
+          } else mouthWorldPos
+
+          // Interpolate position
+          val tweenPos = Vector3(
+              startPos.x + (currentMouthWorld.x - startPos.x) * easedT,
+              startPos.y + (currentMouthWorld.y - startPos.y) * easedT,
+              startPos.z + (currentMouthWorld.z - startPos.z) * easedT
+          )
+
+          // Interpolate rotation toward mouth rotation
+          val currentPetRot = currentPetTransform?.q ?: Quaternion()
+          val targetWorldRot = currentPetRot * mouthRotation
+          val tweenRot = Quaternion().slerp(targetWorldRot, easedT)
+
+          entity.setComponent(Transform(Pose(tweenPos, tweenRot)))
+
+          if (t >= 1f) break
+          delay(16)
+        }
+
+        // Tween complete - now parent to pet for carrying
+        try {
+          entity.setComponent(Transform(Pose(mouthLocalOffset, mouthRotation)))
+          entity.setComponent(Scale(Vector3(0.3f, 0.3f, 0.3f)))
+          entity.setComponent(TransformParent(petEntity))
+          Log.d(TAG, "Bone tween complete, now parented to pet at offset $mouthLocalOffset")
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to parent bone after tween: ${e.message}")
+        }
+      }
+
+      return entity
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to spawn mouth bone with tween: ${e.message}", e)
+      return null
+    }
+  }
+
+  /**
+   * Fallback: spawn bone directly at mouth (no tween)
+   */
+  private fun spawnMouthBoneDirectly(petEntity: Entity): Entity? {
+    try {
+      val mouthOffset = Pose(
+          Vector3(0f, 0.05f, 0.12f),
+          Quaternion(0f, 90f, 0f)
+      )
       val entity = Entity.create(
           listOf(
               Mesh("apk:///models/bonew.glb".toUri()),
               Transform(mouthOffset),
-              Scale(Vector3(0.15f, 0.15f, 0.15f)),  // Slightly smaller in mouth
+              Scale(Vector3(0.15f, 0.15f, 0.15f)),
               Visible(true),
-              TransformParent(petEntity)  // Parent to pet so it moves with pet
+              TransformParent(petEntity)
           )
       )
-
-      Log.d(TAG, "Spawned mouth bone parented to pet id=${petEntity.id}")
+      Log.d(TAG, "Spawned mouth bone directly (no tween)")
       return entity
     } catch (e: Exception) {
-      Log.e(TAG, "Failed to spawn mouth bone: ${e.message}", e)
+      Log.e(TAG, "Failed to spawn mouth bone directly: ${e.message}", e)
       return null
     }
   }
