@@ -74,6 +74,9 @@ class NavGrid(
     // Walkability grid: true = walkable, false = blocked
     private val grid: Array<BooleanArray> = Array(gridWidth) { BooleanArray(gridHeight) { false } }
 
+    // Height grid: Y position for each cell (defaults to floorY, elevated for furniture)
+    private val heightGrid: Array<FloatArray> = Array(gridWidth) { FloatArray(gridHeight) { floorY } }
+
     // Cache of walkable cells for fast random selection
     private val walkableCells = mutableListOf<Pair<Int, Int>>()
     private var walkableCellsDirty = true
@@ -149,6 +152,73 @@ class NavGrid(
             walkableCellsDirty = true
             Log.d(TAG, "Blocked polygon with ${corners.size} corners: $blockedCount cells")
         }
+    }
+
+    /**
+     * Block cells inside a polygon and set their height to the furniture's top surface.
+     * Cells blocked by furniture will be shown in purple in debug visualization.
+     *
+     * @param corners List of (x, z) world coordinates forming the polygon (in order)
+     * @param height The Y height of the furniture's top surface
+     * @param padding Extra padding around furniture in meters (default 5cm)
+     */
+    fun blockPolygonWithHeight(corners: List<Pair<Float, Float>>, height: Float, padding: Float = 0.05f) {
+        if (corners.size < 3) {
+            Log.w(TAG, "blockPolygonWithHeight requires at least 3 corners, got ${corners.size}")
+            return
+        }
+
+        // Expand polygon outward by padding amount
+        val paddedCorners = expandPolygon(corners, padding)
+
+        // Find bounding box of padded polygon for efficient grid search
+        val minX = paddedCorners.minOf { it.first }
+        val maxX = paddedCorners.maxOf { it.first }
+        val minZ = paddedCorners.minOf { it.second }
+        val maxZ = paddedCorners.maxOf { it.second }
+
+        val minGx = worldToGridX(minX)
+        val maxGx = worldToGridX(maxX)
+        val minGz = worldToGridZ(minZ)
+        val maxGz = worldToGridZ(maxZ)
+
+        var blockedCount = 0
+        for (gx in minGx..maxGx) {
+            for (gz in minGz..maxGz) {
+                if (gx in 0 until gridWidth && gz in 0 until gridHeight) {
+                    if (grid[gx][gz]) {
+                        val cellWorld = gridToWorld(gx, gz)
+                        if (pointInPolygon(cellWorld.x, cellWorld.z, paddedCorners)) {
+                            grid[gx][gz] = false
+                            heightGrid[gx][gz] = height  // Store furniture height
+                            blockedCount++
+                        }
+                    }
+                }
+            }
+        }
+
+        if (blockedCount > 0) {
+            walkableCellsDirty = true
+            Log.d(TAG, "Blocked polygon with height=${"%.2f".format(height)}m: $blockedCount cells")
+        }
+    }
+
+    /**
+     * Get the height at a grid cell.
+     */
+    fun getCellHeight(gridX: Int, gridZ: Int): Float {
+        if (gridX < 0 || gridX >= gridWidth || gridZ < 0 || gridZ >= gridHeight) {
+            return floorY
+        }
+        return heightGrid[gridX][gridZ]
+    }
+
+    /**
+     * Check if a cell is elevated (has furniture on it).
+     */
+    fun isCellElevated(gridX: Int, gridZ: Int): Boolean {
+        return getCellHeight(gridX, gridZ) > floorY + 0.05f  // 5cm threshold
     }
 
     /**
@@ -460,9 +530,10 @@ class NavGrid(
      *
      * Green = walkable (far from furniture)
      * Yellow = walkable but near blocked cells
-     * Red = blocked (furniture)
+     * Purple = blocked by furniture (elevated, shown at furniture height)
+     * Red = blocked (floor-level obstacles like walls)
      *
-     * @param showBlocked Whether to show blocked cells (red spheres)
+     * @param showBlocked Whether to show blocked cells (purple/red spheres)
      */
     fun createDebugVisualization(showBlocked: Boolean = true) {
         // Don't recreate if already exists
@@ -476,13 +547,21 @@ class NavGrid(
 
         for (gx in 0 until gridWidth) {
             for (gz in 0 until gridHeight) {
-                val worldPos = gridToWorld(gx, gz)
                 val isWalkable = grid[gx][gz]
+                val cellHeight = heightGrid[gx][gz]
+                val isElevated = cellHeight > floorY + 0.05f  // Cell is on furniture
 
                 // Skip blocked cells if not showing them
                 if (!isWalkable && !showBlocked) continue
 
-                // Calculate distance to nearest blocked cell for color gradient
+                // Get world position with correct height
+                val worldPos = Vector3(
+                    minX + (gx + 0.5f) * cellSize,
+                    cellHeight,  // Use the cell's height (floor or furniture top)
+                    minZ + (gz + 0.5f) * cellSize
+                )
+
+                // Calculate color based on walkability and elevation
                 val color = if (isWalkable) {
                     val distToBlocked = getDistanceToNearestBlocked(gx, gz)
                     // Green (far) to Yellow (near) gradient based on distance
@@ -493,8 +572,11 @@ class NavGrid(
                         0.2f,            // B: low
                         0.5f             // A: semi-transparent
                     )
+                } else if (isElevated) {
+                    // Purple for furniture (elevated blocked cells)
+                    Color4(0.7f, 0.2f, 1f, 0.6f)  // Purple with 60% alpha
                 } else {
-                    // Red for blocked
+                    // Red for floor-level blocked cells (walls, etc.)
                     Color4(1f, 0.2f, 0.2f, 0.5f)
                 }
 

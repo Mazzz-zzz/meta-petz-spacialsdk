@@ -2137,6 +2137,7 @@ class ImmersiveActivity : AppSystemActivity() {
     val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
 
     val localCorners: List<Vector3>
+    var furnitureTopHeight: Float  // Height of the furniture's top surface in world space
 
     if (volumeComponent != null) {
       // Use MRUKVolume - get the bottom face (floor footprint) corners
@@ -2148,6 +2149,10 @@ class ImmersiveActivity : AppSystemActivity() {
       Log.d(TAG, "  Volume min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)}, ${"%.3f".format(min.z)})")
       Log.d(TAG, "  Volume max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)}, ${"%.3f".format(max.z)})")
 
+      // Calculate top surface height: anchor Y + max Z (top of volume in local space)
+      furnitureTopHeight = worldPos.y + max.z
+      Log.d(TAG, "  Top surface height: ${"%.3f".format(furnitureTopHeight)}m")
+
       // Bottom face corners (z = min.z for floor footprint)
       // X and Y define the horizontal footprint
       localCorners = listOf(
@@ -2157,12 +2162,16 @@ class ImmersiveActivity : AppSystemActivity() {
         Vector3(min.x, max.y, min.z)
       )
     } else if (planeComponent != null) {
-      // Fallback to MRUKPlane for 2D surfaces
+      // Fallback to MRUKPlane for 2D surfaces (horizontal surfaces like tabletops)
       val min = planeComponent.min
       val max = planeComponent.max
       Log.d(TAG, "=== FURNITURE (Plane): $labels ===")
       Log.d(TAG, "  Plane min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)})")
       Log.d(TAG, "  Plane max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)})")
+
+      // For planes, the surface is at the anchor's Y position
+      furnitureTopHeight = worldPos.y
+      Log.d(TAG, "  Top surface height: ${"%.3f".format(furnitureTopHeight)}m")
 
       // Plane corners (X = width, Y = depth in plane's local 2D space, Z = 0)
       localCorners = listOf(
@@ -2172,8 +2181,9 @@ class ImmersiveActivity : AppSystemActivity() {
         Vector3(min.x, max.y, 0f)
       )
     } else {
-      // No volume or plane - use default size
+      // No volume or plane - use default size and assume ~0.5m height
       Log.d(TAG, "Furniture has no MRUKVolume/MRUKPlane, using default 0.5x0.5m: $labels")
+      furnitureTopHeight = worldPos.y + 0.5f  // Assume 0.5m height for unknown furniture
       localCorners = listOf(
         Vector3(-0.25f, 0f, -0.25f),
         Vector3(+0.25f, 0f, -0.25f),
@@ -2193,13 +2203,15 @@ class ImmersiveActivity : AppSystemActivity() {
     furnitureQuads.add(FurnitureQuad(worldCorners, labels.firstOrNull() ?: "unknown"))
     Log.d(TAG, "=== FURNITURE QUAD: ${labels.firstOrNull()} ===")
     Log.d(TAG, "  World pos: (${"%.3f".format(worldPos.x)}, ${"%.3f".format(worldPos.y)}, ${"%.3f".format(worldPos.z)})")
+    Log.d(TAG, "  Top height: ${"%.3f".format(furnitureTopHeight)}m")
     worldCorners.forEachIndexed { i, (x, z) ->
       Log.d(TAG, "  Corner $i: (${"%.3f".format(x)}, ${"%.3f".format(z)})")
     }
 
-    // Block the footprint in NavGrid using the actual world corners (15cm padding)
-    grid.blockPolygon(worldCorners, padding = 0.15f)
-    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners")
+    // Block the footprint in NavGrid with furniture height (15cm padding)
+    // This allows debug visualization to show purple spheres at furniture height
+    grid.blockPolygonWithHeight(worldCorners, furnitureTopHeight, padding = 0.15f)
+    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners at height ${"%.2f".format(furnitureTopHeight)}m")
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
   }
 
