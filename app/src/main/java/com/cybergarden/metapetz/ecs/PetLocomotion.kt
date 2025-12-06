@@ -29,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
 import kotlin.random.Random
 
@@ -191,6 +192,9 @@ class PetLocomotion(
     // Walking state
     private var walkJob: Job? = null
     private var isWalking = false
+
+    // Jumping state
+    private var isJumping = false
 
     // Idle wander state
     private var idleWanderJob: Job? = null
@@ -607,6 +611,210 @@ class PetLocomotion(
         }
     }
 
+    // ==================== PATHFINDING WITH JUMPS ====================
+
+    /**
+     * Move pet to target using A* pathfinding with jump support.
+     * Uses NavGrid to find path across floor AND elevated surfaces.
+     * Automatically jumps when transitioning between height levels.
+     */
+    fun moveToWithPathfinding(target: Vector3) {
+        val pet = petEntity ?: run {
+            Log.w(TAG, "moveToWithPathfinding called but petEntity is null")
+            return
+        }
+
+        val grid = navGrid ?: run {
+            Log.w(TAG, "moveToWithPathfinding called but navGrid is null, falling back to direct movement")
+            moveTo(target)
+            return
+        }
+
+        // Get current position
+        val currentPos = pet.tryGetComponent<Transform>()?.transform?.t ?: return
+
+        // Find path using A*
+        val path = grid.findPath(currentPos.x, currentPos.z, target.x, target.z)
+        if (path == null || path.size < 2) {
+            Log.w(TAG, "No path found, falling back to direct movement")
+            moveTo(target)
+            return
+        }
+
+        Log.d(TAG, "Path found with ${path.size} nodes, starting pathfinding movement")
+
+        // Cancel any existing walk
+        walkJob?.cancel()
+
+        walkJob = scope.launch {
+            isWalking = true
+            onWalkStart?.invoke()
+
+            try {
+                var currentIndex = 0
+
+                while (isActive && currentIndex < path.size - 1) {
+                    val fromNode = path[currentIndex]
+                    val toNode = path[currentIndex + 1]
+
+                    val fromPos = grid.gridToWorldWithHeight(fromNode.gx, fromNode.gz)
+                    val toPos = grid.gridToWorldWithHeight(toNode.gx, toNode.gz)
+
+                    // Check if this segment requires a jump
+                    if (grid.requiresJump(fromNode, toNode)) {
+                        Log.d(TAG, "Jump required from height ${fromNode.height} to ${toNode.height}")
+                        performJump(fromPos, toPos)
+                    } else {
+                        // Walk to next node
+                        walkToPoint(toPos)
+                    }
+
+                    currentIndex++
+                }
+
+                Log.d(TAG, "Pathfinding movement complete")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Pathfinding movement error: ${e.message}")
+            } finally {
+                isWalking = false
+                isJumping = false
+                playAnimation(ANIM_WAG, loop = true)
+                onWalkEnd?.invoke()
+            }
+        }
+    }
+
+    /**
+     * Perform a jump from one position to another with parabolic arc.
+     * Plays jump animation and interpolates position smoothly.
+     */
+    private suspend fun performJump(from: Vector3, to: Vector3) {
+        val pet = petEntity ?: return
+
+        isJumping = true
+        playAnimation(ANIM_JUMP, loop = false)
+
+        val duration = 400L  // milliseconds
+        val heightDiff = to.y - from.y
+        val arcHeight = 0.25f + heightDiff.coerceAtLeast(0f) * 0.5f  // Higher arc for jumping up
+
+        // Face the jump direction
+        val dx = to.x - from.x
+        val dz = to.z - from.z
+        val distance = sqrt(dx * dx + dz * dz)
+        if (distance > 0.01f) {
+            val direction = Vector3(dx / distance, 0f, dz / distance)
+            val targetRotation = Quaternion.lookRotationAroundY(direction)
+            val transform = pet.getComponent<Transform>()
+            transform.transform.q = targetRotation
+            pet.setComponent(transform)
+        }
+
+        val startTime = System.currentTimeMillis()
+
+        while (coroutineContext.isActive) {
+            val elapsed = System.currentTimeMillis() - startTime
+            val t = (elapsed / duration.toFloat()).coerceIn(0f, 1f)
+
+            // Horizontal: linear interpolation
+            val x = lerp(from.x, to.x, t)
+            val z = lerp(from.z, to.z, t)
+
+            // Vertical: parabolic arc
+            val baseY = lerp(from.y, to.y, t)
+            val arc = arcHeight * 4f * t * (1f - t)  // peaks at t=0.5
+            val y = baseY + arc
+
+            // Update position
+            val transform = pet.getComponent<Transform>()
+            transform.transform.t = Vector3(x, y, z)
+            pet.setComponent(transform)
+
+            // Push bones while jumping
+            pushNearbyBones(Vector3(x, y, z))
+
+            if (t >= 1f) break
+            delay(16)  // ~60 FPS
+        }
+
+        isJumping = false
+        Log.d(TAG, "Jump complete: ${from.y} -> ${to.y}")
+    }
+
+    /**
+     * Walk to a single point (used by pathfinding for each segment).
+     */
+    private suspend fun walkToPoint(target: Vector3) {
+        val pet = petEntity ?: return
+
+        playAnimation(ANIM_WALKLOOP, loop = true)
+
+        val smoothTime = 1f / 60f
+        val rotationSpeed = 0.15f
+        var prevTime = System.currentTimeMillis()
+
+        while (coroutineContext.isActive) {
+            val currentTime = System.currentTimeMillis()
+            val deltaTime = (currentTime - prevTime) / 1000f
+            prevTime = currentTime
+
+            val transform = pet.getComponent<Transform>()
+            val currentPos = transform.transform.t
+
+            // Calculate direction to target
+            val dx = target.x - currentPos.x
+            val dz = target.z - currentPos.z
+            val distanceToTarget = sqrt(dx * dx + dz * dz)
+
+            // Check if arrived (within 1 cell = 15cm)
+            if (distanceToTarget < 0.15f) {
+                // Snap to target position
+                transform.transform.t = target
+                pet.setComponent(transform)
+                break
+            }
+
+            // Normalize direction
+            val dirX = dx / distanceToTarget
+            val dirZ = dz / distanceToTarget
+            val direction = Vector3(dirX, 0f, dirZ)
+
+            // Calculate step
+            val stepDistance = walkSpeed * deltaTime.coerceIn(0.001f, 0.05f)
+            val actualStep = minOf(stepDistance, distanceToTarget)
+
+            val newPos = Vector3(
+                currentPos.x + dirX * actualStep,
+                target.y,  // Use target height (important for staying on surfaces)
+                currentPos.z + dirZ * actualStep
+            )
+
+            // Rotation
+            val targetRotation = Quaternion.lookRotationAroundY(direction)
+            val currentRotation = transform.transform.q
+            val smoothFactor = smoothOver(deltaTime, rotationSpeed, smoothTime)
+            val smoothedRotation = currentRotation.slerp(targetRotation, smoothFactor)
+
+            transform.transform.t = newPos
+            transform.transform.q = smoothedRotation
+            pet.setComponent(transform)
+
+            pushNearbyBones(newPos)
+
+            delay(16)
+        }
+    }
+
+    /**
+     * Linear interpolation helper.
+     */
+    private fun lerp(a: Float, b: Float, t: Float): Float {
+        return a + (b - a) * t
+    }
+
+    // ==================== END PATHFINDING ====================
+
     /**
      * Collision result containing movement info and slide direction
      */
@@ -809,21 +1017,36 @@ class PetLocomotion(
 
                 // Skip if no longer wandering or walking
                 if (!isIdleWandering) break
-                if (isWalking) {
-                    Log.d(TAG, "Idle wander: pet is walking, waiting...")
+                if (isWalking || isJumping) {
+                    Log.d(TAG, "Idle wander: pet is walking/jumping, waiting...")
                     continue
                 }
 
-                // Pick a random walkable point
+                // Pick a random walkable point (floor OR elevated surface)
                 val target: Vector3? = if (navGrid != null) {
-                    // Use NavGrid to get a random walkable point (avoids furniture)
-                    val gridTarget = navGrid?.getRandomWalkablePoint()
-                    if (gridTarget != null) {
-                        Log.d(TAG, "Idle wander: NavGrid selected point $gridTarget")
-                        gridTarget
+                    val grid = navGrid!!
+
+                    // 30% chance to target an elevated surface (furniture)
+                    val tryElevated = Random.nextFloat() < 0.3f
+
+                    if (tryElevated) {
+                        val elevatedCells = grid.findAllWalkableElevatedCells()
+                        if (elevatedCells.isNotEmpty()) {
+                            val cell = elevatedCells[Random.nextInt(elevatedCells.size)]
+                            val pos = grid.gridToWorldWithHeight(cell.gx, cell.gz)
+                            Log.d(TAG, "Idle wander: targeting elevated surface at $pos (height=${cell.height})")
+                            pos
+                        } else {
+                            // No elevated surfaces, fall back to floor
+                            grid.getRandomWalkablePoint()?.also {
+                                Log.d(TAG, "Idle wander: no elevated surfaces, floor point $it")
+                            }
+                        }
                     } else {
-                        Log.w(TAG, "Idle wander: NavGrid has no walkable cells, falling back")
-                        null
+                        // Target floor
+                        grid.getRandomWalkablePoint()?.also {
+                            Log.d(TAG, "Idle wander: floor point $it")
+                        }
                     }
                 } else {
                     null
@@ -843,11 +1066,11 @@ class PetLocomotion(
 
                 Log.d(TAG, "Idle wander: moving to $finalTarget")
 
-                // Move to the random point
-                moveTo(finalTarget)
+                // Move to the random point using pathfinding (supports jumps)
+                moveToWithPathfinding(finalTarget)
 
-                // Wait for walk to complete
-                while (isWalking && isActive && isIdleWandering) {
+                // Wait for walk/jump to complete
+                while ((isWalking || isJumping) && isActive && isIdleWandering) {
                     delay(100)
                 }
             }

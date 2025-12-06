@@ -12,6 +12,9 @@ import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Sphere
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
+import java.util.PriorityQueue
+import kotlin.math.abs
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 /**
@@ -260,6 +263,237 @@ class NavGrid(
 
         return false  // No valid 2x2 block found
     }
+
+    // ==================== A* PATHFINDING ====================
+
+    /**
+     * Node for A* pathfinding with grid coordinates and height.
+     */
+    data class PathNode(
+        val gx: Int,
+        val gz: Int,
+        val height: Float
+    )
+
+    /**
+     * Internal node for A* algorithm with costs and parent tracking.
+     */
+    private data class AStarNode(
+        val gx: Int,
+        val gz: Int,
+        val height: Float,
+        var gCost: Float = Float.MAX_VALUE,  // Cost from start
+        var fCost: Float = Float.MAX_VALUE,  // gCost + heuristic
+        var parent: AStarNode? = null
+    ) : Comparable<AStarNode> {
+        override fun compareTo(other: AStarNode): Int = fCost.compareTo(other.fCost)
+
+        fun toPathNode() = PathNode(gx, gz, height)
+    }
+
+    /**
+     * Find a path from start to target using A* algorithm.
+     * Supports navigation across floor AND elevated surfaces (furniture).
+     *
+     * @param startX World X coordinate of start position
+     * @param startZ World Z coordinate of start position
+     * @param targetX World X coordinate of target position
+     * @param targetZ World Z coordinate of target position
+     * @return List of PathNodes from start to target, or null if no path exists
+     */
+    fun findPath(startX: Float, startZ: Float, targetX: Float, targetZ: Float): List<PathNode>? {
+        val startGx = worldToGridX(startX)
+        val startGz = worldToGridZ(startZ)
+        val targetGx = worldToGridX(targetX)
+        val targetGz = worldToGridZ(targetZ)
+
+        // Validate bounds
+        if (startGx !in 0 until gridWidth || startGz !in 0 until gridHeight) {
+            Log.w(TAG, "Start position out of bounds: ($startGx, $startGz)")
+            return null
+        }
+        if (targetGx !in 0 until gridWidth || targetGz !in 0 until gridHeight) {
+            Log.w(TAG, "Target position out of bounds: ($targetGx, $targetGz)")
+            return null
+        }
+
+        // Check if target is reachable (walkable floor OR walkable elevated surface)
+        val targetIsWalkable = grid[targetGx][targetGz] || isWalkableElevatedSurface(targetGx, targetGz)
+        if (!targetIsWalkable) {
+            Log.w(TAG, "Target is not walkable: ($targetGx, $targetGz)")
+            return null
+        }
+
+        val startHeight = getCellHeight(startGx, startGz)
+        val targetHeight = getCellHeight(targetGx, targetGz)
+
+        val openSet = PriorityQueue<AStarNode>()
+        val closedSet = mutableSetOf<Pair<Int, Int>>()
+        val nodeMap = mutableMapOf<Pair<Int, Int>, AStarNode>()
+
+        val startNode = AStarNode(startGx, startGz, startHeight, gCost = 0f)
+        startNode.fCost = heuristic(startGx, startGz, targetGx, targetGz)
+        openSet.add(startNode)
+        nodeMap[Pair(startGx, startGz)] = startNode
+
+        while (openSet.isNotEmpty()) {
+            val current = openSet.poll()!!
+
+            // Reached target?
+            if (current.gx == targetGx && current.gz == targetGz) {
+                return reconstructPath(current)
+            }
+
+            closedSet.add(Pair(current.gx, current.gz))
+
+            // Check all neighbors (8-directional + elevation transitions)
+            for (neighbor in getNeighborsForPathfinding(current.gx, current.gz, current.height)) {
+                val neighborKey = Pair(neighbor.gx, neighbor.gz)
+                if (neighborKey in closedSet) continue
+
+                // Calculate movement cost
+                val isDiagonal = neighbor.gx != current.gx && neighbor.gz != current.gz
+                val baseCost = if (isDiagonal) 1.414f else 1f
+                val heightDiff = abs(neighbor.height - current.height)
+                val heightCost = if (heightDiff > 0.1f) 5f else 0f  // Penalty for jumps
+                val moveCost = baseCost + heightCost
+
+                val tentativeG = current.gCost + moveCost
+
+                val existingNode = nodeMap[neighborKey]
+                if (existingNode != null) {
+                    if (tentativeG < existingNode.gCost) {
+                        existingNode.gCost = tentativeG
+                        existingNode.fCost = tentativeG + heuristic(neighbor.gx, neighbor.gz, targetGx, targetGz)
+                        existingNode.parent = current
+                        // Re-add to open set with updated priority
+                        openSet.remove(existingNode)
+                        openSet.add(existingNode)
+                    }
+                } else {
+                    val newNode = AStarNode(
+                        neighbor.gx, neighbor.gz, neighbor.height,
+                        gCost = tentativeG,
+                        fCost = tentativeG + heuristic(neighbor.gx, neighbor.gz, targetGx, targetGz),
+                        parent = current
+                    )
+                    openSet.add(newNode)
+                    nodeMap[neighborKey] = newNode
+                }
+            }
+        }
+
+        Log.w(TAG, "No path found from ($startGx,$startGz) to ($targetGx,$targetGz)")
+        return null
+    }
+
+    /**
+     * Heuristic for A* (Euclidean distance).
+     */
+    private fun heuristic(fromX: Int, fromZ: Int, toX: Int, toZ: Int): Float {
+        val dx = (toX - fromX).toFloat()
+        val dz = (toZ - fromZ).toFloat()
+        return sqrt(dx * dx + dz * dz)
+    }
+
+    /**
+     * Reconstruct path from A* result by following parent pointers.
+     */
+    private fun reconstructPath(endNode: AStarNode): List<PathNode> {
+        val path = mutableListOf<PathNode>()
+        var current: AStarNode? = endNode
+
+        while (current != null) {
+            path.add(0, current.toPathNode())
+            current = current.parent
+        }
+
+        Log.d(TAG, "Path found with ${path.size} nodes")
+        return path
+    }
+
+    /**
+     * Get valid neighbors for pathfinding, including elevation transitions.
+     *
+     * A cell is a valid neighbor if:
+     * - It's a walkable floor cell (grid[gx][gz] == true), OR
+     * - It's a walkable elevated surface (isWalkableElevatedSurface == true)
+     *
+     * Jump constraints:
+     * - Max jump UP: 0.8m
+     * - Max jump DOWN: 1.2m
+     */
+    private fun getNeighborsForPathfinding(gx: Int, gz: Int, currentHeight: Float): List<PathNode> {
+        val neighbors = mutableListOf<PathNode>()
+        val maxJumpUp = 0.8f
+        val maxJumpDown = 1.2f
+
+        // 8-directional neighbors
+        val directions = listOf(
+            Pair(-1, -1), Pair(0, -1), Pair(1, -1),
+            Pair(-1, 0),              Pair(1, 0),
+            Pair(-1, 1),  Pair(0, 1),  Pair(1, 1)
+        )
+
+        for ((dx, dz) in directions) {
+            val nx = gx + dx
+            val nz = gz + dz
+
+            if (nx !in 0 until gridWidth || nz !in 0 until gridHeight) continue
+
+            val neighborHeight = getCellHeight(nx, nz)
+            val heightDiff = neighborHeight - currentHeight
+
+            // Check jump constraints
+            if (heightDiff > maxJumpUp) continue      // Too high to jump up
+            if (-heightDiff > maxJumpDown) continue   // Too high to drop down
+
+            // Check if neighbor is walkable (floor OR elevated surface)
+            val isFloorWalkable = grid[nx][nz]
+            val isElevatedWalkable = isWalkableElevatedSurface(nx, nz)
+
+            if (isFloorWalkable || isElevatedWalkable) {
+                neighbors.add(PathNode(nx, nz, neighborHeight))
+            }
+        }
+
+        return neighbors
+    }
+
+    /**
+     * Get all walkable elevated cells (for random wander destinations).
+     */
+    fun findAllWalkableElevatedCells(): List<PathNode> {
+        val cells = mutableListOf<PathNode>()
+        for (gx in 0 until gridWidth) {
+            for (gz in 0 until gridHeight) {
+                if (isWalkableElevatedSurface(gx, gz)) {
+                    cells.add(PathNode(gx, gz, getCellHeight(gx, gz)))
+                }
+            }
+        }
+        return cells
+    }
+
+    /**
+     * Convert grid coordinates to world position with correct height.
+     */
+    fun gridToWorldWithHeight(gx: Int, gz: Int): Vector3 {
+        return Vector3(
+            minX + (gx + 0.5f) * cellSize,
+            getCellHeight(gx, gz),
+            minZ + (gz + 0.5f) * cellSize
+        )
+    }
+
+    /**
+     * Check if moving from one node to another requires a jump (height change > 10cm).
+     */
+    fun requiresJump(from: PathNode, to: PathNode): Boolean {
+        return abs(to.height - from.height) > 0.1f
+    }
+
+    // ==================== END A* PATHFINDING ====================
 
     /**
      * Point-in-polygon test using ray casting algorithm.
