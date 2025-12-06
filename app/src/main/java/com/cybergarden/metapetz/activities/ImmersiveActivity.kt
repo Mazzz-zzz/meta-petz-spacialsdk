@@ -133,6 +133,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentPetData by mutableStateOf<PetData?>(null)
   private var currentPetEntity: Entity? = null
   private var isEnvironmentSetup by mutableStateOf(false)
+  private var isRoomMode by mutableStateOf(false)  // true = scanned room with pathfinding, false = outside mode
   private var isDebugGridEnabled by mutableStateOf(false)
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
@@ -877,6 +878,10 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun setupRoom() {
     Log.d(TAG, "=== SETUP ROOM (Outside) CALLED ===")
 
+    // Set mode to OUTSIDE (not room scan mode)
+    isRoomMode = false
+    Log.d(TAG, "Mode set to OUTSIDE (isRoomMode=false)")
+
     // Clear all bones when environment is reset
     clearAllBones()
 
@@ -890,10 +895,11 @@ class ImmersiveActivity : AppSystemActivity() {
     // Clear any existing room scan data (mutual exclusivity)
     clearRoomBoundsEdges()
 
-    // Clear old NavGrid and debug visualization
+    // Clear old NavGrid and debug visualization - OUTSIDE MODE DOES NOT USE NAVGRID/PATHFINDING
     navGrid?.clearDebugVisualization()
     navGrid = null
     petLocomotion.setNavGrid(null)
+    petLocomotion.setRoomMode(false)  // Tell locomotion system we're in outside mode
     isDebugGridEnabled = false  // Reset checkbox state
     furnitureQuads.clear()  // Clear furniture debug data
     furnitureDebugSpheres.forEach { it.destroy() }  // Destroy purple corner spheres
@@ -1031,20 +1037,28 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun scanRoom() {
     Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
 
+    // Set mode to ROOM (room scan mode with pathfinding)
+    isRoomMode = true
+    Log.d(TAG, "Mode set to ROOM (isRoomMode=true)")
+
     // Clear all bones when environment is reset
     clearAllBones()
 
-    // Clear any existing manual room data (mutual exclusivity)
+    // Clear any existing manual room data (mutual exclusivity - OUTSIDE MODE DATA)
     if (roomColliderEntities.isNotEmpty()) {
-      Log.d(TAG, "Clearing ${roomColliderEntities.size} existing manual room colliders")
+      Log.d(TAG, "Clearing ${roomColliderEntities.size} existing manual room colliders (outside mode)")
       roomColliderEntities.forEach { it.destroy() }
       roomColliderEntities.clear()
     }
 
+    // Clear outside mode floor polygon - ROOM MODE USES NAVGRID INSTEAD
+    petLocomotion.setFloorPolygon(null)
+    petLocomotion.setRoomMode(true)  // Tell locomotion system we're in room mode
+
     // Clear any existing room scan data (in case re-scanning)
     clearRoomBoundsEdges()
 
-    // Clear old NavGrid and debug visualization
+    // Clear old NavGrid and debug visualization (will be recreated from room scan)
     navGrid?.clearDebugVisualization()
     navGrid = null
     petLocomotion.setNavGrid(null)

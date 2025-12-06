@@ -218,6 +218,9 @@ class PetLocomotion(
     // Navigation grid for avoiding furniture when wandering
     private var navGrid: NavGrid? = null
 
+    // Room mode flag - true = room scan with pathfinding, false = outside mode with bounded area
+    private var isRoomMode: Boolean = false
+
     // Collision settings
     private val collisionRadius = 0.15f  // Pet's collision radius in meters
     private val bonePushRadius = 0.25f   // Distance at which pet pushes bones
@@ -267,6 +270,20 @@ class PetLocomotion(
             Log.d(TAG, "NavGrid cleared")
         }
     }
+
+    /**
+     * Set room mode for locomotion.
+     * @param roomMode true = room scan with pathfinding, false = outside mode with bounded area
+     */
+    fun setRoomMode(roomMode: Boolean) {
+        isRoomMode = roomMode
+        Log.d(TAG, "Room mode set: $roomMode (${if (roomMode) "pathfinding enabled" else "bounded area mode"})")
+    }
+
+    /**
+     * Get current room mode
+     */
+    fun getRoomMode(): Boolean = isRoomMode
 
     /**
      * Push nearby bones away from pet position
@@ -625,6 +642,8 @@ class PetLocomotion(
      * Move pet to target using A* pathfinding with jump support.
      * Uses smooth waypoint-based movement - no snapping.
      * Automatically jumps UP when needed, falls with gravity when going DOWN.
+     *
+     * IMPORTANT: Only uses pathfinding in ROOM MODE. In OUTSIDE MODE, falls back to direct movement.
      */
     fun moveToWithPathfinding(target: Vector3) {
         val pet = petEntity ?: run {
@@ -632,8 +651,16 @@ class PetLocomotion(
             return
         }
 
+        // OUTSIDE MODE: Use direct movement without pathfinding
+        if (!isRoomMode) {
+            Log.d(TAG, "Outside mode - using direct movement (no pathfinding)")
+            moveTo(target)
+            return
+        }
+
+        // ROOM MODE: Use NavGrid pathfinding
         val grid = navGrid ?: run {
-            Log.w(TAG, "moveToWithPathfinding called but navGrid is null, falling back to direct movement")
+            Log.w(TAG, "Room mode but navGrid is null, falling back to direct movement")
             moveTo(target)
             return
         }
@@ -924,9 +951,10 @@ class PetLocomotion(
      * Features:
      * - Persistent pointer that updates every frame showing where you're pointing
      * - DEPTH mode raycasting (hits furniture surfaces)
-     * - Snaps to nearest walkable grid cell within 50cm
+     * - Snaps to nearest walkable grid cell within 50cm (room mode only)
      * - Trigger press to confirm target and move pet
      * - Attention-gated: pointer only works when pet has attention
+     * - Mode-aware: Uses pathfinding in room mode, direct movement in outside mode
      *
      * @param mrukFeature Required - MRUK feature for scene-aware raycasting
      */
@@ -934,12 +962,13 @@ class PetLocomotion(
         val system = PointToMoveSystem(
             mrukFeature = mrukFeature,
             floorY = floorY,
-            navGrid = navGrid,
+            getNavGrid = { navGrid },  // Dynamic getter - always gets current navGrid
+            isRoomMode = { isRoomMode },  // Dynamic getter - always gets current mode
             isAttentive = { isAttentive?.invoke() ?: false },
             onTargetFound = { hitPoint ->
                 onTargetSet?.invoke(hitPoint)
                 showTargetMarker(hitPoint)
-                moveToWithPathfinding(hitPoint)
+                moveToWithPathfinding(hitPoint)  // This internally checks isRoomMode
             }
         )
         pointingSystem = system
@@ -1019,7 +1048,7 @@ class PetLocomotion(
             return
         }
 
-        Log.d(TAG, "Starting idle wander mode (navGrid=${navGrid != null})")
+        Log.d(TAG, "Starting idle wander mode (isRoomMode=$isRoomMode, navGrid=${navGrid != null})")
         isIdleWandering = true
 
         idleWanderJob = scope.launch {
@@ -1036,8 +1065,9 @@ class PetLocomotion(
                     continue
                 }
 
-                // Pick a random walkable point (floor OR elevated surface)
-                val target: Vector3? = if (navGrid != null) {
+                // Pick a random walkable point based on mode
+                val target: Vector3? = if (isRoomMode && navGrid != null) {
+                    // ROOM MODE: Use NavGrid to pick random walkable points (floor OR elevated surface)
                     val grid = navGrid!!
 
                     // 30% chance to target an elevated surface (furniture)
@@ -1048,12 +1078,12 @@ class PetLocomotion(
                         if (elevatedCells.isNotEmpty()) {
                             val cell = elevatedCells[Random.nextInt(elevatedCells.size)]
                             val pos = grid.gridToWorldWithHeight(cell.gx, cell.gz)
-                            Log.d(TAG, "Idle wander: targeting elevated surface at $pos (height=${cell.height})")
+                            Log.d(TAG, "Idle wander (ROOM): targeting elevated surface at $pos (height=${cell.height})")
                             pos
                         } else {
                             // No elevated surfaces, fall back to floor
                             grid.getRandomWalkablePoint()?.also {
-                                Log.d(TAG, "Idle wander: no elevated surfaces, floor point $it")
+                                Log.d(TAG, "Idle wander (ROOM): no elevated surfaces, floor point $it")
                             }
                         }
                     } else {
@@ -1063,10 +1093,18 @@ class PetLocomotion(
                         }
                     }
                 } else {
-                    null
+                    // OUTSIDE MODE: Use circular wander area (no NavGrid)
+                    val randomAngle = Random.nextFloat() * 2f * Math.PI.toFloat()
+                    val randomDistance = Random.nextFloat() * wanderRadius
+                    val targetX = wanderCenterX + randomDistance * kotlin.math.cos(randomAngle)
+                    val targetZ = wanderCenterZ + randomDistance * kotlin.math.sin(randomAngle)
+                    val targetY = floorY
+                    Vector3(targetX, targetY, targetZ).also {
+                        Log.d(TAG, "Idle wander (OUTSIDE): circular area point $it")
+                    }
                 }
 
-                // Fallback to circular wander area if NavGrid unavailable
+                // Fallback in case target is null (shouldn't happen)
                 val finalTarget = target ?: run {
                     val randomAngle = Random.nextFloat() * 2f * Math.PI.toFloat()
                     val randomDistance = Random.nextFloat() * wanderRadius
@@ -1078,9 +1116,10 @@ class PetLocomotion(
                     }
                 }
 
-                Log.d(TAG, "Idle wander: moving to $finalTarget")
+                Log.d(TAG, "Idle wander: moving to $finalTarget (isRoomMode=$isRoomMode)")
 
-                // Move to the random point using pathfinding (supports jumps)
+                // Move to the random point - method chosen based on mode
+                // moveToWithPathfinding() internally checks isRoomMode and falls back to moveTo() if needed
                 moveToWithPathfinding(finalTarget)
 
                 // Wait for walk/jump to complete
@@ -1150,11 +1189,13 @@ class PetLocomotion(
  *   2. raycastRoom (SCENE mode) - Uses scene data, requires Space Setup
  *   3. Floor plane fallback - Simple Y=0 plane intersection
  * - Trigger press to confirm target and move pet
+ * - Mode-aware: Only snaps to NavGrid in room mode, uses direct raycasting in outside mode
  */
 class PointToMoveSystem(
     private val mrukFeature: MRUKFeature,
     private val floorY: Float = 0f,
-    private val navGrid: NavGrid? = null,
+    private val getNavGrid: () -> NavGrid? = { null },  // Dynamic getter for navGrid
+    private val isRoomMode: () -> Boolean = { false },   // Dynamic getter for room mode
     private val isAttentive: () -> Boolean = { true },
     private val onTargetFound: (Vector3) -> Unit
 ) : SystemBase() {
@@ -1245,13 +1286,23 @@ class PointToMoveSystem(
         // Get pointing direction using quaternion * operator (like MrukSample)
         val rightHandDirection = (rightHandPose.q * Vector3(0f, 0f, 1f)).normalize()
 
-        // Raycast to find hit point - try depth first (hits furniture), then scene, then floor
-        val rawHitPoint = tryDepthRaycast(rightHandPose.t, rightHandDirection)
-            ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
-            ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+        // Raycast to find hit point based on mode
+        // ROOM MODE: Try depth first (hits furniture), then scene, then floor
+        // OUTSIDE MODE: Try depth first, then floor plane only (no scene data)
+        val inRoomMode = isRoomMode()
+        val rawHitPoint = if (inRoomMode) {
+            tryDepthRaycast(rightHandPose.t, rightHandDirection)
+                ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
+                ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+        } else {
+            // OUTSIDE MODE: Skip scene raycasting (no MRUK room data in outside mode)
+            tryDepthRaycast(rightHandPose.t, rightHandDirection)
+                ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+        }
 
-        // Snap to nearest walkable grid cell within 50cm if NavGrid is available
-        val hitPoint = if (rawHitPoint != null && navGrid != null) {
+        // Snap to nearest walkable grid cell within 50cm ONLY in room mode with NavGrid
+        val navGrid = getNavGrid()
+        val hitPoint = if (inRoomMode && rawHitPoint != null && navGrid != null) {
             navGrid.findNearestWalkableCell(rawHitPoint.x, rawHitPoint.y, rawHitPoint.z, 0.5f)
         } else {
             rawHitPoint
