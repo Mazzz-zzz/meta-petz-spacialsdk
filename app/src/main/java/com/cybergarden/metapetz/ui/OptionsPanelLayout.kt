@@ -51,6 +51,7 @@ fun OptionsPanel(
     onQuit: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null,
     isEnvironmentSetup: Boolean = false,
+    isRoomMode: Boolean = false,  // true = room scan mode, false = outside mode
     isDebugGridEnabled: Boolean = false,
     onDebugGridToggle: ((Boolean) -> Unit)? = null,
     isRoomMeshVisible: Boolean = true,
@@ -103,29 +104,45 @@ fun OptionsPanel(
             )
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Outside button (5x5 room)
+            // Outside button (5x5 room) - highlighted when active (not in room mode)
             if (onSetupRoom != null) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = if (isEnvironmentSetup) "Outside" else "Outside",
-                    onClick = {
-                        Log.d("OptionsPanel", "Outside button pressed")
-                        onSetupRoom()
-                    }
-                )
+                val isOutsideActive = isEnvironmentSetup && !isRoomMode
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isOutsideActive) Color(0xFF1B5E20) else Color.Transparent)
+                ) {
+                    SecondaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Outside",
+                        onClick = {
+                            Log.d("OptionsPanel", "Outside button pressed")
+                            onSetupRoom()
+                        }
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Room Scan button (MRUK)
+            // Room Scan button (MRUK) - highlighted when active (in room mode)
             if (onScanRoom != null) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Room Scan",
-                    onClick = {
-                        Log.d("OptionsPanel", "Room Scan button pressed")
-                        onScanRoom()
-                    }
-                )
+                val isRoomScanActive = isEnvironmentSetup && isRoomMode
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isRoomScanActive) Color(0xFF1B5E20) else Color.Transparent)
+                ) {
+                    SecondaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Room Scan",
+                        onClick = {
+                            Log.d("OptionsPanel", "Room Scan button pressed")
+                            onScanRoom()
+                        }
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
             }
 

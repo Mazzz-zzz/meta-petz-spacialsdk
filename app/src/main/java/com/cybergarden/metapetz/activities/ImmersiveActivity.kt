@@ -1385,6 +1385,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onQuit = ::quitApp,
                       firebaseManager = firebaseManager,
                       isEnvironmentSetup = isEnvironmentSetup,
+                      isRoomMode = isRoomMode,
                       isDebugGridEnabled = isDebugGridEnabled,
                       onDebugGridToggle = ::toggleDebugGrid,
                       isRoomMeshVisible = isRoomMeshVisible,
