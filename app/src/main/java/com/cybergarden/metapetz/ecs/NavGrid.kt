@@ -222,6 +222,46 @@ class NavGrid(
     }
 
     /**
+     * Check if a cell is part of a walkable elevated surface (at least 2x2 cells at similar height).
+     * Small elevated areas (single cells or thin strips) are not walkable for pets.
+     */
+    fun isWalkableElevatedSurface(gridX: Int, gridZ: Int): Boolean {
+        val cellHeight = getCellHeight(gridX, gridZ)
+        if (cellHeight <= floorY + 0.05f) return false  // Not elevated
+
+        val heightTolerance = 0.1f  // 10cm tolerance for "same surface"
+
+        // Check if this cell is part of any 2x2 block at similar height
+        // Check all 4 possible 2x2 blocks that could include this cell
+        val offsets = listOf(
+            listOf(Pair(0, 0), Pair(1, 0), Pair(0, 1), Pair(1, 1)),   // This cell is top-left
+            listOf(Pair(-1, 0), Pair(0, 0), Pair(-1, 1), Pair(0, 1)), // This cell is top-right
+            listOf(Pair(0, -1), Pair(1, -1), Pair(0, 0), Pair(1, 0)), // This cell is bottom-left
+            listOf(Pair(-1, -1), Pair(0, -1), Pair(-1, 0), Pair(0, 0)) // This cell is bottom-right
+        )
+
+        for (block in offsets) {
+            var allElevated = true
+            for ((dx, dz) in block) {
+                val nx = gridX + dx
+                val nz = gridZ + dz
+                if (nx < 0 || nx >= gridWidth || nz < 0 || nz >= gridHeight) {
+                    allElevated = false
+                    break
+                }
+                val neighborHeight = getCellHeight(nx, nz)
+                if (kotlin.math.abs(neighborHeight - cellHeight) > heightTolerance) {
+                    allElevated = false
+                    break
+                }
+            }
+            if (allElevated) return true  // Found a valid 2x2 block
+        }
+
+        return false  // No valid 2x2 block found
+    }
+
+    /**
      * Point-in-polygon test using ray casting algorithm.
      * Casts a ray from the point to the right and counts edge crossings.
      */
@@ -549,7 +589,7 @@ class NavGrid(
             for (gz in 0 until gridHeight) {
                 val isWalkable = grid[gx][gz]
                 val cellHeight = heightGrid[gx][gz]
-                val isElevated = cellHeight > floorY + 0.05f  // Cell is on furniture
+                val isWalkableSurface = isWalkableElevatedSurface(gx, gz)  // 2x2 minimum check
 
                 // Skip blocked cells if not showing them
                 if (!isWalkable && !showBlocked) continue
@@ -572,11 +612,11 @@ class NavGrid(
                         0.2f,            // B: low
                         0.5f             // A: semi-transparent
                     )
-                } else if (isElevated) {
-                    // Purple for furniture (elevated blocked cells)
+                } else if (isWalkableSurface) {
+                    // Purple for walkable furniture surfaces (at least 2x2 cells)
                     Color4(0.7f, 0.2f, 1f, 0.6f)  // Purple with 60% alpha
                 } else {
-                    // Red for floor-level blocked cells (walls, etc.)
+                    // Red for blocked cells (walls, small furniture edges, etc.)
                     Color4(1f, 0.2f, 0.2f, 0.5f)
                 }
 
