@@ -6,37 +6,13 @@ A mixed reality pet companion built with Meta Spatial SDK for Meta Quest. Featur
 
 ### NavGrid Pathfinding System
 
-A 2D navigation grid system for intelligent pet movement that respects room boundaries and furniture:
+A 2D navigation grid (15cm resolution) for intelligent pet movement:
 
-#### Grid Creation
-- **15cm cell resolution** - Optimal balance between accuracy and performance
-- **Floor polygon extraction** - Creates walkable area from MRUK floor anchor bounds
-- **Point-in-polygon testing** - Accurate cell classification using ray-casting algorithm
-
-#### Intelligent Blocking
-
-**Furniture Blocking:**
-- Extracts footprints from `MRUKVolume` (3D) or `MRUKPlane` (2D) components
-- Transforms local bounds to world space using absolute transforms
-- Applies 15cm padding for pet clearance
-- Handles wall-mounted items (skips furniture >1.5m above floor)
-
-**Wall Blocking (Key Innovation):**
-- **Pending queue pattern** - Walls often load before floor; queue stores wall data until NavGrid exists
-- **Point-based blocking** - Every 15cm along wall length, blocks a 15cm diameter area
-- **Solves AABB limitation** - Polygon blocking fails outside grid bounds; point-based works everywhere
-- **Overlapping coverage** - Ensures no gaps in wall blocking
-
-#### Flood Fill Optimization
-- After all blocking, identifies connected walkable regions via BFS flood-fill
-- Keeps only the largest connected region
-- Eliminates unreachable pockets behind furniture or outside walls
-- Reduces pathfinding search space significantly
-
-#### Lag-Free Debug Visualization
-- Creates all debug entities once at room load (hidden by default)
-- Toggle uses `Visible` component - instant on/off, no entity recreation
-- Color gradient: Green (walkable) → Yellow (near obstacles) → Red (blocked)
+- **Floor polygon extraction** from MRUK anchors with point-in-polygon ray casting
+- **Furniture blocking** via `MRUKVolume`/`MRUKPlane` footprints with padding
+- **Wall blocking** using pending queue pattern (handles async anchor loading)
+- **Flood fill optimization** keeps only largest connected walkable region
+- **Lag-free debug visualization** using `Visible` component toggle
 
 ### Room Understanding (MRUK Integration)
 
@@ -53,9 +29,51 @@ A 2D navigation grid system for intelligent pet movement that respects room boun
 
 ### Cloud Persistence (Firebase)
 
-- **Real-time sync** - Pet stats persist across sessions
-- **XP/Level system** - Progression tracking with cloud backup
-- **Unique device IDs** - Data isolation per device
+Real-time database for pet state persistence across sessions:
+
+- **Device-based isolation** - Each device gets unique ID, data stored under `/pets/{deviceId}`
+- **Pet stats sync** - Hunger, happiness, health values persist and restore on launch
+- **XP/Level system** - Progression tracking with automatic cloud backup
+- **Offline support** - Firebase SDK handles connectivity, syncs when back online
+
+Database structure:
+```json
+{
+  "pets": {
+    "device_abc123": {
+      "name": "Buddy",
+      "hunger": 0.75,
+      "happiness": 0.9,
+      "health": 1.0,
+      "xp": 1250,
+      "level": 5
+    }
+  }
+}
+```
+
+### Runtime GLB Colorization
+
+Custom GLB parser for dynamic pet color customization without external tools:
+
+- **Binary parsing** - Reads GLB header, JSON chunk, and BIN chunk
+- **Material injection** - Modifies `baseColorFactor` in PBR materials
+- **Name-based mapping** - Maps material names (coat, eye, snout) to hex colors
+- **Cache output** - Writes modified GLB with proper 4-byte alignment
+
+### Custom Transparent Shaders
+
+GLSL shaders for room mesh visualization:
+
+- **Solid Color** (`solidColor.vert/frag`) - Unlit transparent rendering with `customColor` uniform
+- **Edge-Only** (`edgeOnly.vert/frag`) - UV-based wireframe effect, configurable thickness in meters
+
+```glsl
+// Edge detection (edgeOnly.frag)
+vec2 edgeDist = min(uv, 1.0 - uv);
+vec2 thicknessUV = thicknessMeters * fwidth(uv) / fwidth(worldPosition);
+if (edgeDist.x >= thicknessUV.x && edgeDist.y >= thicknessUV.y) discard;
+```
 
 ## Architecture
 
@@ -69,8 +87,14 @@ app/src/main/java/com/cybergarden/metapetz/
 │   └── ClapDetector.kt         # Audio-based gesture detection
 ├── services/
 │   └── FirebaseManager.kt      # Cloud persistence
+├── utils/
+│   └── GlbColorizer.kt         # Runtime GLB material color modification
 └── ui/
     └── OptionsPanelLayout.kt   # Compose UI panels
+
+app/src/shaders/
+├── solidColor.vert/frag        # Unlit transparent solid color shader
+└── edgeOnly.vert/frag          # UV-based edge wireframe shader
 ```
 
 ## Technology Stack
@@ -115,7 +139,20 @@ REPLICATE_API_TOKEN=your_token_here
 1. Create project at [Firebase Console](https://console.firebase.google.com)
 2. Add Android app with package `com.cybergarden.metapetz`
 3. Download `google-services.json` to `app/` folder
-4. Enable Realtime Database
+4. Enable Realtime Database with these rules:
+```json
+{
+  "rules": {
+    "pets": {
+      "$deviceId": {
+        ".read": true,
+        ".write": true
+      }
+    }
+  }
+}
+```
+5. No authentication required - data isolated by device ID
 
 ## Key Algorithms
 
