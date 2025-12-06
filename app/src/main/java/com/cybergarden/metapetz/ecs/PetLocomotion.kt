@@ -59,11 +59,21 @@ class PetLocomotion(
         private const val TAG = "PetLocomotion"
 
         // Animation track indices (from metadog.glb)
-        const val ANIM_JUMP = 0       // "jump"
-        const val ANIM_IDLE = 1       // "sit"
-        const val ANIM_SWALK = 2      // "swalk" (defunct - do not use)
+        const val ANIM_EAT = 0        // "eat" - eating/pickup animation (use for bone fetch)
+        const val ANIM_JUMP = 1       // "jump"
+        const val ANIM_IDLE = 2       // "sit"
         const val ANIM_WAG = 3        // "wag"
         const val ANIM_WALKLOOP = 4   // "walkloop"
+    }
+
+    /**
+     * Fetch state machine states
+     */
+    enum class FetchState {
+        IDLE,           // Not fetching
+        MOVING_TO_BONE, // Walking/pathfinding to bone
+        PICKING_UP,     // Playing pickup animation (placeholder)
+        RETURNING       // Bringing bone back to player
     }
 
     /**
@@ -203,6 +213,12 @@ class PetLocomotion(
     private var wanderCenterZ = 0f
     private var wanderRadius = 2.0f  // Default wander radius in meters
 
+    // Fetch state
+    private var fetchState = FetchState.IDLE
+    private var fetchJob: Job? = null
+    private var fetchTargetBone: Entity? = null
+    private var isFetching = false
+
     // Target marker
     private var targetMarkerEntity: Entity? = null
 
@@ -233,6 +249,22 @@ class PetLocomotion(
 
     // Attention system - lambda to check if pet is paying attention
     var isAttentive: (() -> Boolean)? = null
+
+    // Fetch callbacks
+    var onFetchStart: ((Entity) -> Unit)? = null           // Called when pet starts fetching bone
+    var onFetchPickup: ((Entity) -> Unit)? = null          // Called when pet picks up bone
+    var onFetchComplete: ((Entity) -> Unit)? = null        // Called when pet returns with bone
+    var onFetchCancelled: (() -> Unit)? = null             // Called if fetch is interrupted
+
+    // Mouth bone callbacks - ImmersiveActivity handles actual entity creation
+    var onSpawnMouthBone: ((Entity) -> Entity?)? = null    // Spawn bone in pet's mouth, returns mouth bone entity
+    var onDropBone: ((Vector3) -> Unit)? = null            // Drop bone at position as pickupable
+
+    // Head entity provider for returning to player during fetch
+    var getHeadEntity: (() -> Entity?)? = null
+
+    // Mouth bone entity (parented to pet during fetch return)
+    private var mouthBoneEntity: Entity? = null
 
     /**
      * Set the pet entity to control
@@ -985,8 +1017,10 @@ class PetLocomotion(
      * Cleanup resources
      */
     fun cleanup() {
+        stopFetch()
         stopIdleWander()
         stopWalking()
+        stopFacingPlayer()
         targetMarkerEntity?.destroy()
         targetMarkerEntity = null
         pointingSystem?.cleanup()
@@ -1175,6 +1209,311 @@ class PetLocomotion(
             startIdleWander()
         }
     }
+
+    // ==================== BONE FETCHING ====================
+
+    /**
+     * Start fetching a bone.
+     *
+     * Two modes:
+     * - OUTSIDE MODE (isRoomMode=false): Direct movement to bone, then direct return to player
+     * - ROOM MODE (isRoomMode=true): Pathfinding to bone, then pathfinding return to player
+     *
+     * @param boneEntity The bone entity to fetch
+     * @param onBoneDestroy Callback to destroy the bone entity when picked up (called from ImmersiveActivity)
+     */
+    fun startFetch(boneEntity: Entity, onBoneDestroy: (Entity) -> Unit) {
+        val pet = petEntity ?: run {
+            Log.w(TAG, "startFetch called but petEntity is null")
+            return
+        }
+
+        if (isFetching) {
+            Log.w(TAG, "Already fetching, ignoring new fetch request")
+            return
+        }
+
+        Log.d(TAG, "Starting fetch sequence (isRoomMode=$isRoomMode)")
+
+        // Stop any current activity
+        stopWalking()
+        stopIdleWander()
+        stopFacingPlayer()
+
+        isFetching = true
+        fetchState = FetchState.MOVING_TO_BONE
+        fetchTargetBone = boneEntity
+
+        onFetchStart?.invoke(boneEntity)
+
+        fetchJob = scope.launch {
+            try {
+                // === PHASE 1: Move to bone ===
+                var bonePos = boneEntity.tryGetComponent<Transform>()?.transform?.t
+                if (bonePos == null) {
+                    Log.w(TAG, "Bone has no transform, cancelling fetch")
+                    cancelFetchInternal()
+                    return@launch
+                }
+
+                Log.d(TAG, "Phase 1: Moving to bone at $bonePos")
+
+                // Move to bone - method depends on mode
+                if (isRoomMode) {
+                    // ROOM MODE: Use pathfinding
+                    moveToWithPathfinding(bonePos)
+                } else {
+                    // OUTSIDE MODE: Direct movement
+                    moveTo(bonePos)
+                }
+
+                // Wait for movement to complete
+                while (isWalking && isActive) {
+                    delay(50)
+                }
+
+                if (!isActive || !isFetching) {
+                    Log.d(TAG, "Fetch cancelled during move to bone")
+                    return@launch
+                }
+
+                // === PHASE 1b: Fine approach - get really close to bone ===
+                // Re-check bone position (it might have moved)
+                bonePos = boneEntity.tryGetComponent<Transform>()?.transform?.t
+                if (bonePos != null) {
+                    val petPos = pet.tryGetComponent<Transform>()?.transform?.t
+                    if (petPos != null) {
+                        val dx = bonePos.x - petPos.x
+                        val dz = bonePos.z - petPos.z
+                        val dist = sqrt(dx * dx + dz * dz)
+
+                        // If still more than 5cm away, do a final close approach
+                        if (dist > 0.05f) {
+                            Log.d(TAG, "Phase 1b: Fine approach to bone (dist=$dist)")
+                            // Direct movement for fine approach (no pathfinding needed for short distance)
+                            moveTo(bonePos)
+                            while (isWalking && isActive) {
+                                delay(50)
+                            }
+                        }
+                    }
+                }
+
+                if (!isActive || !isFetching) {
+                    Log.d(TAG, "Fetch cancelled during fine approach")
+                    return@launch
+                }
+
+                // === PHASE 2: Pick up bone ===
+                fetchState = FetchState.PICKING_UP
+                Log.d(TAG, "Phase 2: Picking up bone")
+
+                // Play eat animation for bone pickup
+                playAnimation(ANIM_EAT, loop = false)
+
+                // Wait for eat animation to complete
+                delay(1000)
+
+                // Notify that bone was picked up (ImmersiveActivity should destroy it)
+                onFetchPickup?.invoke(boneEntity)
+                onBoneDestroy(boneEntity)
+
+                Log.d(TAG, "Bone picked up, destroying bone entity")
+
+                // Spawn bone in mouth for carrying
+                mouthBoneEntity = onSpawnMouthBone?.invoke(pet)
+                if (mouthBoneEntity != null) {
+                    Log.d(TAG, "Mouth bone spawned and parented to pet")
+                }
+
+                // === PHASE 3: Return to player ===
+                fetchState = FetchState.RETURNING
+                Log.d(TAG, "Phase 3: Returning to player")
+
+                // Start walk animation (with bone in mouth)
+                playAnimation(ANIM_WALKLOOP, loop = true)
+
+                // Get player head position
+                val headEntity = getHeadEntity?.invoke()
+                val headPos = headEntity?.tryGetComponent<Transform>()?.transform?.t
+
+                if (headPos == null) {
+                    Log.w(TAG, "Cannot find player head position, ending fetch at current location")
+                    completeFetch()
+                    return@launch
+                }
+
+                // Calculate return position (in front of player, not exactly at head)
+                val petPosNow = pet.tryGetComponent<Transform>()?.transform?.t ?: Vector3(0f, 0f, 0f)
+                val toPlayer = Vector3(headPos.x - petPosNow.x, 0f, headPos.z - petPosNow.z)
+                val distToPlayer = sqrt(toPlayer.x * toPlayer.x + toPlayer.z * toPlayer.z)
+
+                // Stop 0.5m in front of player
+                val returnDistance = (distToPlayer - 0.5f).coerceAtLeast(0.1f)
+                val returnPos = if (distToPlayer > 0.01f) {
+                    Vector3(
+                        petPosNow.x + (toPlayer.x / distToPlayer) * returnDistance,
+                        floorY,
+                        petPosNow.z + (toPlayer.z / distToPlayer) * returnDistance
+                    )
+                } else {
+                    headPos
+                }
+
+                Log.d(TAG, "Returning to position near player: $returnPos")
+
+                // Move back to player - method depends on mode
+                if (isRoomMode) {
+                    // ROOM MODE: Use pathfinding
+                    moveToWithPathfinding(returnPos)
+                } else {
+                    // OUTSIDE MODE: Direct movement
+                    moveTo(returnPos)
+                }
+
+                // Wait for return movement to complete
+                while (isWalking && isActive) {
+                    delay(50)
+                }
+
+                if (!isActive || !isFetching) {
+                    Log.d(TAG, "Fetch cancelled during return")
+                    return@launch
+                }
+
+                // === PHASE 4: Drop bone and complete fetch ===
+                completeFetch()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Fetch error: ${e.message}")
+                cancelFetchInternal()
+            }
+        }
+    }
+
+    /**
+     * Complete the fetch sequence successfully
+     */
+    private fun completeFetch() {
+        Log.d(TAG, "Fetch complete!")
+
+        val bone = fetchTargetBone
+        val pet = petEntity
+
+        // Get drop position (in front of pet's current position)
+        val dropPos = if (pet != null) {
+            val petTransform = pet.tryGetComponent<Transform>()?.transform
+            if (petTransform != null) {
+                val petPos = petTransform.t
+                val forward = petTransform.q * Vector3(0f, 0f, 0.15f) // 15cm in front
+                Vector3(petPos.x + forward.x, floorY, petPos.z + forward.z)
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+
+        // Destroy mouth bone and drop as pickupable
+        if (mouthBoneEntity != null) {
+            mouthBoneEntity?.destroy()
+            mouthBoneEntity = null
+            Log.d(TAG, "Mouth bone destroyed")
+
+            // Spawn pickupable bone at drop position
+            if (dropPos != null) {
+                onDropBone?.invoke(dropPos)
+                Log.d(TAG, "Dropped pickupable bone at $dropPos")
+            }
+        }
+
+        fetchState = FetchState.IDLE
+        isFetching = false
+        fetchTargetBone = null
+        fetchJob = null
+
+        // Return to wag animation
+        playAnimation(ANIM_WAG, loop = true)
+
+        // Notify completion
+        if (bone != null) {
+            onFetchComplete?.invoke(bone)
+        }
+    }
+
+    /**
+     * Cancel fetch internally (called on error or interruption)
+     */
+    private fun cancelFetchInternal() {
+        Log.d(TAG, "Fetch cancelled internally")
+
+        // Clean up mouth bone if it exists
+        if (mouthBoneEntity != null) {
+            // Get drop position before destroying
+            val pet = petEntity
+            val dropPos = if (pet != null) {
+                val petPos = pet.tryGetComponent<Transform>()?.transform?.t
+                if (petPos != null) {
+                    Vector3(petPos.x, floorY, petPos.z)
+                } else null
+            } else null
+
+            mouthBoneEntity?.destroy()
+            mouthBoneEntity = null
+
+            // Drop bone at current position
+            if (dropPos != null) {
+                onDropBone?.invoke(dropPos)
+                Log.d(TAG, "Dropped bone due to fetch cancellation at $dropPos")
+            }
+        }
+
+        fetchState = FetchState.IDLE
+        isFetching = false
+        fetchTargetBone = null
+        fetchJob = null
+
+        playAnimation(ANIM_WAG, loop = true)
+
+        onFetchCancelled?.invoke()
+    }
+
+    /**
+     * Cancel any active fetch
+     */
+    fun cancelFetch() {
+        if (isFetching) {
+            Log.d(TAG, "Cancelling fetch")
+            fetchJob?.cancel()
+            cancelFetchInternal()
+        }
+    }
+
+    /**
+     * Check if pet is currently fetching
+     */
+    fun isFetching(): Boolean = isFetching
+
+    /**
+     * Get current fetch state
+     */
+    fun getFetchState(): FetchState = fetchState
+
+    /**
+     * Stop all fetch-related activity (called during cleanup)
+     */
+    private fun stopFetch() {
+        fetchJob?.cancel()
+        fetchJob = null
+        fetchState = FetchState.IDLE
+        isFetching = false
+        fetchTargetBone = null
+        // Clean up mouth bone
+        mouthBoneEntity?.destroy()
+        mouthBoneEntity = null
+    }
+
+    // ==================== END BONE FETCHING ====================
 
     /**
      * Frame-rate independent smoothing function (from AnimationsSample DroneSystem)

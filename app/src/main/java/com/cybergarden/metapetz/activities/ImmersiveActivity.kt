@@ -306,6 +306,32 @@ class ImmersiveActivity : AppSystemActivity() {
       }
       // Tell PetLocomotion about our attention state
       isAttentive = { isPetAttentive }
+      // Provide head entity for fetch return
+      getHeadEntity = { this@ImmersiveActivity.getHeadEntity() }
+      // Fetch callbacks
+      onFetchStart = { bone ->
+        Log.d(TAG, "Pet started fetching bone id=${bone.id}")
+        isPetAttentive = true  // Pet is focused on fetch
+      }
+      onFetchPickup = { bone ->
+        Log.d(TAG, "Pet picked up bone id=${bone.id}")
+      }
+      onFetchComplete = { bone ->
+        Log.d(TAG, "Pet completed fetch!")
+        // Resume idle wander after fetch
+        startIdleWander()
+      }
+      onFetchCancelled = {
+        Log.d(TAG, "Fetch was cancelled")
+        startIdleWander()
+      }
+      // Mouth bone callbacks
+      onSpawnMouthBone = { petEntity ->
+        spawnMouthBone(petEntity)
+      }
+      onDropBone = { position ->
+        spawnDroppedBone(position)
+      }
     }
   }
 
@@ -1852,8 +1878,138 @@ class ImmersiveActivity : AppSystemActivity() {
       thrownBones.add(entity)
       thrownBoneTimes[entity.id] = System.currentTimeMillis()
       Log.d(TAG, "Spawned thrown bone at pos=$position vel=$velocity id=${entity.id}, tracked=${thrownBones.size} bones")
+
+      // Trigger fetch after bone settles (if pet is spawned and attentive)
+      triggerFetchWithDelay(entity)
     } catch (e: Exception) {
       Log.e(TAG, "Failed to spawn thrown bone: ${e.message}", e)
+    }
+  }
+
+  /**
+   * Trigger fetch for a bone after a delay to let physics settle.
+   * Pet will go fetch the bone and bring it back.
+   */
+  private fun triggerFetchWithDelay(bone: Entity) {
+    // Only trigger if pet exists and is paying attention
+    if (currentPetEntity == null) {
+      Log.d(TAG, "No pet spawned, skipping fetch trigger")
+      return
+    }
+
+    if (!isPetAttentive) {
+      Log.d(TAG, "Pet not attentive, skipping fetch trigger")
+      return
+    }
+
+    // Already fetching something
+    if (petLocomotion.isFetching()) {
+      Log.d(TAG, "Pet already fetching, skipping new fetch trigger")
+      return
+    }
+
+    activityScope.launch {
+      // Wait for physics to settle (bone to land/stop bouncing)
+      delay(1500)
+
+      // Verify bone still exists and is in our list
+      if (bone !in thrownBones) {
+        Log.d(TAG, "Bone no longer exists, skipping fetch")
+        return@launch
+      }
+
+      // Verify pet is still available
+      if (currentPetEntity == null) {
+        Log.d(TAG, "Pet no longer exists, skipping fetch")
+        return@launch
+      }
+
+      Log.d(TAG, "Triggering fetch for bone id=${bone.id}")
+
+      // Start fetch with callback to destroy bone when picked up
+      petLocomotion.startFetch(bone) { boneToDestroy ->
+        destroyThrownBone(boneToDestroy)
+      }
+    }
+  }
+
+  /**
+   * Destroy a thrown bone and remove it from tracking.
+   * Called when pet picks up the bone during fetch.
+   */
+  private fun destroyThrownBone(bone: Entity) {
+    try {
+      thrownBoneTimes.remove(bone.id)
+      thrownBones.remove(bone)
+      bone.destroy()
+      Log.d(TAG, "Destroyed thrown bone id=${bone.id}, remaining=${thrownBones.size}")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error destroying thrown bone: ${e.message}")
+    }
+  }
+
+  /**
+   * Spawn a bone mesh parented to pet's mouth for carrying during fetch.
+   * The bone is positioned at the front of the pet (mouth area).
+   */
+  private fun spawnMouthBone(petEntity: Entity): Entity? {
+    try {
+      // Create bone mesh parented to pet
+      // Position offset: forward (Z) and slightly up (Y) to be at mouth level
+      val mouthOffset = Pose(
+          Vector3(0f, 0.05f, 0.12f),  // 5cm up, 12cm forward (mouth area)
+          Quaternion(0f, 90f, 0f)      // Rotate bone to be sideways in mouth
+      )
+
+      val entity = Entity.create(
+          listOf(
+              Mesh("apk:///models/bonew.glb".toUri()),
+              Transform(mouthOffset),
+              Scale(Vector3(0.15f, 0.15f, 0.15f)),  // Slightly smaller in mouth
+              Visible(true),
+              TransformParent(petEntity)  // Parent to pet so it moves with pet
+          )
+      )
+
+      Log.d(TAG, "Spawned mouth bone parented to pet id=${petEntity.id}")
+      return entity
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to spawn mouth bone: ${e.message}", e)
+      return null
+    }
+  }
+
+  /**
+   * Spawn a dropped bone at position that can be picked up by the player.
+   * This is called when pet completes fetch and drops the bone.
+   */
+  private fun spawnDroppedBone(position: Vector3) {
+    try {
+      val entity = Entity.create(
+          listOf(
+              Mesh("apk:///models/bonew.glb".toUri(), hittable = MeshCollision.LineTest),
+              Transform(Pose(position, Quaternion())),
+              Scale(Vector3(0.2f, 0.2f, 0.2f)),
+              Visible(true),
+              Hittable(MeshCollision.LineTest),
+              Box(Vector3(0.04f, 0.03f, 0.12f)),
+              Physics().apply {
+                state = PhysicsState.DYNAMIC
+                shape = "box"
+                dimensions = Vector3(0.04f, 0.03f, 0.12f)
+                restitution = 0.1f
+                // No initial velocity - just drop
+              }
+          )
+      )
+
+      // Track as thrown bone so player can pick it up
+      thrownBones.add(entity)
+      thrownBoneTimes[entity.id] = System.currentTimeMillis()
+
+      Log.d(TAG, "Spawned dropped bone at $position, id=${entity.id}, tracked=${thrownBones.size} bones")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to spawn dropped bone: ${e.message}", e)
     }
   }
 
