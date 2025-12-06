@@ -2282,7 +2282,7 @@ class ImmersiveActivity : AppSystemActivity() {
     // Create spheres every 15cm along the wall and block each point
     val sphereSpacing = 0.15f  // 15cm spacing
     val numSpheres = maxOf(2, (width / sphereSpacing).toInt() + 1)
-    val blockRadius = 0.20f  // 20cm blocking radius around each point
+    val blockRadius = 0.075f  // 7.5cm blocking radius (15cm total diameter)
 
     for (i in 0 until numSpheres) {
       val t = if (numSpheres > 1) i.toFloat() / (numSpheres - 1) else 0.5f
@@ -2303,17 +2303,17 @@ class ImmersiveActivity : AppSystemActivity() {
       ))
       furnitureDebugSpheres.add(sphere)
 
-      // Block a small square around this point in the NavGrid with 15cm padding
+      // Block a small square around this point in the NavGrid (no padding)
       val blockCorners = listOf(
         Pair(sphereX - blockRadius, sphereZ - blockRadius),
         Pair(sphereX + blockRadius, sphereZ - blockRadius),
         Pair(sphereX + blockRadius, sphereZ + blockRadius),
         Pair(sphereX - blockRadius, sphereZ + blockRadius)
       )
-      grid.blockPolygon(blockCorners, padding = 0.15f)
+      grid.blockPolygon(blockCorners, padding = 0f)
     }
 
-    Log.d(TAG, "Created $numSpheres wall spheres every 15cm, each blocking ${(blockRadius + 0.15f)*2}m area")
+    Log.d(TAG, "Created $numSpheres wall spheres every 15cm, each blocking ${blockRadius*2}m area")
   }
 
   /**
