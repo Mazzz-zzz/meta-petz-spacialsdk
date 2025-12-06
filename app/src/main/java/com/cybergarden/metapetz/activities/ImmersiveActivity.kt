@@ -133,6 +133,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentPetData by mutableStateOf<PetData?>(null)
   private var currentPetEntity: Entity? = null
   private var isEnvironmentSetup by mutableStateOf(false)
+  private var isRoomMode by mutableStateOf(false)  // true = scanned room with pathfinding, false = outside mode
   private var isDebugGridEnabled by mutableStateOf(false)
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
@@ -680,7 +681,17 @@ class ImmersiveActivity : AppSystemActivity() {
     spawnPetModel(petName, colors)
   }
 
+  // Flag to prevent multiple concurrent pet spawns
+  private var isSpawningPet = false
+
   private fun spawnPetModel(petName: String, colors: PetColors) {
+    // Prevent multiple concurrent spawns
+    if (isSpawningPet) {
+      Log.d(TAG, "Already spawning a pet, ignoring duplicate spawn request")
+      return
+    }
+    isSpawningPet = true
+
     // Cancel previous spinning animation
     spinningJob?.cancel()
     spinningJob = null
@@ -778,10 +789,18 @@ class ImmersiveActivity : AppSystemActivity() {
 
           // Start spinning animation
           startSpinning()
+
+          // Spawn complete - allow new spawns after a brief delay
+          delay(500)  // Small delay to ensure everything is set up
+          isSpawningPet = false
+          Log.d(TAG, "Pet spawn complete, ready for new spawns")
         } catch (e: Exception) {
           Log.e(TAG, "Error loading pet model: ${e.message}", e)
+          isSpawningPet = false  // Reset on error too
         }
       }
+    } else {
+      isSpawningPet = false  // Reset if model path not found
     }
   }
 
@@ -877,6 +896,10 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun setupRoom() {
     Log.d(TAG, "=== SETUP ROOM (Outside) CALLED ===")
 
+    // Set mode to OUTSIDE (not room scan mode)
+    isRoomMode = false
+    Log.d(TAG, "Mode set to OUTSIDE (isRoomMode=false)")
+
     // Clear all bones when environment is reset
     clearAllBones()
 
@@ -890,10 +913,11 @@ class ImmersiveActivity : AppSystemActivity() {
     // Clear any existing room scan data (mutual exclusivity)
     clearRoomBoundsEdges()
 
-    // Clear old NavGrid and debug visualization
+    // Clear old NavGrid and debug visualization - OUTSIDE MODE DOES NOT USE NAVGRID/PATHFINDING
     navGrid?.clearDebugVisualization()
     navGrid = null
     petLocomotion.setNavGrid(null)
+    petLocomotion.setRoomMode(false)  // Tell locomotion system we're in outside mode
     isDebugGridEnabled = false  // Reset checkbox state
     furnitureQuads.clear()  // Clear furniture debug data
     furnitureDebugSpheres.forEach { it.destroy() }  // Destroy purple corner spheres
@@ -1031,20 +1055,28 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun scanRoom() {
     Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
 
+    // Set mode to ROOM (room scan mode with pathfinding)
+    isRoomMode = true
+    Log.d(TAG, "Mode set to ROOM (isRoomMode=true)")
+
     // Clear all bones when environment is reset
     clearAllBones()
 
-    // Clear any existing manual room data (mutual exclusivity)
+    // Clear any existing manual room data (mutual exclusivity - OUTSIDE MODE DATA)
     if (roomColliderEntities.isNotEmpty()) {
-      Log.d(TAG, "Clearing ${roomColliderEntities.size} existing manual room colliders")
+      Log.d(TAG, "Clearing ${roomColliderEntities.size} existing manual room colliders (outside mode)")
       roomColliderEntities.forEach { it.destroy() }
       roomColliderEntities.clear()
     }
 
+    // Clear outside mode floor polygon - ROOM MODE USES NAVGRID INSTEAD
+    petLocomotion.setFloorPolygon(null)
+    petLocomotion.setRoomMode(true)  // Tell locomotion system we're in room mode
+
     // Clear any existing room scan data (in case re-scanning)
     clearRoomBoundsEdges()
 
-    // Clear old NavGrid and debug visualization
+    // Clear old NavGrid and debug visualization (will be recreated from room scan)
     navGrid?.clearDebugVisualization()
     navGrid = null
     petLocomotion.setNavGrid(null)
@@ -1285,27 +1317,6 @@ class ImmersiveActivity : AppSystemActivity() {
               ComposeView(context).apply {
                 setContent {
                   Column(modifier = Modifier.fillMaxSize()) {
-                    // Debug overlay - attention state and hand distance
-                    Text(
-                        text = "ATTENTION: ${if (isPetAttentive) "TRUE" else "FALSE"}",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isPetAttentive) Color.Green else Color.Red,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
-                    )
-                    Text(
-                        text = "DIST: ${String.format("%.2f", handDistance)}m  CUMUL: ${String.format("%.2f", cumulativeDisplacement)}/0.40",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = when {
-                            handDistance >= 0.10f -> Color.Red        // Outside active range
-                            cumulativeDisplacement >= 0.30f -> Color.Green  // Almost triggered
-                            cumulativeDisplacement > 0f -> Color.Yellow     // Accumulating
-                            else -> Color.White                        // In range, not accumulating
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
-                    )
-
                     if (currentPetData != null) {
                       PetInfoPanel(
                           petData = currentPetData!!,
@@ -1353,6 +1364,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onQuit = ::quitApp,
                       firebaseManager = firebaseManager,
                       isEnvironmentSetup = isEnvironmentSetup,
+                      isRoomMode = isRoomMode,
                       isDebugGridEnabled = isDebugGridEnabled,
                       onDebugGridToggle = ::toggleDebugGrid,
                       isRoomMeshVisible = isRoomMeshVisible,
@@ -1439,11 +1451,12 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Toggle visibility of furniture procedural meshes
     // AnchorProceduralMesh doesn't have a visibility toggle, so we destroy/recreate
+    // ONLY applies in ROOM MODE - outside mode has no furniture meshes
     if (!visible) {
       procMeshSpawner?.destroy()
       procMeshSpawner = null
-    } else if (procMeshSpawner == null && isEnvironmentSetup) {
-      // Recreate procMeshSpawner when making visible again
+    } else if (procMeshSpawner == null && isEnvironmentSetup && isRoomMode) {
+      // Recreate procMeshSpawner when making visible again - ONLY in room mode
       procMeshSpawner = AnchorProceduralMesh(
           mrukFeature,
           mapOf(
@@ -1459,6 +1472,9 @@ class ImmersiveActivity : AppSystemActivity() {
               MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
           )
       )
+      Log.d(TAG, "Recreated procMeshSpawner for room mode")
+    } else if (!isRoomMode) {
+      Log.d(TAG, "Skipping procMeshSpawner recreation - outside mode has no furniture meshes")
     }
   }
 
@@ -2137,6 +2153,7 @@ class ImmersiveActivity : AppSystemActivity() {
     val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
 
     val localCorners: List<Vector3>
+    var furnitureTopHeight: Float  // Height of the furniture's top surface in world space
 
     if (volumeComponent != null) {
       // Use MRUKVolume - get the bottom face (floor footprint) corners
@@ -2148,6 +2165,10 @@ class ImmersiveActivity : AppSystemActivity() {
       Log.d(TAG, "  Volume min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)}, ${"%.3f".format(min.z)})")
       Log.d(TAG, "  Volume max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)}, ${"%.3f".format(max.z)})")
 
+      // Calculate top surface height: anchor Y + max Z (top of volume in local space)
+      furnitureTopHeight = worldPos.y + max.z
+      Log.d(TAG, "  Top surface height: ${"%.3f".format(furnitureTopHeight)}m")
+
       // Bottom face corners (z = min.z for floor footprint)
       // X and Y define the horizontal footprint
       localCorners = listOf(
@@ -2157,12 +2178,16 @@ class ImmersiveActivity : AppSystemActivity() {
         Vector3(min.x, max.y, min.z)
       )
     } else if (planeComponent != null) {
-      // Fallback to MRUKPlane for 2D surfaces
+      // Fallback to MRUKPlane for 2D surfaces (horizontal surfaces like tabletops)
       val min = planeComponent.min
       val max = planeComponent.max
       Log.d(TAG, "=== FURNITURE (Plane): $labels ===")
       Log.d(TAG, "  Plane min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)})")
       Log.d(TAG, "  Plane max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)})")
+
+      // For planes, the surface is at the anchor's Y position
+      furnitureTopHeight = worldPos.y
+      Log.d(TAG, "  Top surface height: ${"%.3f".format(furnitureTopHeight)}m")
 
       // Plane corners (X = width, Y = depth in plane's local 2D space, Z = 0)
       localCorners = listOf(
@@ -2172,8 +2197,9 @@ class ImmersiveActivity : AppSystemActivity() {
         Vector3(min.x, max.y, 0f)
       )
     } else {
-      // No volume or plane - use default size
+      // No volume or plane - use default size and assume ~0.5m height
       Log.d(TAG, "Furniture has no MRUKVolume/MRUKPlane, using default 0.5x0.5m: $labels")
+      furnitureTopHeight = worldPos.y + 0.5f  // Assume 0.5m height for unknown furniture
       localCorners = listOf(
         Vector3(-0.25f, 0f, -0.25f),
         Vector3(+0.25f, 0f, -0.25f),
@@ -2193,13 +2219,15 @@ class ImmersiveActivity : AppSystemActivity() {
     furnitureQuads.add(FurnitureQuad(worldCorners, labels.firstOrNull() ?: "unknown"))
     Log.d(TAG, "=== FURNITURE QUAD: ${labels.firstOrNull()} ===")
     Log.d(TAG, "  World pos: (${"%.3f".format(worldPos.x)}, ${"%.3f".format(worldPos.y)}, ${"%.3f".format(worldPos.z)})")
+    Log.d(TAG, "  Top height: ${"%.3f".format(furnitureTopHeight)}m")
     worldCorners.forEachIndexed { i, (x, z) ->
       Log.d(TAG, "  Corner $i: (${"%.3f".format(x)}, ${"%.3f".format(z)})")
     }
 
-    // Block the footprint in NavGrid using the actual world corners (15cm padding)
-    grid.blockPolygon(worldCorners, padding = 0.15f)
-    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners")
+    // Block the footprint in NavGrid with furniture height (15cm padding)
+    // This allows debug visualization to show purple spheres at furniture height
+    grid.blockPolygonWithHeight(worldCorners, furnitureTopHeight, padding = 0.15f)
+    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners at height ${"%.2f".format(furnitureTopHeight)}m")
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
   }
 

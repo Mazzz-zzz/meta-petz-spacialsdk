@@ -2,6 +2,7 @@ package com.cybergarden.metapetz.ui
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,6 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -50,6 +52,7 @@ fun OptionsPanel(
     onQuit: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null,
     isEnvironmentSetup: Boolean = false,
+    isRoomMode: Boolean = false,  // true = room scan mode, false = outside mode
     isDebugGridEnabled: Boolean = false,
     onDebugGridToggle: ((Boolean) -> Unit)? = null,
     isRoomMeshVisible: Boolean = true,
@@ -57,6 +60,7 @@ fun OptionsPanel(
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
+    var spawnCooldownRemaining by remember { mutableStateOf(0) }  // Seconds remaining in cooldown
 
     // Load first pet from "demoUser" user on mount
     LaunchedEffect(firebaseManager) {
@@ -68,6 +72,14 @@ fun OptionsPanel(
             }
         } else {
             isLoadingDemoPet = false
+        }
+    }
+
+    // Cooldown timer - counts down every second
+    LaunchedEffect(spawnCooldownRemaining) {
+        if (spawnCooldownRemaining > 0) {
+            kotlinx.coroutines.delay(1000)
+            spawnCooldownRemaining -= 1
         }
     }
 
@@ -83,7 +95,7 @@ fun OptionsPanel(
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Environment section header
+            // ========== ENVIRONMENT SECTION ==========
             Text(
                 text = "Environment",
                 fontSize = 20.sp,
@@ -93,112 +105,109 @@ fun OptionsPanel(
             )
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Outside button (5x5 room)
+            // Outside button (5x5 room) - highlighted when active
             if (onSetupRoom != null) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = if (isEnvironmentSetup) "Outside" else "Outside",
-                    onClick = {
-                        Log.d("OptionsPanel", "Outside button pressed")
-                        onSetupRoom()
-                    }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Room Scan button (MRUK)
-            if (onScanRoom != null) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Room Scan",
-                    onClick = {
-                        Log.d("OptionsPanel", "Room Scan button pressed")
-                        onScanRoom()
-                    }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Debug Grid toggle (only show when environment is set up)
-            if (isEnvironmentSetup && onDebugGridToggle != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(
-                        checked = isDebugGridEnabled,
-                        onCheckedChange = { enabled ->
-                            Log.d("OptionsPanel", "Debug grid toggled: $enabled")
-                            onDebugGridToggle(enabled)
-                        },
-                        colors = CheckboxDefaults.colors(
-                            checkedColor = Color(0xFF4CAF50),
-                            uncheckedColor = Color.Gray
+                val isOutsideActive = isEnvironmentSetup && !isRoomMode
+                if (isOutsideActive) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF1B5E20))
+                            .clickable {
+                                Log.d("OptionsPanel", "Outside button pressed")
+                                onSetupRoom()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Outside",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
                         )
-                    )
-                    Text(
-                        text = "Show NavGrid Debug",
-                        fontSize = 14.sp,
-                        color = Color.DarkGray
-                    )
-                }
-            }
-
-            // Room Mesh visibility toggle (only show when environment is set up)
-            if (isEnvironmentSetup && onRoomMeshToggle != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(
-                        checked = isRoomMeshVisible,
-                        onCheckedChange = { visible ->
-                            Log.d("OptionsPanel", "Room mesh toggled: $visible")
-                            onRoomMeshToggle(visible)
-                        },
-                        colors = CheckboxDefaults.colors(
-                            checkedColor = Color(0xFF2196F3),
-                            uncheckedColor = Color.Gray
-                        )
-                    )
-                    Text(
-                        text = "Show Room Mesh",
-                        fontSize = 14.sp,
-                        color = Color.DarkGray
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Features section (disabled until environment is set up)
-            if (isEnvironmentSetup) {
-                // Spawn Bone button
-                if (onSpawnBone != null) {
+                    }
+                } else {
                     SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
-                        label = "Spawn Bone Toy",
+                        label = "Outside",
                         onClick = {
-                            Log.d("OptionsPanel", "Spawn Bone button pressed")
-                            onSpawnBone()
+                            Log.d("OptionsPanel", "Outside button pressed")
+                            onSetupRoom()
                         }
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
-                // Demo Pet button (from Firebase "demoUser")
-                if (demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
-                    PrimaryButton(
+            // Room Scan button (MRUK) - highlighted when active
+            if (onScanRoom != null) {
+                val isRoomScanActive = isEnvironmentSetup && isRoomMode
+                if (isRoomScanActive) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF1B5E20))
+                            .clickable {
+                                Log.d("OptionsPanel", "Room Scan button pressed")
+                                onScanRoom()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Room Scan",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                } else {
+                    SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
-                        label = "Demo Pet: ${demoPet!!.name}",
+                        label = "Room Scan",
                         onClick = {
-                            // Always fetch fresh data from Firebase when clicking
+                            Log.d("OptionsPanel", "Room Scan button pressed")
+                            onScanRoom()
+                        }
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ========== PETS SECTION ==========
+            Text(
+                text = "Pets",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.DarkGray,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (isEnvironmentSetup) {
+                // Spawn Dog button
+                if (demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
+                    val isOnCooldown = spawnCooldownRemaining > 0
+                    PrimaryButton(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (isOnCooldown) Modifier.alpha(0.5f) else Modifier),
+                        label = if (isOnCooldown) "Spawning... (${spawnCooldownRemaining}s)" else "Spawn Dog",
+                        onClick = {
+                            if (isOnCooldown) return@PrimaryButton
+
+                            spawnCooldownRemaining = 5
+
                             Log.d("OptionsPanel", "Fetching fresh demo pet data...")
                             firebaseManager.getFirstPetFromUser("demoUser") { freshPetData ->
                                 if (freshPetData != null) {
-                                    demoPet = freshPetData  // Update cached data too
-                                    Log.d("OptionsPanel", "Fresh demo pet loaded: ${freshPetData.name}, xp: ${freshPetData.xp}, level: ${freshPetData.level}")
+                                    demoPet = freshPetData
+                                    Log.d("OptionsPanel", "Fresh demo pet loaded: ${freshPetData.name}")
                                     onSelectDemoPet(freshPetData)
                                 } else {
                                     Log.e("OptionsPanel", "Failed to fetch fresh pet data, using cached")
@@ -207,38 +216,123 @@ fun OptionsPanel(
                             }
                         }
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                 } else if (isLoadingDemoPet && firebaseManager != null) {
                     Text(
-                        text = "Loading demo pet...",
+                        text = "Loading...",
                         fontSize = 14.sp,
                         color = Color.Gray
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             } else {
-                // Show hint when environment not set up
                 Text(
-                    text = "Select an environment to begin",
+                    text = "Select an environment first",
                     fontSize = 14.sp,
-                    color = Color.Gray,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    color = Color.Gray
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ========== ACTIONS SECTION ==========
+            Text(
+                text = "Actions",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.DarkGray,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Spawn Bone button
+            if (onSpawnBone != null && isEnvironmentSetup) {
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Spawn Bone",
+                    onClick = {
+                        Log.d("OptionsPanel", "Spawn Bone button pressed")
+                        onSpawnBone()
+                    }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
             }
 
             // Quit button
             if (onQuit != null) {
-                Spacer(modifier = Modifier.weight(1f))
                 SecondaryButton(
                     modifier = Modifier.fillMaxWidth(),
-                    label = "Quit App",
+                    label = "Quit",
                     onClick = {
                         Log.d("OptionsPanel", "Quit button pressed")
                         onQuit()
                     }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ========== DEBUG SECTION ==========
+            if (isEnvironmentSetup) {
+                Text(
+                    text = "Debug",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.DarkGray,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // NavGrid Debug toggle
+                if (onDebugGridToggle != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = isDebugGridEnabled,
+                            onCheckedChange = { enabled ->
+                                Log.d("OptionsPanel", "Debug grid toggled: $enabled")
+                                onDebugGridToggle(enabled)
+                            },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = Color(0xFF4CAF50),
+                                uncheckedColor = Color.Gray
+                            )
+                        )
+                        Text(
+                            text = "Show NavGrid",
+                            fontSize = 14.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+
+                // Room Mesh visibility toggle
+                if (onRoomMeshToggle != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = isRoomMeshVisible,
+                            onCheckedChange = { visible ->
+                                Log.d("OptionsPanel", "Room mesh toggled: $visible")
+                                onRoomMeshToggle(visible)
+                            },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = Color(0xFF2196F3),
+                                uncheckedColor = Color.Gray
+                            )
+                        )
+                        Text(
+                            text = "Show Room Mesh",
+                            fontSize = 14.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
             }
         }
     }

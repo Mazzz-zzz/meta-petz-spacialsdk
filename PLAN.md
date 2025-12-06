@@ -1,268 +1,177 @@
-# Pet Collision & Jump System Implementation Plan
+# Pet Jump & A* Pathfinding Implementation Plan
 
-## Problem
-- Bones react to furniture colliders, but dog phases through everything
-- Dog needs physical presence to push bones and avoid/jump over furniture
+## Overview
+Implement A* pathfinding that allows pets to navigate between floor and elevated furniture surfaces, using the jump animation when transitioning between height levels.
 
-## Architecture Overview
-
-### Current State
-- Pet movement: Transform interpolation in `PetLocomotion.moveTo()`
-- No physics on pet entity
-- Floor polygon constraints (2D boundary only)
-- Bones: `Physics(state=DYNAMIC)` - react to walls
-- Furniture: Visual meshes only (no physics colliders for bones to hit... wait, bones DO react to furniture?)
-
-### Proposed Hybrid System
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    PET LOCOMOTION                           │
-├─────────────────────────────────────────────────────────────┤
-│  moveTo(target)                                             │
-│    ├── Cast ray forward to detect obstacles                 │
-│    ├── If small obstacle → triggerJump()                    │
-│    ├── If large obstacle → pathAround() (future)            │
-│    └── Update position + check bone collisions              │
-├─────────────────────────────────────────────────────────────┤
-│  Pet Entity Components:                                     │
-│    - Mesh, Transform, Scale, Animated (existing)            │
-│    - Physics(KINEMATIC) + Sphere collider (NEW)             │
-└─────────────────────────────────────────────────────────────┘
-```
+## Current State
+- NavGrid has 15cm cells with height data per cell (`heightGrid`)
+- `isWalkableElevatedSurface()` identifies valid jump targets (2x2 minimum, purple in debug)
+- `getCellHeight()` returns Y position for any cell
+- `moveTo()` walks pet in straight line at fixed Y height
+- `playAnimation(ANIM_JUMP)` available (track 0)
+- Floor cells are walkable (green/yellow), elevated surfaces are blocked but jumpable (purple)
 
 ## Implementation Steps
 
-### Step 1: Add Jump Animation Constant
-File: `PetLocomotion.kt`
+### Step 1: Add A* Pathfinding to NavGrid
+Add pathfinding that considers floor cells AND elevated walkable surfaces:
 
 ```kotlin
-companion object {
-    const val ANIM_IDLE = 0
-    const val ANIM_WALK = 1
-    const val ANIM_WAG = 2
-    const val ANIM_WALKLOOP = 3
-    const val ANIM_JUMP = 4  // NEW - verify track index in metadog.glb
-}
-```
-
-### Step 2: Add Physics Collider to Pet Entity
-File: `ImmersiveActivity.kt` in `selectPet()`
-
-Add a kinematic sphere collider to the pet entity. Kinematic means:
-- It doesn't get pushed by physics forces
-- But it DOES push dynamic objects (bones) on collision
-
-```kotlin
-currentPetEntity = Entity.create(
-    listOf(
-        Mesh(meshUri.toUri()),
-        Transform(...),
-        Scale(Vector3(0.2f, 0.2f, 0.2f)),
-        TransformParent(panel),
-        Animated(...),
-        // NEW: Physics collider for bone pushing
-        Sphere(0.15f),  // Collision sphere radius
-        Physics().apply {
-            state = PhysicsState.KINEMATIC
-            dimensions = Vector3(0.3f, 0.3f, 0.3f)
-        }
-    )
+data class PathNode(
+    val gx: Int,
+    val gz: Int,
+    val height: Float
 )
+
+fun findPath(
+    startX: Float, startZ: Float,
+    targetX: Float, targetZ: Float
+): List<PathNode>?
 ```
 
-### Step 3: Add Obstacle Detection to PetLocomotion
-File: `PetLocomotion.kt`
+**Neighbor rules:**
+- 8-directional movement on same height level
+- Can step UP to adjacent cell if `isWalkableElevatedSurface()` = true
+- Can step DOWN from elevated surface to floor
+- Cost: normal movement = 1, height change = 5 (prefer staying on same level)
 
-Add MRUK reference and obstacle detection:
+### Step 2: Track Jump Transitions in Path
+Mark path segments that require jumps:
 
 ```kotlin
-class PetLocomotion(
-    private val scope: CoroutineScope,
-    private val floorY: Float = 0f,
-    private val walkSpeed: Float = 0.5f
-) {
-    // NEW: MRUK reference for raycasting
-    private var mrukFeature: MRUKFeature? = null
+data class PathSegment(
+    val points: List<PathNode>,
+    val requiresJump: Boolean,
+    val heightChange: Float  // positive = jump up, negative = jump down
+)
 
-    // NEW: Jump state
-    private var isJumping = false
-    private val jumpHeight = 0.3f  // meters
-    private val jumpDistance = 0.5f  // meters to clear
-
-    fun setMrukFeature(mruk: MRUKFeature) {
-        this.mrukFeature = mruk
-    }
-
-    /**
-     * Check for obstacles in movement path using MRUK raycast
-     */
-    private fun detectObstacleAhead(currentPos: Vector3, direction: Vector3): ObstacleInfo? {
-        val mruk = mrukFeature ?: return null
-        val currentRoom = mruk.getCurrentRoom() ?: return null
-
-        // Cast ray at knee height (0.2m) to detect furniture
-        val rayOrigin = Vector3(currentPos.x, floorY + 0.2f, currentPos.z)
-        val hit = mruk.raycastRoom(
-            currentRoom.anchor.uuid,
-            rayOrigin,
-            direction,
-            1.0f,  // Look 1m ahead
-            SurfaceType.PLANE_VOLUME
-        )
-
-        if (hit != null) {
-            val distance = vectorLength(vectorDiff(hit.hitPosition, rayOrigin))
-            // Determine if jumpable based on anchor type
-            val isJumpable = isJumpableObstacle(hit)
-            return ObstacleInfo(hit.hitPosition, distance, isJumpable)
-        }
-        return null
-    }
-
-    data class ObstacleInfo(
-        val position: Vector3,
-        val distance: Float,
-        val isJumpable: Boolean
-    )
-}
+fun getPathSegments(path: List<PathNode>): List<PathSegment>
 ```
 
-### Step 4: Integrate Jump into Movement Loop
-File: `PetLocomotion.kt` in `moveTo()`
+**Jump thresholds:**
+- Height diff > 10cm = requires jump
+- Max jump UP: 0.8m (table/couch height)
+- Max jump DOWN: 1.2m (can drop from higher)
 
-Modify the movement loop to handle jumping:
+### Step 3: Create Jump Movement Coroutine
+Parabolic arc movement with animation:
 
 ```kotlin
-fun moveTo(target: Vector3) {
-    // ... existing setup code ...
-
-    walkJob = scope.launch {
-        isWalking = true
-        playAnimation(ANIM_WALKLOOP, loop = true)
-
-        // ... existing code ...
-
-        while (isActive) {
-            // Check for obstacles ahead (every few frames)
-            if (frameCount % 10 == 0 && !isJumping) {
-                val obstacle = detectObstacleAhead(currentPos, direction)
-                if (obstacle != null && obstacle.distance < 0.5f && obstacle.isJumpable) {
-                    triggerJump()
-                }
-            }
-
-            // Calculate Y position (includes jump arc if jumping)
-            val baseY = startPos.y
-            val jumpY = if (isJumping) calculateJumpArc(jumpProgress) else 0f
-
-            val newPos = Vector3(
-                startPos.x + dx * progress,
-                baseY + jumpY,
-                startPos.z + dz * progress
-            )
-
-            // ... rest of movement code ...
-        }
-    }
-}
-
-private fun triggerJump() {
-    isJumping = true
-    jumpStartTime = System.currentTimeMillis()
+private suspend fun performJump(from: Vector3, to: Vector3) {
     playAnimation(ANIM_JUMP, loop = false)
 
-    scope.launch {
-        delay(500)  // Jump animation duration
-        isJumping = false
-        playAnimation(ANIM_WALKLOOP, loop = true)
-    }
-}
+    val duration = 400L  // ms
+    val arcHeight = 0.25f + (to.y - from.y).coerceAtLeast(0f) * 0.5f
 
-private fun calculateJumpArc(progress: Float): Float {
-    // Parabolic arc: peaks at 50% progress
-    return jumpHeight * 4f * progress * (1f - progress)
+    val startTime = System.currentTimeMillis()
+    while (true) {
+        val elapsed = System.currentTimeMillis() - startTime
+        val t = (elapsed / duration.toFloat()).coerceIn(0f, 1f)
+
+        // Horizontal: linear interpolation
+        val x = lerp(from.x, to.x, t)
+        val z = lerp(from.z, to.z, t)
+
+        // Vertical: parabolic arc
+        val baseY = lerp(from.y, to.y, t)
+        val arc = arcHeight * 4f * t * (1f - t)  // peaks at t=0.5
+        val y = baseY + arc
+
+        updatePetPosition(x, y, z)
+
+        if (t >= 1f) break
+        delay(16)
+    }
+
+    playAnimation(ANIM_WAG, loop = true)
 }
 ```
 
-### Step 5: Add Bone Push Force
-File: `PetLocomotion.kt`
-
-Add bone collision detection in movement loop:
+### Step 4: Update moveTo() for Path Following
+Replace direct movement with path-based movement:
 
 ```kotlin
-// In moveTo() loop, after position update:
-checkBoneCollisions(newPos)
+fun moveToWithPathfinding(target: Vector3) {
+    val path = navGrid?.findPath(currentPos, target)
+    if (path == null) {
+        // No valid path - try direct movement or give up
+        return
+    }
 
-private fun checkBoneCollisions(petPos: Vector3) {
-    val pushRadius = 0.2f  // How close before pushing
-    val pushForce = 2.0f   // Impulse strength
+    val segments = getPathSegments(path)
 
-    // Query all entities with Physics component
-    Query.where { has(Physics.id) }.eval().forEach { entity ->
-        val physics = entity.tryGetComponent<Physics>() ?: return@forEach
-        if (physics.state != PhysicsState.DYNAMIC) return@forEach
-
-        val bonePos = entity.tryGetComponent<Transform>()?.transform?.t ?: return@forEach
-        val distance = vectorLength(vectorDiff(bonePos, petPos))
-
-        if (distance < pushRadius) {
-            // Calculate push direction (away from pet)
-            val pushDir = vectorNormalize(vectorDiff(bonePos, petPos))
-
-            // Apply impulse via velocity change
-            // Note: May need to use Physics.linearVelocity or similar
-            val impulse = Vector3(
-                pushDir.x * pushForce,
-                0.5f,  // Slight upward pop
-                pushDir.z * pushForce
-            )
-
-            entity.setComponent(physics.apply {
-                linearVelocity = impulse
-            })
-
-            Log.d(TAG, "Pushed bone away from pet")
+    walkJob = scope.launch {
+        for (segment in segments) {
+            if (segment.requiresJump) {
+                performJump(segment.start, segment.end)
+            } else {
+                walkAlongPath(segment.points)
+            }
         }
     }
 }
 ```
 
-### Step 6: Pass Thrown Bones List to PetLocomotion
-File: `ImmersiveActivity.kt`
-
-More efficient than querying all physics entities:
+### Step 5: Update Idle Wander
+Include elevated surfaces as wander destinations:
 
 ```kotlin
-// In ImmersiveActivity
-petLocomotion.setThrownBones(thrownBones)
+fun getRandomWalkablePointIncludingElevated(): Vector3? {
+    // 70% chance floor, 30% chance elevated surface
+    val includeElevated = Random.nextFloat() < 0.3f
 
-// In PetLocomotion
-private var thrownBones: List<Entity> = emptyList()
+    if (includeElevated) {
+        // Find random walkable elevated cell
+        val elevatedCells = findAllWalkableElevatedCells()
+        if (elevatedCells.isNotEmpty()) {
+            val cell = elevatedCells.random()
+            return gridToWorldWithHeight(cell.gx, cell.gz)
+        }
+    }
 
-fun setThrownBones(bones: List<Entity>) {
-    this.thrownBones = bones
+    return getRandomWalkablePoint()  // Floor point
 }
 ```
 
-## File Changes Summary
+## File Changes
 
-| File | Changes |
-|------|---------|
-| `PetLocomotion.kt` | Add ANIM_JUMP, obstacle detection, jump arc, bone pushing |
-| `ImmersiveActivity.kt` | Add Physics+Sphere to pet entity, pass MRUK and bones to locomotion |
+### NavGrid.kt
+- Add `PathNode` data class
+- Add `findPath()` - A* implementation with height awareness
+- Add `getNeighborsIncludingElevated()` - returns valid neighbors for pathfinding
+- Add `findAllWalkableElevatedCells()` - list of purple cells
+- Add `gridToWorldWithHeight()` - returns Vector3 at correct Y
 
-## Testing Plan
+### PetLocomotion.kt
+- Add `moveToWithPathfinding()` - main entry point
+- Add `performJump()` - jump coroutine with arc
+- Add `walkAlongPath()` - walk through list of points
+- Add `getPathSegments()` - split path at height changes
+- Update `startIdleWander()` - use elevated destinations
 
-1. **Basic collision**: Spawn bone, walk dog into it → bone should move
-2. **Jump trigger**: Place dog path over furniture edge → dog should jump
-3. **Jump arc**: Verify dog clears 0.3m height obstacle
-4. **Animation**: Verify jump animation plays and returns to walk
-5. **Edge cases**: Dog at boundary + obstacle, multiple bones, etc.
+## Visual Summary
 
-## Future Enhancements
+```
+Floor (green)     Furniture (purple)      Pet Movement
+    ┌───┬───┐         ┌───┬───┐
+    │ . │ . │         │ P │ P │         1. Walk on floor
+    ├───┼───┤    +    ├───┼───┤    →    2. Jump UP to table
+    │ . │ . │         │ P │ P │         3. Walk on table
+    └───┴───┘         └───┴───┘         4. Jump DOWN to floor
 
-- Path-around for large obstacles (pathfinding)
-- Different jump heights based on obstacle size
-- Nose-push animation for bones
-- Sound effects for jump landing
+    P = Purple (walkable elevated surface)
+    . = Green (walkable floor)
+```
+
+## Edge Cases
+- No path exists → stay in place, log warning
+- Pet on furniture when it's removed → fall to floor height
+- Jump interrupted by user action → complete jump first
+- Target is on different elevation → pathfind to nearest accessible point
+
+## Testing Checklist
+- [ ] Pet on floor, target on table → walks + jumps up
+- [ ] Pet on table, target on floor → jumps down + walks
+- [ ] Pet wanders → occasionally jumps to/from furniture
+- [ ] Obstacle between floors → pathfinds around
+- [ ] Small furniture (< 2x2) → treated as blocked, not jumpable
