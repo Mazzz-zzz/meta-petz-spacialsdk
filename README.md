@@ -1,5 +1,7 @@
 # MetaPetz - Mixed Reality Pet Companion for Meta Quest
 
+**[www.metapetz.com](https://www.metapetz.com)**
+
 A mixed reality pet companion built with Meta Spatial SDK for Meta Quest. Features advanced spatial awareness with real-time room understanding, dynamic pathfinding, and physics-based interactions.
 
 ## Features
@@ -208,4 +210,4 @@ Multi-licensed under [Zero-Clause BSD](LICENSE) and [Meta Platform Technologies 
 
 ---
 
-**Built for Meta Quest** | **Powered by Meta Spatial SDK**
+**[www.metapetz.com](https://www.metapetz.com)** | **Built for Meta Quest** | **Powered by Meta Spatial SDK**
