@@ -866,8 +866,14 @@ class PetLocomotion(
     /**
      * Check for collision in movement direction using MRUK raycast
      * @return CollisionResult with movement info and slide direction for wall sliding
+     * NOTE: Only active in ROOM MODE - outside mode skips MRUK collision entirely
      */
     private fun checkCollision(position: Vector3, direction: Vector3, desiredDistance: Float): CollisionResult {
+        // OUTSIDE MODE: Skip MRUK collision detection entirely
+        if (!isRoomMode) {
+            return CollisionResult(true, desiredDistance, null)
+        }
+
         val mruk = mrukFeature ?: return CollisionResult(true, desiredDistance, null)
         val currentRoom = mruk.getCurrentRoom() ?: return CollisionResult(true, desiredDistance, null)
 
@@ -1288,16 +1294,15 @@ class PointToMoveSystem(
 
         // Raycast to find hit point based on mode
         // ROOM MODE: Try depth first (hits furniture), then scene, then floor
-        // OUTSIDE MODE: Try depth first, then floor plane only (no scene data)
+        // OUTSIDE MODE: Only use floor plane (no MRUK raycasting at all)
         val inRoomMode = isRoomMode()
         val rawHitPoint = if (inRoomMode) {
             tryDepthRaycast(rightHandPose.t, rightHandDirection)
                 ?: trySceneRaycast(rightHandPose.t, rightHandDirection)
                 ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
         } else {
-            // OUTSIDE MODE: Skip scene raycasting (no MRUK room data in outside mode)
-            tryDepthRaycast(rightHandPose.t, rightHandDirection)
-                ?: tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
+            // OUTSIDE MODE: Only use floor plane raycasting - completely ignore MRUK
+            tryFloorPlaneRaycast(rightHandPose.t, rightHandDirection)
         }
 
         // Snap to nearest walkable grid cell within 50cm ONLY in room mode with NavGrid
