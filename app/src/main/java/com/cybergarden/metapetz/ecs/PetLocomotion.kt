@@ -221,6 +221,9 @@ class PetLocomotion(
     var onWalkEnd: (() -> Unit)? = null
     var onTargetSet: ((Vector3) -> Unit)? = null
 
+    // Attention system - lambda to check if pet is paying attention
+    var isAttentive: (() -> Boolean)? = null
+
     /**
      * Set the pet entity to control
      */
@@ -319,6 +322,41 @@ class PetLocomotion(
         walkJob?.cancel()
         walkJob = null
         isWalking = false
+    }
+
+    /**
+     * Turn the pet to face the player's head position (for attention)
+     * @param headEntity The player's head entity
+     */
+    fun turnToFacePlayer(headEntity: Entity?) {
+        val pet = petEntity ?: return
+        val headPos = headEntity?.tryGetComponent<Transform>()?.transform?.t ?: return
+
+        try {
+            val transform = pet.getComponent<Transform>()
+            val petPos = transform.transform.t
+
+            // Calculate direction to head (XZ plane only)
+            val dx = headPos.x - petPos.x
+            val dz = headPos.z - petPos.z
+            val distance = sqrt(dx * dx + dz * dz)
+
+            if (distance > 0.01f) {
+                // Create direction vector (normalized)
+                val direction = Vector3(dx / distance, 0f, dz / distance)
+
+                // Create rotation to face player
+                val targetRotation = Quaternion.lookRotationAroundY(direction)
+
+                // Apply rotation
+                transform.transform.q = targetRotation
+                pet.setComponent(transform)
+
+                Log.d(TAG, "Pet turned to face player at $headPos")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to turn pet to face player: ${e.message}")
+        }
     }
 
     /**
@@ -549,6 +587,7 @@ class PetLocomotion(
      * - Persistent pointer that updates every frame showing where you're pointing
      * - DEPTH mode raycasting (works without Space Setup)
      * - Trigger press to confirm target and move pet
+     * - Attention-gated: pointer only works when pet has attention
      *
      * @param mrukFeature Required - MRUK feature for scene-aware raycasting
      */
@@ -556,6 +595,7 @@ class PetLocomotion(
         val system = PointToMoveSystem(
             mrukFeature = mrukFeature,
             floorY = floorY,
+            isAttentive = { isAttentive?.invoke() ?: false },
             onTargetFound = { hitPoint ->
                 onTargetSet?.invoke(hitPoint)
                 showTargetMarker(hitPoint)
@@ -739,6 +779,7 @@ class PetLocomotion(
 class PointToMoveSystem(
     private val mrukFeature: MRUKFeature,
     private val floorY: Float = 0f,
+    private val isAttentive: () -> Boolean = { true },
     private val onTargetFound: (Vector3) -> Unit
 ) : SystemBase() {
 
@@ -795,19 +836,25 @@ class PointToMoveSystem(
     override fun execute() {
         val currentTime = System.currentTimeMillis()
 
+        // Get the pointer entity
+        val pointer = getOrCreatePointer()
+
+        // Check if pet has attention - if not, hide pointer and skip
+        if (!isAttentive()) {
+            pointer.setComponent(Visible(false))
+            return
+        }
+
         // Periodically log status for debugging
         if (currentTime - lastRoomCheckTime > roomCheckInterval) {
             lastRoomCheckTime = currentTime
             val rooms = mrukFeature.rooms
             val currentRoom = mrukFeature.getCurrentRoom()
-            Log.d(TAG, "MRUK status - rooms: ${rooms.size}, currentRoom: ${currentRoom != null}")
+            Log.d(TAG, "MRUK status - rooms: ${rooms.size}, currentRoom: ${currentRoom != null}, attentive: true")
             if (currentRoom != null) {
                 Log.d(TAG, "Current room anchors: ${currentRoom.anchors.size}")
             }
         }
-
-        // Get the pointer entity
-        val pointer = getOrCreatePointer()
 
         // Get right hand using PlayerBodyAttachmentSystem (like the MrukSample does)
         val rightHand = getRightHand()

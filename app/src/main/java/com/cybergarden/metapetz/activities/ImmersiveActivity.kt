@@ -7,7 +7,11 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -20,7 +24,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.cybergarden.metapetz.BuildConfig
 import com.cybergarden.metapetz.R
+import com.cybergarden.metapetz.ecs.ClapDetector
 import com.cybergarden.metapetz.ecs.PetLocomotion
+import androidx.compose.ui.text.font.FontWeight
 import com.cybergarden.metapetz.model.PetData
 import com.cybergarden.metapetz.services.FirebaseManager
 import com.cybergarden.metapetz.ui.OptionsPanel
@@ -174,6 +180,30 @@ class ImmersiveActivity : AppSystemActivity() {
     SceneAudioPlayer(scene, boneFastSound)
   }
 
+  // Whistle audio for clap attention
+  private val whistleSound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/whistle.wav")
+  }
+  private val whistlePlayer: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, whistleSound)
+  }
+
+  // Bone throw cooldown - prevent immediate re-grab after throwing
+  private var boneGrabTimeMs: Long = 0L
+  private val BONE_THROW_COOLDOWN_MS = 1500L
+
+  // Attention system - pet pays attention when clapped at
+  private var isPetAttentive by mutableStateOf(false)
+  private var attentionResumeJob: Job? = null
+  private val ATTENTION_TIMEOUT_MS = 5000L
+
+  // Clap detector for calling pet's attention
+  private val clapDetector: ClapDetector by lazy {
+    ClapDetector(activityScope, systemManager).apply {
+      onClapDetected = { callPetAttention() }
+    }
+  }
+
   // Pet locomotion system for point-to-move functionality
   private val petLocomotion: PetLocomotion by lazy {
     PetLocomotion(activityScope, floorY = 0f, walkSpeed = 0.5f).apply {
@@ -184,9 +214,12 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "Pet started walking")
       }
       onWalkEnd = {
-        // Pet stays at destination with wag animation (handled in PetLocomotion)
-        Log.d(TAG, "Pet finished walking - staying at destination")
+        // Reset attention timeout - pet keeps attention until timeout
+        Log.d(TAG, "Pet finished walking - resetting attention timeout")
+        resetAttentionTimeout()
       }
+      // Tell PetLocomotion about our attention state
+      isAttentive = { isPetAttentive }
     }
   }
 
@@ -473,6 +506,10 @@ class ImmersiveActivity : AppSystemActivity() {
       )
       Log.d(TAG, "IsdkInputListenerSystem listener registered for bone grab")
     }
+
+    // Start clap detection for calling pet's attention
+    clapDetector.start()
+    Log.d(TAG, "Clap detector started")
   }
 
   /**
@@ -1114,30 +1151,41 @@ class ImmersiveActivity : AppSystemActivity() {
             composeViewCreator = { _, context ->
               ComposeView(context).apply {
                 setContent {
-                  if (currentPetData != null) {
-                    PetInfoPanel(
-                        petData = currentPetData!!,
-                        onClose = {
-                          currentPet = null
-                          currentPetData = null
-                          petLocomotion.stopIdleWander() // Stop idle wander
-                          petLocomotion.setPetEntity(null, null) // Clear locomotion
-                          currentPetEntity?.destroy()
-                          currentPetEntity = null
-                        }
+                  Column(modifier = Modifier.fillMaxSize()) {
+                    // Debug overlay - attention state
+                    Text(
+                        text = "ATTENTION: ${if (isPetAttentive) "TRUE" else "FALSE"}",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isPetAttentive) Color.Green else Color.Red,
+                        modifier = Modifier.fillMaxWidth().padding(8.dp)
                     )
-                  } else {
-                    // Show welcome message
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                      Text(
-                          text = "Select a pet to get started! (v4)",
-                          fontSize = 24.sp,
-                          color = Color.White,
-                          textAlign = androidx.compose.ui.text.style.TextAlign.Center
+
+                    if (currentPetData != null) {
+                      PetInfoPanel(
+                          petData = currentPetData!!,
+                          onClose = {
+                            currentPet = null
+                            currentPetData = null
+                            petLocomotion.stopIdleWander() // Stop idle wander
+                            petLocomotion.setPetEntity(null, null) // Clear locomotion
+                            currentPetEntity?.destroy()
+                            currentPetEntity = null
+                          }
                       )
+                    } else {
+                      // Show welcome message
+                      Box(
+                          modifier = Modifier.fillMaxSize(),
+                          contentAlignment = Alignment.Center
+                      ) {
+                        Text(
+                            text = "Select a pet to get started! (v5)",
+                            fontSize = 24.sp,
+                            color = Color.White,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                      }
                     }
                   }
                 }
@@ -1178,6 +1226,8 @@ class ImmersiveActivity : AppSystemActivity() {
 
   override fun onSpatialShutdown() {
     spinningJob?.cancel()
+    clapDetector.stop()
+    attentionResumeJob?.cancel()
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
     // Clean up bone pickup system
@@ -1204,6 +1254,42 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun quitApp() {
     Log.d(TAG, "Quitting app...")
     finish()
+  }
+
+  /**
+   * Called when clap is detected - pet turns to face player and pays attention.
+   */
+  private fun callPetAttention() {
+    Log.d(TAG, "Clap detected! Calling pet attention")
+
+    // Play whistle sound at head position
+    val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+    if (headPos != null) {
+      whistlePlayer.play(headPos, 1.0f, false)
+    }
+
+    // Set pet as attentive
+    isPetAttentive = true
+
+    // Stop idle wander and turn to face player
+    petLocomotion.stopIdleWander()
+    petLocomotion.turnToFacePlayer(getHeadEntity())
+
+    // Reset the attention timeout
+    resetAttentionTimeout()
+  }
+
+  /**
+   * Reset the attention timeout - pet will lose attention after ATTENTION_TIMEOUT_MS.
+   */
+  private fun resetAttentionTimeout() {
+    attentionResumeJob?.cancel()
+    attentionResumeJob = activityScope.launch {
+      delay(ATTENTION_TIMEOUT_MS)
+      Log.d(TAG, "Attention timeout - pet loses attention and resumes wandering")
+      isPetAttentive = false
+      petLocomotion.startIdleWander()
+    }
   }
 
   private fun loadGLXF(): Job {
