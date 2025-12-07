@@ -212,8 +212,8 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
   private val furnitureQuads = mutableListOf<FurnitureQuad>()
-  private val furnitureDebugSpheres = mutableListOf<Entity>()  // Purple corner spheres
-  private val furniturePhysicsBoxes = mutableListOf<Entity>()  // Physics colliders for furniture
+  private val furnitureDebugSpheres = mutableListOf<Entity>()  // Reserved for future debug visualization
+  private val furniturePhysicsBoxes = mutableListOf<Entity>()  // Reserved for future debug visualization
 
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
@@ -1174,12 +1174,24 @@ class ImmersiveActivity : AppSystemActivity() {
     furniturePhysicsBoxes.clear()
     Log.d(TAG, "Cleared furniture physics boxes for room scan")
 
-    // Recreate procMeshSpawner if it was destroyed (empty config - furniture uses physics boxes)
+    // Recreate procMeshSpawner if it was destroyed
     if (procMeshSpawner == null) {
-      Log.d(TAG, "Recreating procMeshSpawner for room scan (empty - furniture uses physics boxes)")
+      Log.d(TAG, "Recreating procMeshSpawner for room scan")
       procMeshSpawner = AnchorProceduralMesh(
           mrukFeature,
-          mapOf()  // Empty - furniture handled by createFurniturePhysicsBox
+          mapOf(
+              // Furniture: physics colliders only, no visual mesh (null material)
+              MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.LAMP to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.PLANT to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
+          )
       )
     }
 
@@ -1536,12 +1548,12 @@ class ImmersiveActivity : AppSystemActivity() {
       entity.setComponent(Visible(visible))
     }
 
-    // Toggle visibility of furniture physics boxes (physics stays active!)
-    // This allows bones to still collide with furniture even when visuals are hidden
+    // Toggle visibility of future debug visualization entities
+    // Note: Furniture physics colliders are now handled by AnchorProceduralMesh (invisible by default)
     for (entity in furniturePhysicsBoxes) {
       entity.setComponent(Visible(visible))
     }
-    Log.d(TAG, "Toggled ${furniturePhysicsBoxes.size} furniture physics boxes visibility: $visible")
+    Log.d(TAG, "Toggled ${furniturePhysicsBoxes.size} debug entities visibility: $visible")
   }
 
   /**
@@ -1756,22 +1768,25 @@ class ImmersiveActivity : AppSystemActivity() {
     // Keep wallMaterial for backwards compatibility with manual wall creation
     wallMaterial = edgeBoxMaterial
 
-    // Create AnchorProceduralMesh - EMPTY for now
-    // Furniture physics boxes are created manually in blockFurnitureInNavGrid
-    // This avoids MRUK's procedural meshes which block UI interaction
+    // Create AnchorProceduralMesh with physics-only furniture colliders (no visual mesh)
     procMeshSpawner = AnchorProceduralMesh(
         mrukFeature,
         mapOf(
-            // FURNITURE MESHES DISABLED - using custom physics boxes instead
-            // MRUK's procedural meshes block UI interaction due to their rendering
-            // Our physics boxes have simple semi-transparent visuals that don't block UI
-
-            // Only keep door/window frames if needed for visual context
-            // MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            // MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+            // Furniture: physics colliders only, no visual mesh (null material)
+            // This allows bones to bounce off furniture without blocking UI
+            MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.LAMP to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.PLANT to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
         )
     )
-    Log.d(TAG, "AnchorProceduralMesh initialized (furniture disabled - using physics boxes)")
+    Log.d(TAG, "AnchorProceduralMesh initialized with physics-only furniture colliders")
 
     // Register scene event listener to handle room loading events
     sceneEventListener = object : MRUKSceneEventListener {
@@ -2580,281 +2595,10 @@ class ImmersiveActivity : AppSystemActivity() {
     }
 
     // Block the footprint in NavGrid with furniture height (15cm padding)
-    // This allows debug visualization to show purple spheres at furniture height
     grid.blockPolygonWithHeight(worldCorners, furnitureTopHeight, padding = 0.15f)
     Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners at height ${"%.2f".format(furnitureTopHeight)}m")
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
-
-    // Create physics box for this furniture (for bone collision)
-    createFurniturePhysicsBox(anchorEntity, worldPos, worldRot, volumeComponent, planeComponent, labels)
-  }
-
-  /**
-   * Create debug spheres at furniture corners to visualize furniture bounds.
-   * Uses same coordinate transform as NavGrid blocking for correct positioning.
-   * Creates 8 spheres: 4 at bottom corners, 4 at top corners.
-   */
-  private fun createFurniturePhysicsBox(
-      anchorEntity: Entity,
-      worldPos: Vector3,
-      worldRot: Quaternion,
-      volumeComponent: MRUKVolume?,
-      planeComponent: MRUKPlane?,
-      labels: List<String>
-  ) {
-    // Use the SAME corner calculation as blockFurnitureInNavGrid
-    // In MRUK local space: X = width, Y = depth, Z = height (vertical)
-
-    val bottomLocalCorners: List<Vector3>
-    val topLocalCorners: List<Vector3>
-    val furnitureTopHeight: Float
-    val floorY = navGrid?.floorY ?: worldPos.y
-
-    if (volumeComponent != null) {
-      val min = volumeComponent.min
-      val max = volumeComponent.max
-
-      Log.d(TAG, "=== FURNITURE DEBUG (Volume): ${labels.firstOrNull()} ===")
-      Log.d(TAG, "  Volume min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)}, ${"%.3f".format(min.z)})")
-      Log.d(TAG, "  Volume max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)}, ${"%.3f".format(max.z)})")
-      Log.d(TAG, "  Anchor worldPos=(${"%.3f".format(worldPos.x)}, ${"%.3f".format(worldPos.y)}, ${"%.3f".format(worldPos.z)})")
-
-      furnitureTopHeight = worldPos.y + max.z
-
-      // Bottom corners at Z = min.z (same as NavGrid)
-      bottomLocalCorners = listOf(
-        Vector3(min.x, min.y, min.z),
-        Vector3(max.x, min.y, min.z),
-        Vector3(max.x, max.y, min.z),
-        Vector3(min.x, max.y, min.z)
-      )
-
-      // Top corners at Z = max.z
-      topLocalCorners = listOf(
-        Vector3(min.x, min.y, max.z),
-        Vector3(max.x, min.y, max.z),
-        Vector3(max.x, max.y, max.z),
-        Vector3(min.x, max.y, max.z)
-      )
-    } else if (planeComponent != null) {
-      val min = planeComponent.min
-      val max = planeComponent.max
-
-      Log.d(TAG, "=== FURNITURE DEBUG (Plane): ${labels.firstOrNull()} ===")
-      Log.d(TAG, "  Plane min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)})")
-      Log.d(TAG, "  Plane max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)})")
-
-      furnitureTopHeight = worldPos.y
-
-      // Plane corners (Z = 0 in local space)
-      bottomLocalCorners = listOf(
-        Vector3(min.x, min.y, 0f),
-        Vector3(max.x, min.y, 0f),
-        Vector3(max.x, max.y, 0f),
-        Vector3(min.x, max.y, 0f)
-      )
-      topLocalCorners = bottomLocalCorners  // Same for flat planes
-    } else {
-      Log.d(TAG, "=== FURNITURE DEBUG (Default): ${labels.firstOrNull()} ===")
-      furnitureTopHeight = worldPos.y + 0.5f
-      bottomLocalCorners = listOf(
-        Vector3(-0.25f, -0.25f, 0f),
-        Vector3(0.25f, -0.25f, 0f),
-        Vector3(0.25f, 0.25f, 0f),
-        Vector3(-0.25f, 0.25f, 0f)
-      )
-      topLocalCorners = listOf(
-        Vector3(-0.25f, -0.25f, 0.5f),
-        Vector3(0.25f, -0.25f, 0.5f),
-        Vector3(0.25f, 0.25f, 0.5f),
-        Vector3(-0.25f, 0.25f, 0.5f)
-      )
-    }
-
-    // Transform corners to world space
-    // EXACTLY match NavGrid's approach:
-    // - rotated = worldRot.times(local)  <- uses FULL local corner including Z
-    // - World X = worldPos.x + rotated.x
-    // - World Z = worldPos.z + rotated.z
-    // - Height is worldPos.y + local.z (direct, no rotation affects height)
-
-    val sphereRadius = 0.05f  // 5cm spheres for visibility
-
-    // Create bottom corner spheres
-    bottomLocalCorners.forEachIndexed { i, local ->
-      // Use FULL local corner for rotation (same as NavGrid)
-      val rotated = worldRot.times(local)
-
-      // Match NavGrid: X from rotated.x, Z from rotated.z
-      // Height (Y) comes from local.z directly (MRUK Z = vertical height)
-      val worldX = worldPos.x + rotated.x
-      val worldY = worldPos.y + local.z  // Height direct from local Z
-      val worldZ = worldPos.z + rotated.z
-
-      val cornerPos = Vector3(worldX, worldY, worldZ)
-      Log.d(TAG, "  Bottom corner $i: local=$local -> rotated=$rotated -> world=$cornerPos")
-
-      try {
-        val sphere = Entity.create(
-          listOf(
-            Mesh(android.net.Uri.parse("mesh://sphere")),
-            Sphere(sphereRadius),
-            Material().apply {
-              baseColor = Color4(0.8f, 0.2f, 0.8f, 0.9f)  // Bright purple
-              unlit = true
-            },
-            Transform(Pose(cornerPos, Quaternion())),
-            Scale(Vector3(1f, 1f, 1f)),
-            Visible(isRoomMeshVisible)
-          )
-        )
-        furniturePhysicsBoxes.add(sphere)
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to create bottom corner sphere $i: ${e.message}")
-      }
-    }
-
-    // Create top corner spheres
-    topLocalCorners.forEachIndexed { i, local ->
-      // Use FULL local corner for rotation (same as NavGrid)
-      val rotated = worldRot.times(local)
-
-      // Match NavGrid: X from rotated.x, Z from rotated.z
-      // Height (Y) comes from local.z directly
-      val worldX = worldPos.x + rotated.x
-      val worldY = worldPos.y + local.z  // Height direct from local Z
-      val worldZ = worldPos.z + rotated.z
-
-      val cornerPos = Vector3(worldX, worldY, worldZ)
-      Log.d(TAG, "  Top corner $i: local=$local -> rotated=$rotated -> world=$cornerPos")
-
-      try {
-        val sphere = Entity.create(
-          listOf(
-            Mesh(android.net.Uri.parse("mesh://sphere")),
-            Sphere(sphereRadius),
-            Material().apply {
-              baseColor = Color4(1f, 0.5f, 1f, 0.9f)  // Lighter purple for top
-              unlit = true
-            },
-            Transform(Pose(cornerPos, Quaternion())),
-            Scale(Vector3(1f, 1f, 1f)),
-            Visible(isRoomMeshVisible)
-          )
-        )
-        furniturePhysicsBoxes.add(sphere)
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to create top corner sphere $i: ${e.message}")
-      }
-    }
-
-    Log.d(TAG, "Created ${bottomLocalCorners.size + topLocalCorners.size} debug spheres for ${labels.firstOrNull()}")
-
-    // Now create the physics box using the CORRECT dimensions
-    // Calculate dimensions from local min/max (same source as corners)
-    if (volumeComponent != null) {
-      val min = volumeComponent.min
-      val max = volumeComponent.max
-
-      // Dimensions in world space:
-      // Width (X) and Depth (Z) come from MRUK local X and Y
-      // Height (Y) comes from MRUK local Z
-      val boxWidth = max.x - min.x   // Local X extent -> World X
-      val boxDepth = max.y - min.y   // Local Y extent -> World Z (depth)
-      val boxHeight = max.z - min.z  // Local Z extent -> World Y (height)
-
-      // Box dimensions for Meta Spatial SDK: (width, height, depth)
-      val dimensions = Vector3(boxWidth, boxHeight, boxDepth)
-
-      // Calculate box center using same transform as corners
-      val localCenter = Vector3(
-        (min.x + max.x) / 2f,
-        (min.y + max.y) / 2f,
-        (min.z + max.z) / 2f
-      )
-      val rotatedCenter = worldRot.times(localCenter)
-      val boxCenter = Vector3(
-        worldPos.x + rotatedCenter.x,
-        worldPos.y + localCenter.z,  // Height from local.z directly
-        worldPos.z + rotatedCenter.z
-      )
-
-      Log.d(TAG, "  Physics box: center=$boxCenter, dims=$dimensions")
-
-      try {
-        val boxEntity = Entity.create(
-          listOf(
-            Box(dimensions),
-            Transform(Pose(boxCenter, worldRot)),
-            Physics().apply {
-              state = PhysicsState.KINEMATIC
-              shape = "box"
-              this.dimensions = dimensions
-              restitution = 0.3f
-            },
-            // Semi-transparent visual mesh
-            Mesh(android.net.Uri.parse("mesh://box")),
-            Material().apply {
-              baseColor = Color4(0.5f, 0.3f, 0.7f, 0.3f)  // Purple, semi-transparent
-              unlit = true
-            },
-            Visible(isRoomMeshVisible)
-          )
-        )
-        furniturePhysicsBoxes.add(boxEntity)
-        Log.d(TAG, "Created physics box for ${labels.firstOrNull()} at $boxCenter")
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to create physics box: ${e.message}")
-      }
-    } else if (planeComponent != null) {
-      val min = planeComponent.min
-      val max = planeComponent.max
-
-      val boxWidth = max.x - min.x
-      val boxDepth = max.y - min.y
-      val boxHeight = 0.05f  // Thin plane
-
-      val dimensions = Vector3(boxWidth, boxHeight, boxDepth)
-
-      val localCenter = Vector3(
-        (min.x + max.x) / 2f,
-        (min.y + max.y) / 2f,
-        0f
-      )
-      val rotatedCenter = worldRot.times(localCenter)
-      val boxCenter = Vector3(
-        worldPos.x + rotatedCenter.x,
-        worldPos.y,  // Plane is at anchor height
-        worldPos.z + rotatedCenter.z
-      )
-
-      Log.d(TAG, "  Physics plane: center=$boxCenter, dims=$dimensions")
-
-      try {
-        val boxEntity = Entity.create(
-          listOf(
-            Box(dimensions),
-            Transform(Pose(boxCenter, worldRot)),
-            Physics().apply {
-              state = PhysicsState.KINEMATIC
-              shape = "box"
-              this.dimensions = dimensions
-              restitution = 0.3f
-            },
-            Mesh(android.net.Uri.parse("mesh://box")),
-            Material().apply {
-              baseColor = Color4(0.5f, 0.3f, 0.7f, 0.3f)
-              unlit = true
-            },
-            Visible(isRoomMeshVisible)
-          )
-        )
-        furniturePhysicsBoxes.add(boxEntity)
-        Log.d(TAG, "Created physics plane for ${labels.firstOrNull()} at $boxCenter")
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to create physics plane: ${e.message}")
-      }
-    }
+    // Note: Physics colliders are now created automatically by AnchorProceduralMesh
   }
 
   /**
