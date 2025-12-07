@@ -3,4 +3,5 @@
   <item type="id" name="ui_example" />
   <item type="id" name="options_panel" />
   <item type="id" name="photo_capture_modal" />
+  <item type="id" name="browser_panel" />
 </resources>
