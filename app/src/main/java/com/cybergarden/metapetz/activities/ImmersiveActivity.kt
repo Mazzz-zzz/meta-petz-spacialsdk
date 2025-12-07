@@ -1548,12 +1548,14 @@ class ImmersiveActivity : AppSystemActivity() {
       entity.setComponent(Visible(visible))
     }
 
-    // Toggle visibility of future debug visualization entities
-    // Note: Furniture physics colliders are now handled by AnchorProceduralMesh (invisible by default)
+    // Toggle visibility of furniture debug edge visualization
+    for (entity in furnitureDebugSpheres) {
+      entity.setComponent(Visible(visible))
+    }
     for (entity in furniturePhysicsBoxes) {
       entity.setComponent(Visible(visible))
     }
-    Log.d(TAG, "Toggled ${furniturePhysicsBoxes.size} debug entities visibility: $visible")
+    Log.d(TAG, "Toggled ${furnitureDebugSpheres.size + furniturePhysicsBoxes.size} furniture debug entities visibility: $visible")
   }
 
   /**
@@ -1769,11 +1771,11 @@ class ImmersiveActivity : AppSystemActivity() {
     wallMaterial = edgeBoxMaterial
 
     // Create AnchorProceduralMesh with physics-only furniture colliders (no visual mesh)
+    // Visual debug is handled separately to avoid blocking UI raycasts
     procMeshSpawner = AnchorProceduralMesh(
         mrukFeature,
         mapOf(
             // Furniture: physics colliders only, no visual mesh (null material)
-            // This allows bones to bounce off furniture without blocking UI
             MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
             MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
             MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
@@ -1786,7 +1788,7 @@ class ImmersiveActivity : AppSystemActivity() {
             MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
         )
     )
-    Log.d(TAG, "AnchorProceduralMesh initialized with physics-only furniture colliders")
+    Log.d(TAG, "AnchorProceduralMesh initialized with physics-only colliders")
 
     // Register scene event listener to handle room loading events
     sceneEventListener = object : MRUKSceneEventListener {
@@ -2502,25 +2504,35 @@ class ImmersiveActivity : AppSystemActivity() {
    * Uses MRUKVolume bounds and getAbsoluteTransform for accurate world-space positioning.
    */
   private fun blockFurnitureInNavGrid(anchorEntity: Entity, anchorPose: Pose, labels: List<String>) {
-    val grid = navGrid ?: return
-
     // Get the absolute world transform for this anchor entity
     val worldTransform = getAbsoluteTransform(anchorEntity)
     val worldPos = worldTransform.t
     val worldRot = worldTransform.q
 
-    // Only include furniture that sits on the ground
+    // Try to get volume/plane bounds for debug visualization
+    val volumeComponent = anchorEntity.tryGetComponent<MRUKVolume>()
+    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+
+    // Always create debug edges (even if NavGrid not ready yet)
+    createFurnitureDebugEdges(worldPos, worldRot, volumeComponent, planeComponent, labels)
+
+    // NavGrid blocking requires grid to exist
+    val grid = navGrid
+    if (grid == null) {
+      Log.d(TAG, "NavGrid not ready, skipping blocking for: $labels (debug edges still created)")
+      return
+    }
+
+    // Only block furniture that sits on the ground
     // Skip wall-mounted/floating items (> 1.5m above floor)
     val floorY = grid.floorY
     val heightAboveFloor = worldPos.y - floorY
     if (heightAboveFloor > 1.5f) {
-      Log.d(TAG, "Skipping wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
+      Log.d(TAG, "Skipping NavGrid blocking for wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
       return
     }
 
-    // Try to get volume bounds first (preferred for 3D furniture)
-    val volumeComponent = anchorEntity.tryGetComponent<MRUKVolume>()
-    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+    // volumeComponent and planeComponent already retrieved above
 
     val localCorners: List<Vector3>
     var furnitureTopHeight: Float  // Height of the furniture's top surface in world space
@@ -2599,6 +2611,168 @@ class ImmersiveActivity : AppSystemActivity() {
     Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners at height ${"%.2f".format(furnitureTopHeight)}m")
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
     // Note: Physics colliders are now created automatically by AnchorProceduralMesh
+
+    // Create debug edge visualization (visual only, no physics/collision)
+    createFurnitureDebugEdges(worldPos, worldRot, volumeComponent, planeComponent, labels)
+  }
+
+  /**
+   * Create debug edge visualization for furniture bounds.
+   * Uses 8 corner points (4 bottom + 4 top) with correct MRUK coordinate transforms.
+   * Creates 12 edge boxes connecting the corners - visual only, no physics.
+   */
+  private fun createFurnitureDebugEdges(
+      worldPos: Vector3,
+      worldRot: Quaternion,
+      volumeComponent: MRUKVolume?,
+      planeComponent: MRUKPlane?,
+      labels: List<String>
+  ) {
+    // Skip if room mesh visibility is off
+    if (!isRoomMeshVisible) return
+
+    val bottomLocalCorners: List<Vector3>
+    val topLocalCorners: List<Vector3>
+
+    if (volumeComponent != null) {
+      val min = volumeComponent.min
+      val max = volumeComponent.max
+
+      // Bottom corners at Z = min.z
+      bottomLocalCorners = listOf(
+        Vector3(min.x, min.y, min.z),
+        Vector3(max.x, min.y, min.z),
+        Vector3(max.x, max.y, min.z),
+        Vector3(min.x, max.y, min.z)
+      )
+
+      // Top corners at Z = max.z
+      topLocalCorners = listOf(
+        Vector3(min.x, min.y, max.z),
+        Vector3(max.x, min.y, max.z),
+        Vector3(max.x, max.y, max.z),
+        Vector3(min.x, max.y, max.z)
+      )
+    } else if (planeComponent != null) {
+      val min = planeComponent.min
+      val max = planeComponent.max
+
+      // Plane corners (Z = 0 in local space) - thin plane
+      bottomLocalCorners = listOf(
+        Vector3(min.x, min.y, 0f),
+        Vector3(max.x, min.y, 0f),
+        Vector3(max.x, max.y, 0f),
+        Vector3(min.x, max.y, 0f)
+      )
+      topLocalCorners = listOf(
+        Vector3(min.x, min.y, 0.02f),  // 2cm above for thin plane
+        Vector3(max.x, min.y, 0.02f),
+        Vector3(max.x, max.y, 0.02f),
+        Vector3(min.x, max.y, 0.02f)
+      )
+    } else {
+      // Default 0.5m cube
+      bottomLocalCorners = listOf(
+        Vector3(-0.25f, -0.25f, 0f),
+        Vector3(0.25f, -0.25f, 0f),
+        Vector3(0.25f, 0.25f, 0f),
+        Vector3(-0.25f, 0.25f, 0f)
+      )
+      topLocalCorners = listOf(
+        Vector3(-0.25f, -0.25f, 0.5f),
+        Vector3(0.25f, -0.25f, 0.5f),
+        Vector3(0.25f, 0.25f, 0.5f),
+        Vector3(-0.25f, 0.25f, 0.5f)
+      )
+    }
+
+    // Transform local corners to world space
+    // MRUK transform: X/Z from rotation, Y (height) from local.z directly
+    fun localToWorld(local: Vector3): Vector3 {
+      val rotated = worldRot.times(local)
+      return Vector3(
+        worldPos.x + rotated.x,
+        worldPos.y + local.z,  // Height direct from local Z
+        worldPos.z + rotated.z
+      )
+    }
+
+    val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
+    val topWorld = topLocalCorners.map { localToWorld(it) }
+
+    val edgeThickness = 0.015f  // 1.5cm thick edges
+
+    // Create 12 edges: 4 bottom, 4 top, 4 vertical
+    // Bottom edges
+    for (i in 0 until 4) {
+      val next = (i + 1) % 4
+      createEdgeBox(bottomWorld[i], bottomWorld[next], edgeThickness)
+    }
+
+    // Top edges
+    for (i in 0 until 4) {
+      val next = (i + 1) % 4
+      createEdgeBox(topWorld[i], topWorld[next], edgeThickness)
+    }
+
+    // Vertical edges (connecting bottom to top)
+    for (i in 0 until 4) {
+      createEdgeBox(bottomWorld[i], topWorld[i], edgeThickness)
+    }
+
+    Log.d(TAG, "Created 12 debug edges for ${labels.firstOrNull()}")
+  }
+
+  /**
+   * Create a single edge box between two points.
+   * Visual only - no physics, no collision.
+   */
+  private fun createEdgeBox(start: Vector3, end: Vector3, thickness: Float) {
+    // Calculate edge center, length, and rotation
+    val center = Vector3(
+      (start.x + end.x) / 2f,
+      (start.y + end.y) / 2f,
+      (start.z + end.z) / 2f
+    )
+
+    val dx = end.x - start.x
+    val dy = end.y - start.y
+    val dz = end.z - start.z
+    val length = sqrt(dx * dx + dy * dy + dz * dz)
+
+    if (length < 0.001f) return  // Skip degenerate edges
+
+    // Create rotation to align box with edge direction
+    val dir = Vector3(dx / length, dy / length, dz / length)
+    val up = Vector3(0f, 1f, 0f)
+    val rotation = if (kotlin.math.abs(dir.y) > 0.99f) {
+      // Nearly vertical - use different up vector
+      Quaternion.lookRotation(dir, Vector3(1f, 0f, 0f))
+    } else {
+      Quaternion.lookRotation(dir, up)
+    }
+
+    // Box dimensions: length along Z (forward), thickness on X and Y
+    val dimensions = Vector3(thickness, thickness, length)
+
+    try {
+      val edgeEntity = Entity.create(
+        listOf(
+          Mesh(android.net.Uri.parse("mesh://box"), hittable = MeshCollision.NoCollision),
+          Box(dimensions),
+          Material().apply {
+            baseColor = Color4(0f, 1f, 0.5f, 0.6f)  // Cyan-green, semi-transparent
+            unlit = true
+          },
+          Transform(Pose(center, rotation)),
+          Visible(isRoomMeshVisible)
+          // NoCollision = visual only, won't block UI raycasts!
+        )
+      )
+      furnitureDebugSpheres.add(edgeEntity)  // Track for cleanup/toggle
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to create edge box: ${e.message}")
+    }
   }
 
   /**
