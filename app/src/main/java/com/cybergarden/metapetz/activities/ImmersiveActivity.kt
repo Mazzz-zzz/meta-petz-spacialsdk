@@ -290,6 +290,8 @@ class ImmersiveActivity : AppSystemActivity() {
   // Clap detector for calling pet's attention
   private val clapDetector: ClapDetector by lazy {
     ClapDetector(activityScope, systemManager).apply {
+      // Only accumulate trigger button points when pet is NOT attentive (idle)
+      isAttentive = { isPetAttentive }
       // Play bone sound when cumulative displacement threshold reached
       onClapDetected = {
         val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
@@ -319,9 +321,13 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "Pet started walking")
       }
       onWalkEnd = {
-        // Reset attention timeout - pet keeps attention until timeout
-        Log.d(TAG, "Pet finished walking - resetting attention timeout")
-        resetAttentionTimeout()
+        // Don't reset attention timeout during fetch - fetch coroutine manages its own state
+        if (currentActivity != AttentionActivity.FETCHING) {
+          Log.d(TAG, "Pet finished walking - resetting attention timeout")
+          resetAttentionTimeout()
+        } else {
+          Log.d(TAG, "Pet finished walking during fetch - skipping timeout reset")
+        }
       }
       // Tell PetLocomotion about our attention state
       isAttentive = { isPetAttentive }

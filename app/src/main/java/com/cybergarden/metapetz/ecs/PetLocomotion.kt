@@ -1291,7 +1291,7 @@ class PetLocomotion(
                 }
 
                 // Verify pet is actually close to bone before picking up
-                val PICKUP_DISTANCE = 0.20f  // Must be within 20cm to pick up
+                val PICKUP_DISTANCE = 0.35f  // Must be within 35cm to pick up (accounts for pathfinding variance)
                 val petPos = pet.tryGetComponent<Transform>()?.transform?.t
                 val currentBonePos = boneEntity.tryGetComponent<Transform>()?.transform?.t
 
