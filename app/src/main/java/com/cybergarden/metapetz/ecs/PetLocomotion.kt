@@ -673,7 +673,8 @@ class PetLocomotion(
 
     // Vertical offset for pet model (origin at center, not feet)
     // This raises the pet so its feet are on the surface instead of its center
-    private val petModelYOffset = 0.08f  // Adjust based on pet model height at current scale
+    // Pet scale is 0.2f, model height ~1 unit, so 50% offset = 0.1f
+    private val petModelYOffset = 0.1f  // Raise by 50% of model height to put feet on ground
 
     /**
      * Move pet to target using A* pathfinding with jump support.

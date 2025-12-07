@@ -560,6 +560,26 @@ fun PetInfoPanel(
                 textAlign = TextAlign.Center
             )
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Bones Fetched counter
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "\uD83E\uDDB4",  // Bone emoji
+                    fontSize = 24.sp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "${petData.bonesFetched} bones fetched",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.DarkGray
+                )
+            }
+
             Spacer(modifier = Modifier.weight(1f))
 
             // Close button at bottom

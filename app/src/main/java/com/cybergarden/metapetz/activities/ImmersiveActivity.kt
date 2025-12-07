@@ -369,6 +369,29 @@ class ImmersiveActivity : AppSystemActivity() {
         debugReturningBone = false
         debugDistanceToBone = -1f
         stopDistanceTracking()
+
+        // Increment bones fetched counter and add XP in Firebase
+        currentPetData?.let { petData ->
+          // Add 5% XP (0.05) for successful fetch
+          var newXp = petData.xp + 0.05f
+          var newLevel = petData.level
+          if (newXp >= 1f) {
+            newXp = 0f
+            newLevel += 1
+            Log.d(TAG, "Level up from fetch! New level: $newLevel")
+            firebaseManager.updatePetLevel("demoUser", petData.firebaseKey, newLevel)
+          }
+          firebaseManager.updatePetXp("demoUser", petData.firebaseKey, newXp)
+
+          // Increment bones fetched counter
+          firebaseManager.incrementBonesFetched("demoUser", petData.firebaseKey) { newCount ->
+            if (newCount != null) {
+              Log.d(TAG, "Bones fetched updated to $newCount, XP: ${(newXp * 100).toInt()}%")
+              // Update local state for UI with both changes
+              currentPetData = petData.copy(bonesFetched = newCount, xp = newXp, level = newLevel)
+            }
+          }
+        }
       }
       onFetchCancelled = {
         Log.d(TAG, "Fetch was cancelled")
