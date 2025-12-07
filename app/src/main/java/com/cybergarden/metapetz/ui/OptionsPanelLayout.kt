@@ -1,6 +1,9 @@
 package com.cybergarden.metapetz.ui
 
 import android.util.Log
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.cybergarden.metapetz.model.PetData
 import com.cybergarden.metapetz.services.FirebaseManager
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
@@ -83,6 +87,8 @@ fun OptionsPanel(
     // Claim flow state
     var showClaimFlow by remember { mutableStateOf(false) }
     var showPetSelector by remember { mutableStateOf(false) }
+    var showAdoptionPrompt by remember { mutableStateOf(false) }
+    var showWebBrowser by remember { mutableStateOf(false) }
     var petIdInput by remember { mutableStateOf("") }
     var claimError by remember { mutableStateOf<String?>(null) }
     var isClaiming by remember { mutableStateOf(false) }
@@ -343,6 +349,152 @@ fun OptionsPanel(
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                 }
+                // Show embedded WebView browser for adoption
+                else if (showWebBrowser) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White)
+                    ) {
+                        // Header with close button
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF4CAF50))
+                                .padding(8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Adopt a Pet",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.2f))
+                                    .clickable { showWebBrowser = false }
+                                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "Close",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                        // WebView
+                        AndroidView(
+                            factory = { context ->
+                                WebView(context).apply {
+                                    webViewClient = object : WebViewClient() {
+                                        override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                            // Keep navigation within metapetz.com
+                                            if (url?.contains("metapetz.com") == true) {
+                                                return false
+                                            }
+                                            return true
+                                        }
+                                    }
+                                    webChromeClient = WebChromeClient()
+                                    settings.javaScriptEnabled = true
+                                    settings.domStorageEnabled = true
+                                    settings.loadWithOverviewMode = true
+                                    settings.useWideViewPort = true
+                                    loadUrl("https://metapetz.com")
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        )
+                        // Footer with "I have a pet ID" option
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFF5F5F5))
+                                .clickable {
+                                    showWebBrowser = false
+                                    showClaimFlow = true
+                                }
+                                .padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Already have a pet ID? Enter it here",
+                                fontSize = 12.sp,
+                                color = Color(0xFF1976D2),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                // Show adoption prompt (when user has no pets)
+                else if (showAdoptionPrompt) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.1f))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "🐕",
+                            fontSize = 48.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Don't have a pet yet?",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.DarkGray,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Adopt one at metapetz.com!",
+                            fontSize = 14.sp,
+                            color = Color.Gray,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        PrimaryButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Browse Pets",
+                            onClick = {
+                                showAdoptionPrompt = false
+                                showWebBrowser = true
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        SecondaryButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "I have a Pet ID",
+                            onClick = {
+                                showAdoptionPrompt = false
+                                showClaimFlow = true
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Cancel",
+                            fontSize = 14.sp,
+                            color = Color.Gray,
+                            modifier = Modifier
+                                .clickable { showAdoptionPrompt = false }
+                                .padding(8.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 // Show claim flow dialog
                 else if (showClaimFlow) {
                     Column(
@@ -485,8 +637,8 @@ fun OptionsPanel(
                                 onClick = {
                                     when {
                                         petCount == 0 -> {
-                                            // No pets - show claim flow
-                                            showClaimFlow = true
+                                            // No pets - show adoption prompt
+                                            showAdoptionPrompt = true
                                         }
                                         petCount == 1 -> {
                                             // One pet - spawn directly
@@ -779,6 +931,21 @@ fun OptionsPanel(
                             color = Color.DarkGray
                         )
                     }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Clear local data button
+                if (firebaseManager != null) {
+                    SecondaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Clear Local Data",
+                        onClick = {
+                            Log.d("OptionsPanel", "Clearing local data")
+                            firebaseManager.clearAllClaimedPets()
+                            claimedPets = emptyList()
+                        }
+                    )
                 }
             }
         }
