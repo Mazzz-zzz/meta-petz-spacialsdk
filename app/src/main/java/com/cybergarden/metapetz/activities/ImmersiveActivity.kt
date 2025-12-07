@@ -2699,8 +2699,8 @@ class ImmersiveActivity : AppSystemActivity() {
       )
     }
 
-    // Transform to world space using same logic as NavGrid:
-    // X/Z from rotation, Y (height) from local.z directly
+    // Transform local corners to world space
+    // MRUK transform: X/Z from rotation, Y (height) from local.z directly
     fun localToWorld(local: Vector3): Vector3 {
       val rotated = worldRot.times(local)
       return Vector3(
@@ -2713,50 +2713,35 @@ class ImmersiveActivity : AppSystemActivity() {
     val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
     val topWorld = topLocalCorners.map { localToWorld(it) }
 
-    // Calculate bounding box from world corners
-    var minX = Float.MAX_VALUE
-    var maxX = Float.MIN_VALUE
-    var minY = Float.MAX_VALUE
-    var maxY = Float.MIN_VALUE
-    var minZ = Float.MAX_VALUE
-    var maxZ = Float.MIN_VALUE
+    // Create small debug spheres at each of the 8 corners
+    val sphereRadius = 0.03f  // 3cm spheres
+    val allCorners = bottomWorld + topWorld
 
-    (bottomWorld + topWorld).forEach { corner ->
-      minX = kotlin.math.min(minX, corner.x)
-      maxX = kotlin.math.max(maxX, corner.x)
-      minY = kotlin.math.min(minY, corner.y)
-      maxY = kotlin.math.max(maxY, corner.y)
-      minZ = kotlin.math.min(minZ, corner.z)
-      maxZ = kotlin.math.max(maxZ, corner.z)
+    for ((index, corner) in allCorners.withIndex()) {
+      try {
+        // Bottom corners = cyan, Top corners = yellow
+        val isBottom = index < 4
+        val color = if (isBottom) Color4(0f, 1f, 1f, 0.8f) else Color4(1f, 1f, 0f, 0.8f)
+
+        val sphereEntity = Entity.create(
+          listOf(
+            Mesh(android.net.Uri.parse("mesh://sphere"), hittable = MeshCollision.NoCollision),
+            Sphere(sphereRadius),  // Required for mesh://sphere
+            Material().apply {
+              baseColor = color
+              unlit = true
+            },
+            Transform(Pose(corner, Quaternion(0f, 0f, 0f, 1f))),
+            Visible(isRoomMeshVisible)
+          )
+        )
+        furnitureDebugSpheres.add(sphereEntity)
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed to create debug sphere: ${e.message}")
+      }
     }
 
-    val boxWidth = maxX - minX
-    val boxHeight = maxY - minY
-    val boxDepth = maxZ - minZ
-    val boxCenter = Vector3(
-      (minX + maxX) / 2f,
-      (minY + maxY) / 2f,
-      (minZ + maxZ) / 2f
-    )
-
-    try {
-      // Create SceneMesh for the box with our custom shader
-      val boxMesh = SceneMesh.box(
-        Vector3(-boxWidth/2, -boxHeight/2, -boxDepth/2),
-        Vector3(boxWidth/2, boxHeight/2, boxDepth/2),
-        furnitureOccluderMaterial
-      )
-
-      val occluderEntity = Entity.create()
-      val sceneObject = SceneObject(scene, boxMesh, "furnitureOccluder_${labels.firstOrNull()}", occluderEntity)
-      sceneObject.setPosition(boxCenter.x, boxCenter.y, boxCenter.z)
-      // Box is axis-aligned after world transform, no rotation needed
-
-      furnitureDebugSpheres.add(occluderEntity)  // Track for cleanup/toggle
-      Log.d(TAG, "Created occluder box for ${labels.firstOrNull()} at $boxCenter, size=(${"%.2f".format(boxWidth)}, ${"%.2f".format(boxHeight)}, ${"%.2f".format(boxDepth)})")
-    } catch (e: Exception) {
-      Log.e(TAG, "Failed to create occluder box: ${e.message}")
-    }
+    Log.d(TAG, "Created 8 debug spheres for ${labels.firstOrNull()}")
   }
 
   /**
@@ -2784,6 +2769,16 @@ class ImmersiveActivity : AppSystemActivity() {
     // Convert to degrees
     val toDeg = 180f / kotlin.math.PI.toFloat()
     return Vector3(pitch * toDeg, yaw * toDeg, roll * toDeg)
+  }
+
+  /**
+   * Extract yaw (Y-axis rotation) from quaternion in radians.
+   * For MRUK furniture, this is the rotation around world Y (vertical axis).
+   */
+  private fun quaternionToYaw(q: Quaternion): Float {
+    val siny_cosp = 2f * (q.w * q.y + q.x * q.z)
+    val cosy_cosp = 1f - 2f * (q.x * q.x + q.y * q.y)
+    return kotlin.math.atan2(siny_cosp, cosy_cosp)
   }
 
   /**
