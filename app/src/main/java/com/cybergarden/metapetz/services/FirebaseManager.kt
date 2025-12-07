@@ -17,8 +17,7 @@ class FirebaseManager(private val context: Context) {
 
     private val PREFS_NAME = "metapetz_prefs"
     private val USER_ID_KEY = "user_id"
-    private val CLAIMED_PET_SHORT_ID_KEY = "claimed_pet_short_id"
-    private val CLAIMED_PET_USER_PATH_KEY = "claimed_pet_user_path"
+    private val CLAIMED_PETS_KEY = "claimed_pet_ids"  // Comma-separated list of shortIds
 
     val userId: String by lazy { getOrCreateUserId() }
 
@@ -34,32 +33,75 @@ class FirebaseManager(private val context: Context) {
         return stableUserId
     }
 
-    fun getClaimedPetShortId(): String? {
+    // ========== MULTI-PET CLAIMING ==========
+
+    /**
+     * Get list of all claimed pet short IDs
+     */
+    fun getClaimedPetIds(): List<String> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getString(CLAIMED_PET_SHORT_ID_KEY, null)
+        val idsString = prefs.getString(CLAIMED_PETS_KEY, null) ?: return emptyList()
+        return idsString.split(",").filter { it.isNotBlank() }
     }
 
-    fun getClaimedPetUserPath(): String? {
+    /**
+     * Add a pet ID to claimed list
+     */
+    private fun addClaimedPetId(shortId: String) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getString(CLAIMED_PET_USER_PATH_KEY, null)
+        val currentIds = getClaimedPetIds().toMutableSet()
+        currentIds.add(shortId)
+        prefs.edit().putString(CLAIMED_PETS_KEY, currentIds.joinToString(",")).apply()
+        Log.d(TAG, "Added claimed pet: $shortId, total: ${currentIds.size}")
     }
 
-    private fun saveClaimedPet(shortId: String, userPath: String) {
+    /**
+     * Remove a pet ID from claimed list
+     */
+    fun removeClaimedPetId(shortId: String) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString(CLAIMED_PET_SHORT_ID_KEY, shortId)
-            .putString(CLAIMED_PET_USER_PATH_KEY, userPath)
-            .apply()
-        Log.d(TAG, "Saved claimed pet: $shortId")
+        val currentIds = getClaimedPetIds().toMutableSet()
+        currentIds.remove(shortId)
+        prefs.edit().putString(CLAIMED_PETS_KEY, currentIds.joinToString(",")).apply()
+        Log.d(TAG, "Removed claimed pet: $shortId, remaining: ${currentIds.size}")
     }
 
-    fun clearClaimedPet() {
+    /**
+     * Clear all claimed pets
+     */
+    fun clearAllClaimedPets() {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .remove(CLAIMED_PET_SHORT_ID_KEY)
-            .remove(CLAIMED_PET_USER_PATH_KEY)
-            .apply()
+        prefs.edit().remove(CLAIMED_PETS_KEY).apply()
+        Log.d(TAG, "Cleared all claimed pets")
     }
+
+    /**
+     * Load all claimed pets data from Firebase
+     */
+    fun loadAllClaimedPets(onResult: (List<PetData>) -> Unit) {
+        val claimedIds = getClaimedPetIds()
+        if (claimedIds.isEmpty()) {
+            onResult(emptyList())
+            return
+        }
+
+        val pets = mutableListOf<PetData>()
+        var remaining = claimedIds.size
+
+        for (shortId in claimedIds) {
+            getPetByShortId(shortId) { petData, _ ->
+                if (petData != null) {
+                    pets.add(petData)
+                }
+                remaining--
+                if (remaining == 0) {
+                    onResult(pets.sortedBy { it.name })
+                }
+            }
+        }
+    }
+
+    // ========== PET LOOKUP & CLAIMING ==========
 
     fun getPetByShortId(shortId: String, onResult: (PetData?, String?) -> Unit) {
         db.reference.child("users").addListenerForSingleValueEvent(object : ValueEventListener {
@@ -80,6 +122,12 @@ class FirebaseManager(private val context: Context) {
     }
 
     fun claimPet(shortId: String, onResult: (Boolean, String?, PetData?) -> Unit) {
+        // Check if already claimed by this user
+        if (getClaimedPetIds().contains(shortId)) {
+            onResult(false, "You already own this pet!", null)
+            return
+        }
+
         getPetByShortId(shortId) { petData, userPath ->
             if (petData == null || userPath == null) {
                 onResult(false, "Pet not found", null)
@@ -91,7 +139,7 @@ class FirebaseManager(private val context: Context) {
                 } else {
                     setPetOwnership(userPath, petData.firebaseKey, userId) { success ->
                         if (success) {
-                            saveClaimedPet(shortId, userPath)
+                            addClaimedPetId(shortId)
                             onResult(true, null, petData)
                         } else {
                             onResult(false, "Failed to claim pet", null)
@@ -116,11 +164,7 @@ class FirebaseManager(private val context: Context) {
             .addOnFailureListener { onResult(false) }
     }
 
-    fun loadClaimedPet(onResult: (PetData?) -> Unit) {
-        val shortId = getClaimedPetShortId()
-        if (shortId == null) { onResult(null); return }
-        getPetByShortId(shortId) { petData, _ -> onResult(petData) }
-    }
+    // ========== USER & PET MANAGEMENT ==========
 
     private fun createUserDocument(userId: String) {
         val userData = mapOf(

@@ -75,18 +75,19 @@ fun OptionsPanel(
     returningBone: Boolean = false
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
-    var claimedPet by remember { mutableStateOf<PetData?>(null) }
+    var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
-    var isLoadingClaimedPet by remember { mutableStateOf(true) }
+    var isLoadingClaimedPets by remember { mutableStateOf(true) }
     var spawnCooldownRemaining by remember { mutableStateOf(0) }
 
     // Claim flow state
     var showClaimFlow by remember { mutableStateOf(false) }
+    var showPetSelector by remember { mutableStateOf(false) }
     var petIdInput by remember { mutableStateOf("") }
     var claimError by remember { mutableStateOf<String?>(null) }
     var isClaiming by remember { mutableStateOf(false) }
 
-    // Load demo pet and claimed pet on mount
+    // Load demo pet and claimed pets on mount
     LaunchedEffect(firebaseManager) {
         if (firebaseManager != null) {
             // Load demo pet
@@ -95,15 +96,15 @@ fun OptionsPanel(
                 isLoadingDemoPet = false
                 Log.d("OptionsPanel", "Demo pet loaded: ${petData?.name}")
             }
-            // Load claimed pet (if any)
-            firebaseManager.loadClaimedPet { petData ->
-                claimedPet = petData
-                isLoadingClaimedPet = false
-                Log.d("OptionsPanel", "Claimed pet loaded: ${petData?.name}")
+            // Load all claimed pets
+            firebaseManager.loadAllClaimedPets { pets ->
+                claimedPets = pets
+                isLoadingClaimedPets = false
+                Log.d("OptionsPanel", "Claimed pets loaded: ${pets.size}")
             }
         } else {
             isLoadingDemoPet = false
-            isLoadingClaimedPet = false
+            isLoadingClaimedPets = false
         }
     }
 
@@ -251,10 +252,99 @@ fun OptionsPanel(
 
             if (isEnvironmentSetup) {
                 val isOnCooldown = spawnCooldownRemaining > 0
-                val hasClaimedPet = claimedPet != null
+                val petCount = claimedPets.size
 
+                // Show pet selector (when 2+ pets)
+                if (showPetSelector && petCount >= 2) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.1f))
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Choose Pet",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.DarkGray
+                            )
+                            Text(
+                                text = "X",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Gray,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable { showPetSelector = false }
+                                    .padding(8.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Pet list
+                        claimedPets.forEach { pet ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.White.copy(alpha = 0.2f))
+                                    .clickable {
+                                        if (!isOnCooldown) {
+                                            spawnCooldownRemaining = 5
+                                            showPetSelector = false
+                                            onSelectDemoPet?.invoke(pet)
+                                        }
+                                    }
+                                    .padding(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = pet.name,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.DarkGray
+                                        )
+                                        Text(
+                                            text = "Lv.${pet.level} | ${pet.shortId}",
+                                            fontSize = 12.sp,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                    Text(
+                                        text = ">",
+                                        fontSize = 18.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+
+                        // Add another pet button
+                        SecondaryButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "+ Add Pet",
+                            onClick = {
+                                showPetSelector = false
+                                showClaimFlow = true
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 // Show claim flow dialog
-                if (showClaimFlow) {
+                else if (showClaimFlow) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -333,7 +423,10 @@ fun OptionsPanel(
                                     firebaseManager.claimPet(petIdInput) { success, error, petData ->
                                         isClaiming = false
                                         if (success && petData != null) {
-                                            claimedPet = petData
+                                            // Refresh claimed pets list
+                                            firebaseManager.loadAllClaimedPets { pets ->
+                                                claimedPets = pets
+                                            }
                                             showClaimFlow = false
                                             petIdInput = ""
                                             // Auto-spawn the claimed pet
@@ -349,8 +442,8 @@ fun OptionsPanel(
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                 } else {
-                    // Spawn Demo button - only show if user has no claimed pet
-                    if (!hasClaimedPet && demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
+                    // Spawn Demo button - only show if user has no claimed pets
+                    if (petCount == 0 && demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
                         SecondaryButton(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -372,43 +465,72 @@ fun OptionsPanel(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    // Your Pet button
+                    // Your Pet(s) button with + button
                     if (onSelectDemoPet != null && firebaseManager != null) {
-                        PrimaryButton(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .then(if (isOnCooldown && hasClaimedPet) Modifier.alpha(0.5f) else Modifier),
-                            label = when {
-                                isLoadingClaimedPet -> "Loading..."
-                                isOnCooldown && hasClaimedPet -> "Spawning... (${spawnCooldownRemaining}s)"
-                                hasClaimedPet -> "Your Pet (${claimedPet!!.name})"
-                                else -> "Your Pet"
-                            },
-                            onClick = {
-                                if (isOnCooldown && hasClaimedPet) return@PrimaryButton
-
-                                if (hasClaimedPet) {
-                                    // Spawn claimed pet
-                                    spawnCooldownRemaining = 5
-                                    firebaseManager.loadClaimedPet { freshPetData ->
-                                        if (freshPetData != null) {
-                                            claimedPet = freshPetData
-                                            onSelectDemoPet(freshPetData)
-                                        } else {
-                                            onSelectDemoPet(claimedPet!!)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            PrimaryButton(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .then(if (isOnCooldown && petCount == 1) Modifier.alpha(0.5f) else Modifier),
+                                label = when {
+                                    isLoadingClaimedPets -> "Loading..."
+                                    isOnCooldown && petCount == 1 -> "Spawning... (${spawnCooldownRemaining}s)"
+                                    petCount == 0 -> "Your Pet"
+                                    petCount == 1 -> "Your Pet (${claimedPets[0].name})"
+                                    else -> "Your Pets (${petCount})"
+                                },
+                                onClick = {
+                                    when {
+                                        petCount == 0 -> {
+                                            // No pets - show claim flow
+                                            showClaimFlow = true
+                                        }
+                                        petCount == 1 -> {
+                                            // One pet - spawn directly
+                                            if (isOnCooldown) return@PrimaryButton
+                                            spawnCooldownRemaining = 5
+                                            // Refresh and spawn
+                                            firebaseManager.loadAllClaimedPets { pets ->
+                                                claimedPets = pets
+                                                if (pets.isNotEmpty()) {
+                                                    onSelectDemoPet(pets[0])
+                                                }
+                                            }
+                                        }
+                                        else -> {
+                                            // Multiple pets - show selector
+                                            showPetSelector = true
                                         }
                                     }
-                                } else {
-                                    // Show claim flow
-                                    showClaimFlow = true
+                                }
+                            )
+                            // Show + button when user has 1+ pets to add more
+                            if (petCount >= 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(24.dp))
+                                        .background(Color(0xFF4CAF50))
+                                        .clickable { showClaimFlow = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "+",
+                                        fontSize = 24.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
                                 }
                             }
-                        )
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
 
-                if ((isLoadingDemoPet || isLoadingClaimedPet) && firebaseManager != null && !showClaimFlow) {
+                if ((isLoadingDemoPet || isLoadingClaimedPets) && firebaseManager != null && !showClaimFlow && !showPetSelector) {
                     Text(
                         text = "Loading...",
                         fontSize = 14.sp,
