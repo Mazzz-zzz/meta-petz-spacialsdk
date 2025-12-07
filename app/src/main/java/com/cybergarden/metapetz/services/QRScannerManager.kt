@@ -288,11 +288,12 @@ class QRScannerManager(private val context: Context) {
 
                 Log.d(TAG, "QR Code found: $value")
 
-                // Extract pet ID (last 6 chars or full if it's just the ID)
-                val petId = if (value.length >= 6) {
-                    value.takeLast(6).uppercase()
+                // Extract pet ID from QR code (remove dashes, take last 6 chars)
+                val cleanValue = value.replace("-", "")
+                val petId = if (cleanValue.length >= 6) {
+                    cleanValue.takeLast(6).uppercase()
                 } else {
-                    value.uppercase()
+                    cleanValue.uppercase()
                 }
 
                 // Stop scanning and return result
