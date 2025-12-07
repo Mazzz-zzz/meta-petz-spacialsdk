@@ -329,8 +329,8 @@ class ImmersiveActivity : AppSystemActivity() {
           Log.d(TAG, "Pet finished walking during fetch - skipping timeout reset")
         }
       }
-      // Tell PetLocomotion about our attention state
-      isAttentive = { isPetAttentive }
+      // Tell PetLocomotion about attention state - only accept move commands when FACING_PLAYER
+      isAttentive = { isPetAttentive && currentActivity == AttentionActivity.FACING_PLAYER }
       // Provide head entity for fetch return
       getHeadEntity = { this@ImmersiveActivity.getHeadEntity() }
       // Fetch callbacks
