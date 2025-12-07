@@ -1905,6 +1905,7 @@ class ImmersiveActivity : AppSystemActivity() {
         baseColor = Color4(0.2f, 0.5f, 1f, 0.3f)  // Semi-transparent blue
         unlit = true
       })
+      components.add(Visible(isRoomMeshVisible))
     }
 
     val wallEntity = Entity.create(components)
@@ -3063,12 +3064,13 @@ class ImmersiveActivity : AppSystemActivity() {
       val worldOffset = centerPose.q.times(edgeDef.localOffset)
       val worldPos = centerPose.t + worldOffset
 
-      // Create edge entity with transform only (SceneObject handles the mesh)
+      // Create edge entity with transform and visibility (SceneObject handles the mesh)
       val edgePose = Pose(worldPos, centerPose.q)
 
       val entity = Entity.create(
           listOf(
-              Transform(edgePose)
+              Transform(edgePose),
+              Visible(isRoomMeshVisible)
           )
       )
 
