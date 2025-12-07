@@ -48,7 +48,7 @@ import androidx.compose.ui.text.input.KeyboardType
     heightDp = (PanelConstants.DEFAULT_DP_PER_METER * OPTIONS_PANEL_HEIGHT).toInt(),
 )
 fun OptionsPanelPreview() {
-    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {}, onScanRoom = {}, onQuit = {})
+    OptionsPanel(onSelectPet = {}, onSpawnBone = {}, onSetupRoom = {}, onScanRoom = {}, onQuit = {}, onMinimize = {})
 }
 
 @Composable
@@ -59,6 +59,7 @@ fun OptionsPanel(
     onSetupRoom: (() -> Unit)? = null,
     onScanRoom: (() -> Unit)? = null,
     onQuit: (() -> Unit)? = null,
+    onMinimize: (() -> Unit)? = null,
     firebaseManager: FirebaseManager? = null,
     isEnvironmentSetup: Boolean = false,
     isRoomMode: Boolean = false,  // true = room scan mode, false = outside mode
@@ -770,16 +771,34 @@ fun OptionsPanel(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Quit button
-            if (onQuit != null) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Quit",
-                    onClick = {
-                        Log.d("OptionsPanel", "Quit button pressed")
-                        onQuit()
-                    }
-                )
+            // Menu and Quit buttons in a row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Menu button - minimizes app to show Quest system menu
+                if (onMinimize != null) {
+                    SecondaryButton(
+                        modifier = Modifier.weight(1f),
+                        label = "☰ Menu",
+                        onClick = {
+                            Log.d("OptionsPanel", "Menu button pressed - minimizing app")
+                            onMinimize()
+                        }
+                    )
+                }
+
+                // Quit button
+                if (onQuit != null) {
+                    SecondaryButton(
+                        modifier = Modifier.weight(1f),
+                        label = "Quit",
+                        onClick = {
+                            Log.d("OptionsPanel", "Quit button pressed")
+                            onQuit()
+                        }
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))

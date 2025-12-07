@@ -1556,6 +1556,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSetupRoom = ::setupRoom,
                       onScanRoom = ::scanRoom,
                       onQuit = ::quitApp,
+                      onMinimize = ::minimizeApp,
                       firebaseManager = firebaseManager,
                       isEnvironmentSetup = isEnvironmentSetup,
                       isRoomMode = isRoomMode,
@@ -1621,6 +1622,18 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun quitApp() {
     Log.d(TAG, "Quitting app...")
     finish()
+  }
+
+  /**
+   * Minimize the app to show Quest home/system menu.
+   */
+  private fun minimizeApp() {
+    Log.d(TAG, "Minimizing app to show Quest home...")
+    val homeIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+      addCategory(android.content.Intent.CATEGORY_HOME)
+      addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    startActivity(homeIntent)
   }
 
   /**
