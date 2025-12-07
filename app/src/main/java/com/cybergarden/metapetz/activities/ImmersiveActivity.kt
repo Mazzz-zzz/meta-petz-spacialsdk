@@ -2646,51 +2646,97 @@ class ImmersiveActivity : AppSystemActivity() {
       planeComponent: MRUKPlane?,
       labels: List<String>
   ) {
-    // Calculate local-space min/max for the box
-    val localMin: Vector3
-    val localMax: Vector3
+    // Calculate 8 corners using same transform as the original working sphere code
+    val bottomLocalCorners: List<Vector3>
+    val topLocalCorners: List<Vector3>
 
     if (volumeComponent != null) {
-      localMin = volumeComponent.min
-      localMax = volumeComponent.max
+      val min = volumeComponent.min
+      val max = volumeComponent.max
+      bottomLocalCorners = listOf(
+        Vector3(min.x, min.y, min.z),
+        Vector3(max.x, min.y, min.z),
+        Vector3(max.x, max.y, min.z),
+        Vector3(min.x, max.y, min.z)
+      )
+      topLocalCorners = listOf(
+        Vector3(min.x, min.y, max.z),
+        Vector3(max.x, min.y, max.z),
+        Vector3(max.x, max.y, max.z),
+        Vector3(min.x, max.y, max.z)
+      )
     } else if (planeComponent != null) {
       val min = planeComponent.min
       val max = planeComponent.max
-      localMin = Vector3(min.x, min.y, 0f)
-      localMax = Vector3(max.x, max.y, 0.02f)
+      bottomLocalCorners = listOf(
+        Vector3(min.x, min.y, 0f),
+        Vector3(max.x, min.y, 0f),
+        Vector3(max.x, max.y, 0f),
+        Vector3(min.x, max.y, 0f)
+      )
+      topLocalCorners = listOf(
+        Vector3(min.x, min.y, 0.02f),
+        Vector3(max.x, min.y, 0.02f),
+        Vector3(max.x, max.y, 0.02f),
+        Vector3(min.x, max.y, 0.02f)
+      )
     } else {
-      localMin = Vector3(-0.25f, -0.25f, 0f)
-      localMax = Vector3(0.25f, 0.25f, 0.5f)
+      bottomLocalCorners = listOf(
+        Vector3(-0.25f, -0.25f, 0f),
+        Vector3(0.25f, -0.25f, 0f),
+        Vector3(0.25f, 0.25f, 0f),
+        Vector3(-0.25f, 0.25f, 0f)
+      )
+      topLocalCorners = listOf(
+        Vector3(-0.25f, -0.25f, 0.5f),
+        Vector3(0.25f, -0.25f, 0.5f),
+        Vector3(0.25f, 0.25f, 0.5f),
+        Vector3(-0.25f, 0.25f, 0.5f)
+      )
     }
 
-    // Calculate local-space size and center
-    val localSizeX = localMax.x - localMin.x
-    val localSizeY = localMax.y - localMin.y
-    val localSizeZ = localMax.z - localMin.z
+    // Transform local corners to world space (same as original sphere code)
+    fun localToWorld(local: Vector3): Vector3 {
+      val rotated = worldRot.times(local)
+      return Vector3(
+        worldPos.x + rotated.x,
+        worldPos.y + local.z,  // Height direct from local Z
+        worldPos.z + rotated.z
+      )
+    }
 
-    val localCenterX = (localMin.x + localMax.x) / 2f
-    val localCenterY = (localMin.y + localMax.y) / 2f
-    val localCenterZ = (localMin.z + localMax.z) / 2f
-    val localCenter = Vector3(localCenterX, localCenterY, localCenterZ)
+    val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
+    val topWorld = topLocalCorners.map { localToWorld(it) }
 
-    // Transform center to world space using same logic as NavGrid
-    // MRUK transform: X/Z from rotation, Y (height) from local.z directly
-    val rotatedCenter = worldRot.times(localCenter)
-    val worldCenter = Vector3(
-      worldPos.x + rotatedCenter.x,
-      worldPos.y + localCenterZ,  // Height direct from local Z
-      worldPos.z + rotatedCenter.z
-    )
+    // Calculate box center from world corners
+    val allCorners = bottomWorld + topWorld
+    val centerX = allCorners.map { it.x }.average().toFloat()
+    val centerY = allCorners.map { it.y }.average().toFloat()
+    val centerZ = allCorners.map { it.z }.average().toFloat()
+    val worldCenter = Vector3(centerX, centerY, centerZ)
 
-    // Box size in world space: local X/Y become world X/Z after MRUK rotation
-    // Local Z becomes world Y (height)
-    val boxSize = Vector3(localSizeX, localSizeZ, localSizeY)
+    // Calculate orientation from bottom corners (edge 0->1 gives X direction)
+    val edge0 = bottomWorld[0]
+    val edge1 = bottomWorld[1]
+    val dirX = edge1.x - edge0.x
+    val dirZ = edge1.z - edge0.z
+    val yawAngle = kotlin.math.atan2(dirZ, dirX)
+    val boxRotation = quaternionFromYaw(yawAngle)
+
+    // Calculate box dimensions from world corners
+    // Width = distance along edge 0->1, Depth = distance along edge 0->3
+    val edge3 = bottomWorld[3]
+    val width = kotlin.math.sqrt((dirX * dirX + dirZ * dirZ).toDouble()).toFloat()
+    val depthX = edge3.x - edge0.x
+    val depthZ = edge3.z - edge0.z
+    val depth = kotlin.math.sqrt((depthX * depthX + depthZ * depthZ).toDouble()).toFloat()
+    val height = topWorld[0].y - bottomWorld[0].y
 
     try {
       // Create the occluder box mesh using SceneMesh.box with furnitureOccluderMaterial
-      val halfX = boxSize.x / 2f
-      val halfY = boxSize.y / 2f
-      val halfZ = boxSize.z / 2f
+      val halfX = width / 2f
+      val halfY = height / 2f
+      val halfZ = depth / 2f
       val occluderMesh = SceneMesh.box(
         Vector3(-halfX, -halfY, -halfZ),
         Vector3(halfX, halfY, halfZ),
@@ -2700,7 +2746,7 @@ class ImmersiveActivity : AppSystemActivity() {
       // Create entity with transform first
       val occluderEntity = Entity.create(
         listOf(
-          Transform(Pose(worldCenter, worldRot)),
+          Transform(Pose(worldCenter, boxRotation)),
           Visible(isRoomMeshVisible)
         )
       )
@@ -2715,7 +2761,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
       furnitureDebugSpheres.add(occluderEntity)
 
-      Log.d(TAG, "Created occluder box for $labelName: size=(${boxSize.x}, ${boxSize.y}, ${boxSize.z}) at (${worldCenter.x}, ${worldCenter.y}, ${worldCenter.z})")
+      Log.d(TAG, "Created occluder box for $labelName: size=($width, $height, $depth) yaw=${Math.toDegrees(yawAngle.toDouble())}deg at ($centerX, $centerY, $centerZ)")
     } catch (e: Exception) {
       Log.e(TAG, "Failed to create occluder box: ${e.message}")
     }
