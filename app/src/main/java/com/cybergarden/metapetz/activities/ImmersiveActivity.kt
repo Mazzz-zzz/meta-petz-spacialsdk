@@ -2637,7 +2637,7 @@ class ImmersiveActivity : AppSystemActivity() {
   /**
    * Create furniture occluder visualization.
    * Uses custom shader with subtle occlusion effect.
-   * Uses same 8-point corner calculation as NavGrid for correct positioning.
+   * Creates a box mesh from the 8 corners (4 bottom cyan, 4 top yellow debug points).
    */
   private fun createFurnitureDebugEdges(
       worldPos: Vector3,
@@ -2646,102 +2646,79 @@ class ImmersiveActivity : AppSystemActivity() {
       planeComponent: MRUKPlane?,
       labels: List<String>
   ) {
-    // Calculate 8 corners using same transform as NavGrid
-    val bottomLocalCorners: List<Vector3>
-    val topLocalCorners: List<Vector3>
+    // Calculate local-space min/max for the box
+    val localMin: Vector3
+    val localMax: Vector3
 
     if (volumeComponent != null) {
-      val min = volumeComponent.min
-      val max = volumeComponent.max
-
-      // Bottom corners at Z = min.z
-      bottomLocalCorners = listOf(
-        Vector3(min.x, min.y, min.z),
-        Vector3(max.x, min.y, min.z),
-        Vector3(max.x, max.y, min.z),
-        Vector3(min.x, max.y, min.z)
-      )
-      // Top corners at Z = max.z
-      topLocalCorners = listOf(
-        Vector3(min.x, min.y, max.z),
-        Vector3(max.x, min.y, max.z),
-        Vector3(max.x, max.y, max.z),
-        Vector3(min.x, max.y, max.z)
-      )
+      localMin = volumeComponent.min
+      localMax = volumeComponent.max
     } else if (planeComponent != null) {
       val min = planeComponent.min
       val max = planeComponent.max
-
-      bottomLocalCorners = listOf(
-        Vector3(min.x, min.y, 0f),
-        Vector3(max.x, min.y, 0f),
-        Vector3(max.x, max.y, 0f),
-        Vector3(min.x, max.y, 0f)
-      )
-      topLocalCorners = listOf(
-        Vector3(min.x, min.y, 0.02f),
-        Vector3(max.x, min.y, 0.02f),
-        Vector3(max.x, max.y, 0.02f),
-        Vector3(min.x, max.y, 0.02f)
-      )
+      localMin = Vector3(min.x, min.y, 0f)
+      localMax = Vector3(max.x, max.y, 0.02f)
     } else {
-      bottomLocalCorners = listOf(
-        Vector3(-0.25f, -0.25f, 0f),
-        Vector3(0.25f, -0.25f, 0f),
-        Vector3(0.25f, 0.25f, 0f),
-        Vector3(-0.25f, 0.25f, 0f)
-      )
-      topLocalCorners = listOf(
-        Vector3(-0.25f, -0.25f, 0.5f),
-        Vector3(0.25f, -0.25f, 0.5f),
-        Vector3(0.25f, 0.25f, 0.5f),
-        Vector3(-0.25f, 0.25f, 0.5f)
-      )
+      localMin = Vector3(-0.25f, -0.25f, 0f)
+      localMax = Vector3(0.25f, 0.25f, 0.5f)
     }
 
-    // Transform local corners to world space
+    // Calculate local-space size and center
+    val localSizeX = localMax.x - localMin.x
+    val localSizeY = localMax.y - localMin.y
+    val localSizeZ = localMax.z - localMin.z
+
+    val localCenterX = (localMin.x + localMax.x) / 2f
+    val localCenterY = (localMin.y + localMax.y) / 2f
+    val localCenterZ = (localMin.z + localMax.z) / 2f
+    val localCenter = Vector3(localCenterX, localCenterY, localCenterZ)
+
+    // Transform center to world space using same logic as NavGrid
     // MRUK transform: X/Z from rotation, Y (height) from local.z directly
-    fun localToWorld(local: Vector3): Vector3 {
-      val rotated = worldRot.times(local)
-      return Vector3(
-        worldPos.x + rotated.x,
-        worldPos.y + local.z,  // Height direct from local Z
-        worldPos.z + rotated.z
+    val rotatedCenter = worldRot.times(localCenter)
+    val worldCenter = Vector3(
+      worldPos.x + rotatedCenter.x,
+      worldPos.y + localCenterZ,  // Height direct from local Z
+      worldPos.z + rotatedCenter.z
+    )
+
+    // Box size in world space: local X/Y become world X/Z after MRUK rotation
+    // Local Z becomes world Y (height)
+    val boxSize = Vector3(localSizeX, localSizeZ, localSizeY)
+
+    try {
+      // Create the occluder box mesh using SceneMesh.box with furnitureOccluderMaterial
+      val halfX = boxSize.x / 2f
+      val halfY = boxSize.y / 2f
+      val halfZ = boxSize.z / 2f
+      val occluderMesh = SceneMesh.box(
+        Vector3(-halfX, -halfY, -halfZ),
+        Vector3(halfX, halfY, halfZ),
+        furnitureOccluderMaterial
       )
-    }
 
-    val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
-    val topWorld = topLocalCorners.map { localToWorld(it) }
-
-    // Create small debug spheres at each of the 8 corners
-    val sphereRadius = 0.03f  // 3cm spheres
-    val allCorners = bottomWorld + topWorld
-
-    for ((index, corner) in allCorners.withIndex()) {
-      try {
-        // Bottom corners = cyan, Top corners = yellow
-        val isBottom = index < 4
-        val color = if (isBottom) Color4(0f, 1f, 1f, 0.8f) else Color4(1f, 1f, 0f, 0.8f)
-
-        val sphereEntity = Entity.create(
-          listOf(
-            Mesh(android.net.Uri.parse("mesh://sphere"), hittable = MeshCollision.NoCollision),
-            Sphere(sphereRadius),  // Required for mesh://sphere
-            Material().apply {
-              baseColor = color
-              unlit = true
-            },
-            Transform(Pose(corner, Quaternion(0f, 0f, 0f, 1f))),
-            Visible(isRoomMeshVisible)
-          )
+      // Create entity with transform first
+      val occluderEntity = Entity.create(
+        listOf(
+          Transform(Pose(worldCenter, worldRot)),
+          Visible(isRoomMeshVisible)
         )
-        furnitureDebugSpheres.add(sphereEntity)
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to create debug sphere: ${e.message}")
-      }
-    }
+      )
 
-    Log.d(TAG, "Created 8 debug spheres for ${labels.firstOrNull()}")
+      // Create SceneObject and attach to entity via SceneObjectSystem
+      val labelName = labels.firstOrNull() ?: "furniture"
+      val sceneObject = SceneObject(scene, occluderMesh, "occluder_${labelName}_${System.currentTimeMillis()}", occluderEntity)
+      systemManager.findSystem<SceneObjectSystem>().addSceneObject(
+        occluderEntity,
+        CompletableFuture<SceneObject>().apply { complete(sceneObject) }
+      )
+
+      furnitureDebugSpheres.add(occluderEntity)
+
+      Log.d(TAG, "Created occluder box for $labelName: size=(${boxSize.x}, ${boxSize.y}, ${boxSize.z}) at (${worldCenter.x}, ${worldCenter.y}, ${worldCenter.z})")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to create occluder box: ${e.message}")
+    }
   }
 
   /**
