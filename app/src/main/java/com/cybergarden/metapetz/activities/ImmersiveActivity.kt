@@ -166,6 +166,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private val roomEdgeEntities = mutableListOf<Entity>()
   private lateinit var edgeBoxMaterial: SceneMaterial
   private lateinit var furnitureEdgeMaterial: SceneMaterial
+  private lateinit var furnitureOccluderMaterial: SceneMaterial
 
   // Physics colliders for room bounds (walls from room scan)
   private val roomBoundsPhysicsEntities = mutableListOf<Entity>()
@@ -1767,6 +1768,23 @@ class ImmersiveActivity : AppSystemActivity() {
     }
     Log.d(TAG, "Furniture edge material initialized (edgeOnly shader)")
 
+    // Create furniture occluder material - subtle boxes that obscure objects behind
+    // Uses fresnel effect to enhance edges, very low opacity to be unobtrusive
+    furnitureOccluderMaterial = SceneMaterial.custom(
+        "furnitureOccluder",
+        arrayOf(
+            SceneMaterialAttribute("occluderColor", SceneMaterialDataType.Vector4),
+            SceneMaterialAttribute("occluderParams", SceneMaterialDataType.Vector4)
+        )
+    ).apply {
+        setBlendMode(BlendMode.TRANSLUCENT)
+        // Dark gray with 0.1 alpha - very subtle
+        setAttribute("occluderColor", Vector4(0.2f, 0.2f, 0.2f, 0.1f))
+        // x = edge boost (0.5), y = fresnel power (2.0), z = darken amount (0.3)
+        setAttribute("occluderParams", Vector4(0.5f, 2.0f, 0.3f, 0f))
+    }
+    Log.d(TAG, "Furniture occluder material initialized (furnitureOccluder shader)")
+
     // Keep wallMaterial for backwards compatibility with manual wall creation
     wallMaterial = edgeBoxMaterial
 
@@ -2617,9 +2635,9 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Create debug edge visualization for furniture bounds.
-   * Uses 8 corner points (4 bottom + 4 top) with correct MRUK coordinate transforms.
-   * Creates 12 edge boxes connecting the corners - visual only, no physics.
+   * Create furniture occluder visualization.
+   * Uses custom shader with subtle occlusion effect.
+   * Uses same 8-point corner calculation as NavGrid for correct positioning.
    */
   private fun createFurnitureDebugEdges(
       worldPos: Vector3,
@@ -2628,9 +2646,7 @@ class ImmersiveActivity : AppSystemActivity() {
       planeComponent: MRUKPlane?,
       labels: List<String>
   ) {
-    // Skip if room mesh visibility is off
-    if (!isRoomMeshVisible) return
-
+    // Calculate 8 corners using same transform as NavGrid
     val bottomLocalCorners: List<Vector3>
     val topLocalCorners: List<Vector3>
 
@@ -2645,7 +2661,6 @@ class ImmersiveActivity : AppSystemActivity() {
         Vector3(max.x, max.y, min.z),
         Vector3(min.x, max.y, min.z)
       )
-
       // Top corners at Z = max.z
       topLocalCorners = listOf(
         Vector3(min.x, min.y, max.z),
@@ -2657,7 +2672,6 @@ class ImmersiveActivity : AppSystemActivity() {
       val min = planeComponent.min
       val max = planeComponent.max
 
-      // Plane corners (Z = 0 in local space) - thin plane
       bottomLocalCorners = listOf(
         Vector3(min.x, min.y, 0f),
         Vector3(max.x, min.y, 0f),
@@ -2665,13 +2679,12 @@ class ImmersiveActivity : AppSystemActivity() {
         Vector3(min.x, max.y, 0f)
       )
       topLocalCorners = listOf(
-        Vector3(min.x, min.y, 0.02f),  // 2cm above for thin plane
+        Vector3(min.x, min.y, 0.02f),
         Vector3(max.x, min.y, 0.02f),
         Vector3(max.x, max.y, 0.02f),
         Vector3(min.x, max.y, 0.02f)
       )
     } else {
-      // Default 0.5m cube
       bottomLocalCorners = listOf(
         Vector3(-0.25f, -0.25f, 0f),
         Vector3(0.25f, -0.25f, 0f),
@@ -2686,8 +2699,8 @@ class ImmersiveActivity : AppSystemActivity() {
       )
     }
 
-    // Transform local corners to world space
-    // MRUK transform: X/Z from rotation, Y (height) from local.z directly
+    // Transform to world space using same logic as NavGrid:
+    // X/Z from rotation, Y (height) from local.z directly
     fun localToWorld(local: Vector3): Vector3 {
       val rotated = worldRot.times(local)
       return Vector3(
@@ -2700,79 +2713,77 @@ class ImmersiveActivity : AppSystemActivity() {
     val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
     val topWorld = topLocalCorners.map { localToWorld(it) }
 
-    val edgeThickness = 0.015f  // 1.5cm thick edges
+    // Calculate bounding box from world corners
+    var minX = Float.MAX_VALUE
+    var maxX = Float.MIN_VALUE
+    var minY = Float.MAX_VALUE
+    var maxY = Float.MIN_VALUE
+    var minZ = Float.MAX_VALUE
+    var maxZ = Float.MIN_VALUE
 
-    // Create 12 edges: 4 bottom, 4 top, 4 vertical
-    // Bottom edges
-    for (i in 0 until 4) {
-      val next = (i + 1) % 4
-      createEdgeBox(bottomWorld[i], bottomWorld[next], edgeThickness)
+    (bottomWorld + topWorld).forEach { corner ->
+      minX = kotlin.math.min(minX, corner.x)
+      maxX = kotlin.math.max(maxX, corner.x)
+      minY = kotlin.math.min(minY, corner.y)
+      maxY = kotlin.math.max(maxY, corner.y)
+      minZ = kotlin.math.min(minZ, corner.z)
+      maxZ = kotlin.math.max(maxZ, corner.z)
     }
 
-    // Top edges
-    for (i in 0 until 4) {
-      val next = (i + 1) % 4
-      createEdgeBox(topWorld[i], topWorld[next], edgeThickness)
-    }
+    val boxWidth = maxX - minX
+    val boxHeight = maxY - minY
+    val boxDepth = maxZ - minZ
+    val boxCenter = Vector3(
+      (minX + maxX) / 2f,
+      (minY + maxY) / 2f,
+      (minZ + maxZ) / 2f
+    )
 
-    // Vertical edges (connecting bottom to top)
-    for (i in 0 until 4) {
-      createEdgeBox(bottomWorld[i], topWorld[i], edgeThickness)
-    }
+    try {
+      // Create SceneMesh for the box with our custom shader
+      val boxMesh = SceneMesh.box(
+        Vector3(-boxWidth/2, -boxHeight/2, -boxDepth/2),
+        Vector3(boxWidth/2, boxHeight/2, boxDepth/2),
+        furnitureOccluderMaterial
+      )
 
-    Log.d(TAG, "Created 12 debug edges for ${labels.firstOrNull()}")
+      val occluderEntity = Entity.create()
+      val sceneObject = SceneObject(scene, boxMesh, "furnitureOccluder_${labels.firstOrNull()}", occluderEntity)
+      sceneObject.setPosition(boxCenter.x, boxCenter.y, boxCenter.z)
+      // Box is axis-aligned after world transform, no rotation needed
+
+      furnitureDebugSpheres.add(occluderEntity)  // Track for cleanup/toggle
+      Log.d(TAG, "Created occluder box for ${labels.firstOrNull()} at $boxCenter, size=(${"%.2f".format(boxWidth)}, ${"%.2f".format(boxHeight)}, ${"%.2f".format(boxDepth)})")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to create occluder box: ${e.message}")
+    }
   }
 
   /**
-   * Create a single edge box between two points.
-   * Visual only - no physics, no collision.
+   * Convert quaternion to Euler angles (pitch, yaw, roll) in degrees.
    */
-  private fun createEdgeBox(start: Vector3, end: Vector3, thickness: Float) {
-    // Calculate edge center, length, and rotation
-    val center = Vector3(
-      (start.x + end.x) / 2f,
-      (start.y + end.y) / 2f,
-      (start.z + end.z) / 2f
-    )
+  private fun quaternionToEuler(q: Quaternion): Vector3 {
+    // Roll (x-axis rotation)
+    val sinr_cosp = 2f * (q.w * q.x + q.y * q.z)
+    val cosr_cosp = 1f - 2f * (q.x * q.x + q.y * q.y)
+    val roll = kotlin.math.atan2(sinr_cosp, cosr_cosp)
 
-    val dx = end.x - start.x
-    val dy = end.y - start.y
-    val dz = end.z - start.z
-    val length = sqrt(dx * dx + dy * dy + dz * dz)
-
-    if (length < 0.001f) return  // Skip degenerate edges
-
-    // Create rotation to align box with edge direction
-    val dir = Vector3(dx / length, dy / length, dz / length)
-    val up = Vector3(0f, 1f, 0f)
-    val rotation = if (kotlin.math.abs(dir.y) > 0.99f) {
-      // Nearly vertical - use different up vector
-      Quaternion.lookRotation(dir, Vector3(1f, 0f, 0f))
+    // Pitch (y-axis rotation)
+    val sinp = 2f * (q.w * q.y - q.z * q.x)
+    val pitch = if (kotlin.math.abs(sinp) >= 1f) {
+      if (sinp > 0) kotlin.math.PI.toFloat() / 2f else -kotlin.math.PI.toFloat() / 2f
     } else {
-      Quaternion.lookRotation(dir, up)
+      kotlin.math.asin(sinp)
     }
 
-    // Box dimensions: length along Z (forward), thickness on X and Y
-    val dimensions = Vector3(thickness, thickness, length)
+    // Yaw (z-axis rotation)
+    val siny_cosp = 2f * (q.w * q.z + q.x * q.y)
+    val cosy_cosp = 1f - 2f * (q.y * q.y + q.z * q.z)
+    val yaw = kotlin.math.atan2(siny_cosp, cosy_cosp)
 
-    try {
-      val edgeEntity = Entity.create(
-        listOf(
-          Mesh(android.net.Uri.parse("mesh://box"), hittable = MeshCollision.NoCollision),
-          Box(dimensions),
-          Material().apply {
-            baseColor = Color4(0f, 1f, 0.5f, 0.6f)  // Cyan-green, semi-transparent
-            unlit = true
-          },
-          Transform(Pose(center, rotation)),
-          Visible(isRoomMeshVisible)
-          // NoCollision = visual only, won't block UI raycasts!
-        )
-      )
-      furnitureDebugSpheres.add(edgeEntity)  // Track for cleanup/toggle
-    } catch (e: Exception) {
-      Log.e(TAG, "Failed to create edge box: ${e.message}")
-    }
+    // Convert to degrees
+    val toDeg = 180f / kotlin.math.PI.toFloat()
+    return Vector3(pitch * toDeg, yaw * toDeg, roll * toDeg)
   }
 
   /**
