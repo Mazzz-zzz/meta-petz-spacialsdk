@@ -18,7 +18,8 @@ data class PetData(
     val colors: PetColors = PetColors(),
     val level: Int = 1,
     val xp: Float = 0f,            // XP as decimal (0.0 to 1.0), displayed as percentage
-    val xpToNextLevel: Float = 1f  // 1.0 = 100%
+    val xpToNextLevel: Float = 1f, // 1.0 = 100%
+    val bonesFetched: Int = 0      // Total bones successfully fetched and returned
 )
 
 data class PetColors(

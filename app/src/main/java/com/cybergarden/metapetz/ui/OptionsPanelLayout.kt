@@ -56,8 +56,10 @@ fun OptionsPanel(
     isRoomMode: Boolean = false,  // true = room scan mode, false = outside mode
     isDebugGridEnabled: Boolean = false,
     onDebugGridToggle: ((Boolean) -> Unit)? = null,
-    isRoomMeshVisible: Boolean = true,
+    isRoomMeshVisible: Boolean = false,
     onRoomMeshToggle: ((Boolean) -> Unit)? = null,
+    isFurnitureOccluderVisible: Boolean = true,
+    onFurnitureOccluderToggle: ((Boolean) -> Unit)? = null,
     // Debug state values
     isPetAttentive: Boolean = false,
     hasBone: Boolean = false,
@@ -185,6 +187,34 @@ fun OptionsPanel(
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Room-mode specific toggle (furniture occluder for users)
+            if (isEnvironmentSetup && isRoomMode && onFurnitureOccluderToggle != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Furniture Occluder visibility toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = isFurnitureOccluderVisible,
+                        onCheckedChange = { visible ->
+                            Log.d("OptionsPanel", "Furniture occluder toggled: $visible")
+                            onFurnitureOccluderToggle(visible)
+                        },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF9C27B0),
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Text(
+                        text = "Show Furniture",
+                        fontSize = 14.sp,
+                        color = Color.DarkGray
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -319,7 +349,7 @@ fun OptionsPanel(
                     }
                 }
 
-                // Room Mesh visibility toggle
+                // Room Mesh visibility toggle (debug)
                 if (onRoomMeshToggle != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -529,6 +559,26 @@ fun PetInfoPanel(
                 color = Color.DarkGray,
                 textAlign = TextAlign.Center
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Bones Fetched counter
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "\uD83E\uDDB4",  // Bone emoji
+                    fontSize = 24.sp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "${petData.bonesFetched} bones fetched",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.DarkGray
+                )
+            }
 
             Spacer(modifier = Modifier.weight(1f))
 

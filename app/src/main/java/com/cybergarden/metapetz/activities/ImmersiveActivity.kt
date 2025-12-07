@@ -166,6 +166,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private val roomEdgeEntities = mutableListOf<Entity>()
   private lateinit var edgeBoxMaterial: SceneMaterial
   private lateinit var furnitureEdgeMaterial: SceneMaterial
+  private lateinit var furnitureOccluderMaterial: SceneMaterial
 
   // Physics colliders for room bounds (walls from room scan)
   private val roomBoundsPhysicsEntities = mutableListOf<Entity>()
@@ -178,7 +179,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private val pendingWalls = mutableListOf<PendingWall>()
 
   // Debug visibility toggles (reactive for Compose UI)
-  private var isRoomMeshVisible by mutableStateOf(true)
+  private var isRoomMeshVisible by mutableStateOf(false)  // Room mesh (walls/floor) hidden by default
+  private var isFurnitureOccluderVisible by mutableStateOf(true)  // Furniture occluders shown by default
 
   // Labels that represent room bounds (walls, floor, ceiling)
   private val roomBoundsLabels = setOf(MRUKLabel.WALL_FACE, MRUKLabel.FLOOR, MRUKLabel.CEILING)
@@ -212,7 +214,8 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
   private val furnitureQuads = mutableListOf<FurnitureQuad>()
-  private val furnitureDebugSpheres = mutableListOf<Entity>()  // Purple corner spheres
+  private val furnitureDebugSpheres = mutableListOf<Entity>()  // Reserved for future debug visualization
+  private val furniturePhysicsBoxes = mutableListOf<Entity>()  // Reserved for future debug visualization
 
   // Audio
   private val boneSound: SceneAudioAsset by lazy {
@@ -366,6 +369,29 @@ class ImmersiveActivity : AppSystemActivity() {
         debugReturningBone = false
         debugDistanceToBone = -1f
         stopDistanceTracking()
+
+        // Increment bones fetched counter and add XP in Firebase
+        currentPetData?.let { petData ->
+          // Add 5% XP (0.05) for successful fetch
+          var newXp = petData.xp + 0.05f
+          var newLevel = petData.level
+          if (newXp >= 1f) {
+            newXp = 0f
+            newLevel += 1
+            Log.d(TAG, "Level up from fetch! New level: $newLevel")
+            firebaseManager.updatePetLevel("demoUser", petData.firebaseKey, newLevel)
+          }
+          firebaseManager.updatePetXp("demoUser", petData.firebaseKey, newXp)
+
+          // Increment bones fetched counter
+          firebaseManager.incrementBonesFetched("demoUser", petData.firebaseKey) { newCount ->
+            if (newCount != null) {
+              Log.d(TAG, "Bones fetched updated to $newCount, XP: ${(newXp * 100).toInt()}%")
+              // Update local state for UI with both changes
+              currentPetData = petData.copy(bonesFetched = newCount, xp = newXp, level = newLevel)
+            }
+          }
+        }
       }
       onFetchCancelled = {
         Log.d(TAG, "Fetch was cancelled")
@@ -1003,6 +1029,9 @@ class ImmersiveActivity : AppSystemActivity() {
     furnitureQuads.clear()  // Clear furniture debug data
     furnitureDebugSpheres.forEach { it.destroy() }  // Destroy purple corner spheres
     furnitureDebugSpheres.clear()
+    // Destroy furniture physics boxes from room mode
+    furniturePhysicsBoxes.forEach { it.destroy() }
+    furniturePhysicsBoxes.clear()
 
     // Destroy procMeshSpawner to remove furniture meshes from room scan
     procMeshSpawner?.destroy()
@@ -1165,23 +1194,28 @@ class ImmersiveActivity : AppSystemActivity() {
     furnitureQuads.clear()  // Clear furniture debug data
     furnitureDebugSpheres.forEach { it.destroy() }  // Destroy purple corner spheres
     furnitureDebugSpheres.clear()
+    // Destroy old furniture physics boxes
+    furniturePhysicsBoxes.forEach { it.destroy() }
+    furniturePhysicsBoxes.clear()
+    Log.d(TAG, "Cleared furniture physics boxes for room scan")
 
-    // Recreate procMeshSpawner if it was destroyed (e.g., by setupRoom)
+    // Recreate procMeshSpawner if it was destroyed
     if (procMeshSpawner == null) {
       Log.d(TAG, "Recreating procMeshSpawner for room scan")
       procMeshSpawner = AnchorProceduralMesh(
           mrukFeature,
           mapOf(
-              MRUKLabel.TABLE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.COUCH to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.BED to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.LAMP to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.PLANT to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
+              // Furniture: physics colliders only, no visual mesh (null material)
+              MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.LAMP to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.PLANT to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
+              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
           )
       )
     }
@@ -1450,6 +1484,8 @@ class ImmersiveActivity : AppSystemActivity() {
                       onDebugGridToggle = ::toggleDebugGrid,
                       isRoomMeshVisible = isRoomMeshVisible,
                       onRoomMeshToggle = ::toggleRoomMesh,
+                      isFurnitureOccluderVisible = isFurnitureOccluderVisible,
+                      onFurnitureOccluderToggle = ::toggleFurnitureOccluder,
                       isPetAttentive = isPetAttentive,
                       hasBone = petHasBone,
                       // Fetch debug states
@@ -1522,7 +1558,8 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Toggle the room mesh visibility (walls, floor, furniture edges).
+   * Toggle the room mesh visibility (walls, floor, ceiling edges).
+   * Physics colliders remain active regardless of visibility - only visual meshes toggle.
    */
   private fun toggleRoomMesh(visible: Boolean) {
     Log.d(TAG, "Toggle room mesh visibility: $visible")
@@ -1537,34 +1574,25 @@ class ImmersiveActivity : AppSystemActivity() {
     for (entity in roomColliderEntities) {
       entity.setComponent(Visible(visible))
     }
+    Log.d(TAG, "Toggled ${roomEdgeEntities.size + roomColliderEntities.size} room mesh entities visibility: $visible")
+  }
 
-    // Toggle visibility of furniture procedural meshes
-    // AnchorProceduralMesh doesn't have a visibility toggle, so we destroy/recreate
-    // ONLY applies in ROOM MODE - outside mode has no furniture meshes
-    if (!visible) {
-      procMeshSpawner?.destroy()
-      procMeshSpawner = null
-    } else if (procMeshSpawner == null && isEnvironmentSetup && isRoomMode) {
-      // Recreate procMeshSpawner when making visible again - ONLY in room mode
-      procMeshSpawner = AnchorProceduralMesh(
-          mrukFeature,
-          mapOf(
-              MRUKLabel.TABLE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.COUCH to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.BED to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.LAMP to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.PLANT to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-              MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-          )
-      )
-      Log.d(TAG, "Recreated procMeshSpawner for room mode")
-    } else if (!isRoomMode) {
-      Log.d(TAG, "Skipping procMeshSpawner recreation - outside mode has no furniture meshes")
+  /**
+   * Toggle the furniture occluder visibility.
+   * These are the box meshes that occlude objects behind furniture.
+   */
+  private fun toggleFurnitureOccluder(visible: Boolean) {
+    Log.d(TAG, "Toggle furniture occluder visibility: $visible")
+    isFurnitureOccluderVisible = visible
+
+    // Toggle visibility of furniture occluder boxes
+    for (entity in furnitureDebugSpheres) {
+      entity.setComponent(Visible(visible))
     }
+    for (entity in furniturePhysicsBoxes) {
+      entity.setComponent(Visible(visible))
+    }
+    Log.d(TAG, "Toggled ${furnitureDebugSpheres.size + furniturePhysicsBoxes.size} furniture occluder entities visibility: $visible")
   }
 
   /**
@@ -1776,30 +1804,45 @@ class ImmersiveActivity : AppSystemActivity() {
     }
     Log.d(TAG, "Furniture edge material initialized (edgeOnly shader)")
 
+    // Create furniture occluder material - subtle boxes that obscure objects behind
+    // Uses fresnel effect to enhance edges, very low opacity to be unobtrusive
+    furnitureOccluderMaterial = SceneMaterial.custom(
+        "furnitureOccluder",
+        arrayOf(
+            SceneMaterialAttribute("occluderColor", SceneMaterialDataType.Vector4),
+            SceneMaterialAttribute("occluderParams", SceneMaterialDataType.Vector4)
+        )
+    ).apply {
+        setBlendMode(BlendMode.TRANSLUCENT)
+        // Dark gray with 0.1 alpha - very subtle
+        setAttribute("occluderColor", Vector4(0.2f, 0.2f, 0.2f, 0.1f))
+        // x = edge boost (0.5), y = fresnel power (2.0), z = darken amount (0.3)
+        setAttribute("occluderParams", Vector4(0.5f, 2.0f, 0.3f, 0f))
+    }
+    Log.d(TAG, "Furniture occluder material initialized (furnitureOccluder shader)")
+
     // Keep wallMaterial for backwards compatibility with manual wall creation
     wallMaterial = edgeBoxMaterial
 
-    // Create AnchorProceduralMesh for FURNITURE ONLY - NOT room bounds
-    // Room bounds (FLOOR, WALL_FACE, CEILING) will use geometry-based edges via onAnchorAdded
+    // Create AnchorProceduralMesh with physics-only furniture colliders (no visual mesh)
+    // Visual debug is handled separately to avoid blocking UI raycasts
     procMeshSpawner = AnchorProceduralMesh(
         mrukFeature,
         mapOf(
-            // Furniture uses edge shader (works well for box-like objects with good UVs)
-            MRUKLabel.TABLE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.COUCH to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.BED to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.LAMP to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.PLANT to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            MRUKLabel.OTHER to AnchorProceduralMeshConfig(furnitureEdgeMaterial, true),
-            // Note: FLOOR, WALL_FACE, CEILING are NOT included here
-            // They will be handled by onAnchorAdded with geometry boxes
+            // Furniture: physics colliders only, no visual mesh (null material)
+            MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.LAMP to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.PLANT to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
         )
     )
-    Log.d(TAG, "AnchorProceduralMesh initialized for furniture with edge shader")
+    Log.d(TAG, "AnchorProceduralMesh initialized with physics-only colliders")
 
     // Register scene event listener to handle room loading events
     sceneEventListener = object : MRUKSceneEventListener {
@@ -1885,6 +1928,7 @@ class ImmersiveActivity : AppSystemActivity() {
         baseColor = Color4(0.2f, 0.5f, 1f, 0.3f)  // Semi-transparent blue
         unlit = true
       })
+      components.add(Visible(isRoomMeshVisible))
     }
 
     val wallEntity = Entity.create(components)
@@ -2515,25 +2559,35 @@ class ImmersiveActivity : AppSystemActivity() {
    * Uses MRUKVolume bounds and getAbsoluteTransform for accurate world-space positioning.
    */
   private fun blockFurnitureInNavGrid(anchorEntity: Entity, anchorPose: Pose, labels: List<String>) {
-    val grid = navGrid ?: return
-
     // Get the absolute world transform for this anchor entity
     val worldTransform = getAbsoluteTransform(anchorEntity)
     val worldPos = worldTransform.t
     val worldRot = worldTransform.q
 
-    // Only include furniture that sits on the ground
+    // Try to get volume/plane bounds for debug visualization
+    val volumeComponent = anchorEntity.tryGetComponent<MRUKVolume>()
+    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+
+    // Always create debug edges (even if NavGrid not ready yet)
+    createFurnitureDebugEdges(worldPos, worldRot, volumeComponent, planeComponent, labels)
+
+    // NavGrid blocking requires grid to exist
+    val grid = navGrid
+    if (grid == null) {
+      Log.d(TAG, "NavGrid not ready, skipping blocking for: $labels (debug edges still created)")
+      return
+    }
+
+    // Only block furniture that sits on the ground
     // Skip wall-mounted/floating items (> 1.5m above floor)
     val floorY = grid.floorY
     val heightAboveFloor = worldPos.y - floorY
     if (heightAboveFloor > 1.5f) {
-      Log.d(TAG, "Skipping wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
+      Log.d(TAG, "Skipping NavGrid blocking for wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
       return
     }
 
-    // Try to get volume bounds first (preferred for 3D furniture)
-    val volumeComponent = anchorEntity.tryGetComponent<MRUKVolume>()
-    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+    // volumeComponent and planeComponent already retrieved above
 
     val localCorners: List<Vector3>
     var furnitureTopHeight: Float  // Height of the furniture's top surface in world space
@@ -2608,10 +2662,183 @@ class ImmersiveActivity : AppSystemActivity() {
     }
 
     // Block the footprint in NavGrid with furniture height (15cm padding)
-    // This allows debug visualization to show purple spheres at furniture height
     grid.blockPolygonWithHeight(worldCorners, furnitureTopHeight, padding = 0.15f)
     Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners at height ${"%.2f".format(furnitureTopHeight)}m")
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
+    // Note: Physics colliders are now created automatically by AnchorProceduralMesh
+
+    // Create debug edge visualization (visual only, no physics/collision)
+    createFurnitureDebugEdges(worldPos, worldRot, volumeComponent, planeComponent, labels)
+  }
+
+  /**
+   * Create furniture occluder visualization.
+   * Uses custom shader with subtle occlusion effect.
+   * Creates a box mesh from the 8 corners (4 bottom cyan, 4 top yellow debug points).
+   */
+  private fun createFurnitureDebugEdges(
+      worldPos: Vector3,
+      worldRot: Quaternion,
+      volumeComponent: MRUKVolume?,
+      planeComponent: MRUKPlane?,
+      labels: List<String>
+  ) {
+    // Calculate 8 corners using same transform as the original working sphere code
+    val bottomLocalCorners: List<Vector3>
+    val topLocalCorners: List<Vector3>
+
+    if (volumeComponent != null) {
+      val min = volumeComponent.min
+      val max = volumeComponent.max
+      bottomLocalCorners = listOf(
+        Vector3(min.x, min.y, min.z),
+        Vector3(max.x, min.y, min.z),
+        Vector3(max.x, max.y, min.z),
+        Vector3(min.x, max.y, min.z)
+      )
+      topLocalCorners = listOf(
+        Vector3(min.x, min.y, max.z),
+        Vector3(max.x, min.y, max.z),
+        Vector3(max.x, max.y, max.z),
+        Vector3(min.x, max.y, max.z)
+      )
+    } else if (planeComponent != null) {
+      val min = planeComponent.min
+      val max = planeComponent.max
+      bottomLocalCorners = listOf(
+        Vector3(min.x, min.y, 0f),
+        Vector3(max.x, min.y, 0f),
+        Vector3(max.x, max.y, 0f),
+        Vector3(min.x, max.y, 0f)
+      )
+      topLocalCorners = listOf(
+        Vector3(min.x, min.y, 0.02f),
+        Vector3(max.x, min.y, 0.02f),
+        Vector3(max.x, max.y, 0.02f),
+        Vector3(min.x, max.y, 0.02f)
+      )
+    } else {
+      bottomLocalCorners = listOf(
+        Vector3(-0.25f, -0.25f, 0f),
+        Vector3(0.25f, -0.25f, 0f),
+        Vector3(0.25f, 0.25f, 0f),
+        Vector3(-0.25f, 0.25f, 0f)
+      )
+      topLocalCorners = listOf(
+        Vector3(-0.25f, -0.25f, 0.5f),
+        Vector3(0.25f, -0.25f, 0.5f),
+        Vector3(0.25f, 0.25f, 0.5f),
+        Vector3(-0.25f, 0.25f, 0.5f)
+      )
+    }
+
+    // Transform local corners to world space (same as original sphere code)
+    fun localToWorld(local: Vector3): Vector3 {
+      val rotated = worldRot.times(local)
+      return Vector3(
+        worldPos.x + rotated.x,
+        worldPos.y + local.z,  // Height direct from local Z
+        worldPos.z + rotated.z
+      )
+    }
+
+    val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
+    val topWorld = topLocalCorners.map { localToWorld(it) }
+
+    // Calculate box center from world corners
+    val allCorners = bottomWorld + topWorld
+    val centerX = allCorners.map { it.x }.average().toFloat()
+    val centerY = allCorners.map { it.y }.average().toFloat()
+    val centerZ = allCorners.map { it.z }.average().toFloat()
+    val worldCenter = Vector3(centerX, centerY, centerZ)
+
+    // Calculate orientation from bottom corners (edge 0->1 gives X direction)
+    val edge0 = bottomWorld[0]
+    val edge1 = bottomWorld[1]
+    val dirX = edge1.x - edge0.x
+    val dirZ = edge1.z - edge0.z
+    val yawAngle = kotlin.math.atan2(dirZ, dirX)
+    val boxRotation = quaternionFromYaw(yawAngle)
+
+    // Calculate box dimensions from world corners
+    // Width = distance along edge 0->1, Depth = distance along edge 0->3
+    val edge3 = bottomWorld[3]
+    val width = kotlin.math.sqrt((dirX * dirX + dirZ * dirZ).toDouble()).toFloat()
+    val depthX = edge3.x - edge0.x
+    val depthZ = edge3.z - edge0.z
+    val depth = kotlin.math.sqrt((depthX * depthX + depthZ * depthZ).toDouble()).toFloat()
+    val height = topWorld[0].y - bottomWorld[0].y
+
+    try {
+      // Create the occluder box mesh using SceneMesh.box with furnitureOccluderMaterial
+      val halfX = width / 2f
+      val halfY = height / 2f
+      val halfZ = depth / 2f
+      val occluderMesh = SceneMesh.box(
+        Vector3(-halfX, -halfY, -halfZ),
+        Vector3(halfX, halfY, halfZ),
+        furnitureOccluderMaterial
+      )
+
+      // Create entity with transform first
+      val occluderEntity = Entity.create(
+        listOf(
+          Transform(Pose(worldCenter, boxRotation)),
+          Visible(isFurnitureOccluderVisible)
+        )
+      )
+
+      // Create SceneObject and attach to entity via SceneObjectSystem
+      val labelName = labels.firstOrNull() ?: "furniture"
+      val sceneObject = SceneObject(scene, occluderMesh, "occluder_${labelName}_${System.currentTimeMillis()}", occluderEntity)
+      systemManager.findSystem<SceneObjectSystem>().addSceneObject(
+        occluderEntity,
+        CompletableFuture<SceneObject>().apply { complete(sceneObject) }
+      )
+
+      furnitureDebugSpheres.add(occluderEntity)
+
+      Log.d(TAG, "Created occluder box for $labelName: size=($width, $height, $depth) yaw=${Math.toDegrees(yawAngle.toDouble())}deg at ($centerX, $centerY, $centerZ)")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to create occluder box: ${e.message}")
+    }
+  }
+
+  /**
+   * Convert quaternion to Euler angles (pitch, yaw, roll) in degrees.
+   */
+  private fun quaternionToEuler(q: Quaternion): Vector3 {
+    // Roll (x-axis rotation)
+    val sinr_cosp = 2f * (q.w * q.x + q.y * q.z)
+    val cosr_cosp = 1f - 2f * (q.x * q.x + q.y * q.y)
+    val roll = kotlin.math.atan2(sinr_cosp, cosr_cosp)
+
+    // Pitch (y-axis rotation)
+    val sinp = 2f * (q.w * q.y - q.z * q.x)
+    val pitch = if (kotlin.math.abs(sinp) >= 1f) {
+      if (sinp > 0) kotlin.math.PI.toFloat() / 2f else -kotlin.math.PI.toFloat() / 2f
+    } else {
+      kotlin.math.asin(sinp)
+    }
+
+    // Yaw (z-axis rotation)
+    val siny_cosp = 2f * (q.w * q.z + q.x * q.y)
+    val cosy_cosp = 1f - 2f * (q.y * q.y + q.z * q.z)
+    val yaw = kotlin.math.atan2(siny_cosp, cosy_cosp)
+
+    // Convert to degrees
+    val toDeg = 180f / kotlin.math.PI.toFloat()
+    return Vector3(pitch * toDeg, yaw * toDeg, roll * toDeg)
+  }
+
+  /**
+   * Extract yaw (Y-axis rotation) from quaternion in radians.
+   * For MRUK furniture, this is the rotation around world Y (vertical axis).
+   */
+  private fun quaternionToYaw(q: Quaternion): Float {
+    val siny_cosp = 2f * (q.w * q.y + q.x * q.z)
+    val cosy_cosp = 1f - 2f * (q.x * q.x + q.y * q.y)
+    return kotlin.math.atan2(siny_cosp, cosy_cosp)
   }
 
   /**
@@ -2860,12 +3087,13 @@ class ImmersiveActivity : AppSystemActivity() {
       val worldOffset = centerPose.q.times(edgeDef.localOffset)
       val worldPos = centerPose.t + worldOffset
 
-      // Create edge entity with transform only (SceneObject handles the mesh)
+      // Create edge entity with transform and visibility (SceneObject handles the mesh)
       val edgePose = Pose(worldPos, centerPose.q)
 
       val entity = Entity.create(
           listOf(
-              Transform(edgePose)
+              Transform(edgePose),
+              Visible(isRoomMeshVisible)
           )
       )
 

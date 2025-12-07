@@ -172,7 +172,42 @@ class FirebaseManager(private val context: Context) {
             colors = colors,
             level = snapshot.child("level").getValue(Int::class.java) ?: 1,
             xp = snapshot.child("xp").getValue(Double::class.java)?.toFloat() ?: 0f,
-            xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Double::class.java)?.toFloat() ?: 1f
+            xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Double::class.java)?.toFloat() ?: 1f,
+            bonesFetched = snapshot.child("bonesFetched").getValue(Int::class.java) ?: 0
         )
+    }
+
+    /**
+     * Increment the bones fetched counter for a pet.
+     * Called when the pet successfully returns a bone to the player.
+     * @param targetUserId The user who owns the pet
+     * @param petFirebaseKey The pet's Firebase key
+     * @param onComplete Callback with the new count, or null on failure
+     */
+    fun incrementBonesFetched(targetUserId: String, petFirebaseKey: String, onComplete: ((Int?) -> Unit)? = null) {
+        val petRef = db.reference
+            .child("users")
+            .child(targetUserId)
+            .child("pets")
+            .child(petFirebaseKey)
+            .child("bonesFetched")
+
+        petRef.get().addOnSuccessListener { snapshot ->
+            val currentCount = snapshot.getValue(Int::class.java) ?: 0
+            val newCount = currentCount + 1
+
+            petRef.setValue(newCount)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Incremented bonesFetched for $petFirebaseKey: $currentCount -> $newCount")
+                    onComplete?.invoke(newCount)
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Error incrementing bonesFetched for $petFirebaseKey", e)
+                    onComplete?.invoke(null)
+                }
+        }.addOnFailureListener { e ->
+            Log.e(TAG, "Error reading bonesFetched for $petFirebaseKey", e)
+            onComplete?.invoke(null)
+        }
     }
 }

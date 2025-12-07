@@ -625,9 +625,12 @@ class PetLocomotion(
                         }
                     }
 
+                    // In OUTSIDE mode, pet should stay at floor + offset height
+                    // (no elevation changes like ROOM mode)
+                    val targetY = floorY + petModelYOffset
                     val newPos = Vector3(
                         currentPos.x + moveX,
-                        currentPos.y,
+                        targetY,
                         currentPos.z + moveZ
                     )
 
@@ -673,7 +676,8 @@ class PetLocomotion(
 
     // Vertical offset for pet model (origin at center, not feet)
     // This raises the pet so its feet are on the surface instead of its center
-    private val petModelYOffset = 0.08f  // Adjust based on pet model height at current scale
+    // Pet scale is 0.2f, model height ~1 unit, so 75% offset = 0.15f
+    private val petModelYOffset = 0.15f  // Raise by 75% of model height to put feet on ground
 
     /**
      * Move pet to target using A* pathfinding with jump support.
@@ -1282,6 +1286,7 @@ class PetLocomotion(
 
                 if (!isActive || !isFetching) {
                     Log.d(TAG, "Fetch cancelled during move to bone")
+                    cancelFetchInternal()
                     return@launch
                 }
 
@@ -1390,6 +1395,7 @@ class PetLocomotion(
 
                 if (!isActive || !isFetching) {
                     Log.d(TAG, "Fetch cancelled during return")
+                    cancelFetchInternal()
                     return@launch
                 }
 
