@@ -5,6 +5,8 @@ import android.provider.Settings
 import android.util.Log
 import com.cybergarden.metapetz.model.PetColors
 import com.cybergarden.metapetz.model.PetData
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
@@ -12,7 +14,20 @@ import com.google.firebase.database.ValueEventListener
 
 class FirebaseManager(private val context: Context) {
 
-    private val db = FirebaseDatabase.getInstance("https://metapet-hackathon-default-rtdb.asia-southeast1.firebasedatabase.app")
+    private val db: FirebaseDatabase
+
+    init {
+        // Initialize Firebase if not already initialized
+        if (FirebaseApp.getApps(context).isEmpty()) {
+            val options = FirebaseOptions.Builder()
+                .setApplicationId("1:000000000000:android:metapetz")
+                .setDatabaseUrl("https://metapet-hackathon-default-rtdb.asia-southeast1.firebasedatabase.app")
+                .build()
+            FirebaseApp.initializeApp(context, options)
+        }
+        db = FirebaseDatabase.getInstance("https://metapet-hackathon-default-rtdb.asia-southeast1.firebasedatabase.app")
+    }
+
     private val TAG = "FirebaseManager"
 
     private val PREFS_NAME = "metapetz_prefs"

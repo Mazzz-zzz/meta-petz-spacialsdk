@@ -68,6 +68,8 @@ fun OptionsPanel(
     onRoomMeshToggle: ((Boolean) -> Unit)? = null,
     isFurnitureOccluderVisible: Boolean = true,
     onFurnitureOccluderToggle: ((Boolean) -> Unit)? = null,
+    onRequestCameraPermission: (() -> Unit)? = null,
+    onOpenBrowser: (() -> Unit)? = null,
     // Debug state values
     isPetAttentive: Boolean = false,
     hasBone: Boolean = false,
@@ -89,6 +91,7 @@ fun OptionsPanel(
     var showPetSelector by remember { mutableStateOf(false) }
     var showAdoptionPrompt by remember { mutableStateOf(false) }
     var showWebBrowser by remember { mutableStateOf(false) }
+    var showQRScanner by remember { mutableStateOf(false) }
     var petIdInput by remember { mutableStateOf("") }
     var claimError by remember { mutableStateOf<String?>(null) }
     var isClaiming by remember { mutableStateOf(false) }
@@ -349,12 +352,25 @@ fun OptionsPanel(
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                 }
+                // Show QR Scanner
+                else if (showQRScanner) {
+                    QRScannerView(
+                        onCodeScanned = { scannedId ->
+                            petIdInput = scannedId
+                            showQRScanner = false
+                            showClaimFlow = true
+                        },
+                        onClose = { showQRScanner = false },
+                        onRequestPermission = onRequestCameraPermission
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 // Show embedded WebView browser for adoption
                 else if (showWebBrowser) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f)
+                            .height(400.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color.White)
                     ) {
@@ -411,7 +427,7 @@ fun OptionsPanel(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f)
+                                .height(320.dp)
                         )
                         // Footer with "I have a pet ID" option
                         Box(
@@ -471,7 +487,11 @@ fun OptionsPanel(
                             label = "Browse Pets",
                             onClick = {
                                 showAdoptionPrompt = false
-                                showWebBrowser = true
+                                if (onOpenBrowser != null) {
+                                    onOpenBrowser()
+                                } else {
+                                    showWebBrowser = true
+                                }
                             }
                         )
                         Spacer(modifier = Modifier.height(8.dp))
@@ -512,28 +532,55 @@ fun OptionsPanel(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // ID input field
-                        BasicTextField(
-                            value = petIdInput,
-                            onValueChange = {
-                                petIdInput = it.uppercase().take(6)
-                                claimError = null
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color.White)
-                                .border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                fontSize = 18.sp,
-                                color = Color.Black,
-                                textAlign = TextAlign.Center
-                            ),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
-                        )
+                        // ID input field with QR scan button
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicTextField(
+                                value = petIdInput,
+                                onValueChange = {
+                                    petIdInput = it.uppercase().take(6)
+                                    claimError = null
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.White)
+                                    .border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    fontSize = 18.sp,
+                                    color = Color.Black,
+                                    textAlign = TextAlign.Center
+                                ),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+                            )
+                            // QR Scan button
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF2196F3))
+                                    .clickable {
+                                        // Request camera permission first
+                                        onRequestCameraPermission?.invoke()
+                                        showClaimFlow = false
+                                        showQRScanner = true
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "QR",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
 
                         // Error message
                         if (claimError != null) {
@@ -1053,3 +1100,91 @@ fun PetInfoPanel(
         }
     }
 }
+
+@Composable
+fun BrowserPanel(
+    onClose: () -> Unit,
+    onEnterPetId: () -> Unit
+) {
+    SpatialTheme(colorScheme = getPanelTheme()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(SpatialTheme.shapes.large)
+                .background(brush = LocalColorScheme.current.panel)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF4CAF50))
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Adopt a Pet",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.White.copy(alpha = 0.2f))
+                            .clickable { onEnterPetId() }
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = "Enter Pet ID",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.White.copy(alpha = 0.3f))
+                            .clickable { onClose() }
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = "Close",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+
+            // WebView - fills remaining space
+            AndroidView(
+                factory = { context ->
+                    WebView(context).apply {
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                if (url?.contains("metapetz.com") == true) {
+                                    return false
+                                }
+                                return true
+                            }
+                        }
+                        webChromeClient = WebChromeClient()
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.loadWithOverviewMode = true
+                        settings.useWideViewPort = true
+                        loadUrl("https://metapetz.com")
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            )
+        }
+    }
+}
+
