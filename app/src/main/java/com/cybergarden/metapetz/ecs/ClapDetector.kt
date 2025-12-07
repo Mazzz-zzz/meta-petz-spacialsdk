@@ -102,6 +102,9 @@ class ClapDetector(
     // Callback when raise hand gesture is detected (for sit command)
     var onRaiseHandDetected: (() -> Unit)? = null
 
+    // Lambda to check if pet is attentive (for gating trigger button accumulation)
+    var isAttentive: (() -> Boolean)? = null
+
     // Callback when hands enter active range (for debug)
     var onHandsTogether: (() -> Unit)? = null
 
@@ -325,6 +328,14 @@ class ClapDetector(
 
         // Detect press (transition from not pressed to pressed)
         if (isGripPressed && !wasGripPressed) {
+            // Only accumulate clap points when pet is NOT attentive (idle/wandering)
+            val petAttentive = isAttentive?.invoke() ?: false
+            if (petAttentive) {
+                Log.d(TAG, "Grip pressed but pet is attentive - ignoring")
+                wasGripPressed = isGripPressed
+                return
+            }
+
             // Start window if not started
             if (windowStartTimeMs == 0L) {
                 windowStartTimeMs = currentTime

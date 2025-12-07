@@ -1308,7 +1308,7 @@ class PetLocomotion(
                 }
 
                 // Verify pet is actually close to bone before picking up
-                val PICKUP_DISTANCE = 0.20f  // Must be within 20cm to pick up
+                val PICKUP_DISTANCE = 0.35f  // Must be within 35cm to pick up (accounts for pathfinding variance)
                 val petPos = pet.tryGetComponent<Transform>()?.transform?.t
                 val currentBonePos = boneEntity.tryGetComponent<Transform>()?.transform?.t
 
@@ -1435,13 +1435,15 @@ class PetLocomotion(
         val bone = fetchTargetBone
         val pet = petEntity
 
-        // Get drop position (in front of pet's current position)
+        // Get drop position (in front of pet's current position, at pet's feet level)
         val dropPos = if (pet != null) {
             val petTransform = pet.tryGetComponent<Transform>()?.transform
             if (petTransform != null) {
                 val petPos = petTransform.t
                 val forward = petTransform.q * Vector3(0f, 0f, 0.15f) // 15cm in front
-                Vector3(petPos.x + forward.x, floorY, petPos.z + forward.z)
+                // Use pet's Y minus offset to get ground level where pet is standing
+                val groundY = petPos.y - petModelYOffset
+                Vector3(petPos.x + forward.x, groundY, petPos.z + forward.z)
             } else {
                 null
             }
@@ -1484,12 +1486,14 @@ class PetLocomotion(
 
         // Clean up mouth bone if it exists
         if (mouthBoneEntity != null) {
-            // Get drop position before destroying
+            // Get drop position before destroying (at pet's feet level)
             val pet = petEntity
             val dropPos = if (pet != null) {
                 val petPos = pet.tryGetComponent<Transform>()?.transform?.t
                 if (petPos != null) {
-                    Vector3(petPos.x, floorY, petPos.z)
+                    // Use pet's Y minus offset to get ground level where pet is standing
+                    val groundY = petPos.y - petModelYOffset
+                    Vector3(petPos.x, groundY, petPos.z)
                 } else null
             } else null
 

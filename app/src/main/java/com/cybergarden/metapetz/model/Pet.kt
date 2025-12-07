@@ -19,7 +19,8 @@ data class PetData(
     val level: Int = 1,
     val xp: Float = 0f,            // XP as decimal (0.0 to 1.0), displayed as percentage
     val xpToNextLevel: Float = 1f, // 1.0 = 100%
-    val bonesFetched: Int = 0      // Total bones successfully fetched and returned
+    val bonesFetched: Int = 0,     // Total bones successfully fetched and returned
+    val userPath: String = ""      // The Firebase user path where this pet lives (e.g., "demoUser")
 )
 
 data class PetColors(

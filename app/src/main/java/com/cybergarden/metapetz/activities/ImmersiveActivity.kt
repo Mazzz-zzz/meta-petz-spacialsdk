@@ -1,3 +1,5 @@
+@file:Suppress("EXPERIMENTAL_API_USAGE", "EXPERIMENTAL_IS_NOT_ENABLED")
+
 package com.cybergarden.metapetz.activities
 
 import android.annotation.SuppressLint
@@ -28,16 +30,25 @@ import com.cybergarden.metapetz.R
 import com.cybergarden.metapetz.ecs.ClapDetector
 import com.cybergarden.metapetz.ecs.NavGrid
 import com.cybergarden.metapetz.ecs.PetLocomotion
+import com.cybergarden.metapetz.ecs.QRCodeSystem
 import androidx.compose.ui.text.font.FontWeight
 import com.cybergarden.metapetz.model.PetData
 import com.cybergarden.metapetz.services.FirebaseManager
+import com.cybergarden.metapetz.services.QRScannerManager
 import com.cybergarden.metapetz.ui.OptionsPanel
 import com.cybergarden.metapetz.ui.PetInfoPanel
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_WIDTH
+import com.cybergarden.metapetz.ui.theme.BROWSER_PANEL_WIDTH
+import com.cybergarden.metapetz.ui.theme.BROWSER_PANEL_HEIGHT
+import com.cybergarden.metapetz.ui.BrowserPanel
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
+import com.meta.spatial.compose.composePanel
+import com.meta.spatial.toolkit.createPanelEntity
+import com.meta.spatial.toolkit.Grabbable
+import com.meta.spatial.toolkit.GrabbableType
 import com.meta.spatial.core.SpatialFeature
 import com.meta.spatial.datamodelinspector.DataModelInspectorFeature
 import com.meta.spatial.debugtools.HotReloadFeature
@@ -78,6 +89,7 @@ import com.meta.spatial.runtime.SemanticType
 import com.meta.spatial.mruk.MRUKFeature
 import com.meta.spatial.mruk.MRUKLoadDeviceResult
 import com.meta.spatial.mruk.MRUKStartEnvrionmentRaycasterResult
+import com.meta.spatial.mruk.MRUKStartTrackerResult
 import com.meta.spatial.mruk.MRUKAnchor
 import com.meta.spatial.mruk.MRUKRoom
 import com.meta.spatial.mruk.MRUKLabel
@@ -86,6 +98,8 @@ import com.meta.spatial.mruk.AnchorProceduralMesh
 import com.meta.spatial.mruk.AnchorProceduralMeshConfig
 import com.meta.spatial.mruk.MRUKPlane
 import com.meta.spatial.mruk.MRUKVolume
+import com.meta.spatial.mruk.Tracker
+import com.meta.spatial.core.SpatialSDKExperimentalAPI
 import com.meta.spatial.toolkit.getAbsoluteTransform
 import java.util.concurrent.CompletableFuture
 import com.meta.spatial.core.Entity
@@ -137,6 +151,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private var isDebugGridEnabled by mutableStateOf(false)
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
+  private var showBrowserPanel by mutableStateOf(false)
+  private var browserPanelEntity: Entity? = null
   private var boneEntity: Entity? = null
   private var boneHand: Entity? = null
   private var boneSampleJob: Job? = null
@@ -291,6 +307,8 @@ class ImmersiveActivity : AppSystemActivity() {
   // Clap detector for calling pet's attention and raise hand for sit
   private val clapDetector: ClapDetector by lazy {
     ClapDetector(activityScope, systemManager).apply {
+      // Only accumulate trigger button points when pet is NOT attentive (idle)
+      isAttentive = { isPetAttentive }
       // Play bone sound when cumulative displacement threshold reached
       onClapDetected = {
         val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
@@ -325,12 +343,16 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "Pet started walking")
       }
       onWalkEnd = {
-        // Reset attention timeout - pet keeps attention until timeout
-        Log.d(TAG, "Pet finished walking - resetting attention timeout")
-        resetAttentionTimeout()
+        // Don't reset attention timeout during fetch - fetch coroutine manages its own state
+        if (currentActivity != AttentionActivity.FETCHING) {
+          Log.d(TAG, "Pet finished walking - resetting attention timeout")
+          resetAttentionTimeout()
+        } else {
+          Log.d(TAG, "Pet finished walking during fetch - skipping timeout reset")
+        }
       }
-      // Tell PetLocomotion about our attention state
-      isAttentive = { isPetAttentive }
+      // Tell PetLocomotion about attention state - only accept move commands when FACING_PLAYER
+      isAttentive = { isPetAttentive && currentActivity == AttentionActivity.FACING_PLAYER }
       // Provide head entity for fetch return
       getHeadEntity = { this@ImmersiveActivity.getHeadEntity() }
       // Fetch callbacks
@@ -447,15 +469,27 @@ class ImmersiveActivity : AppSystemActivity() {
     FirebaseManager(applicationContext).also { it.updateLastActive() }
   }
 
+  // QR Code System using MRUK tracker
+  private lateinit var qrCodeSystem: QRCodeSystem
+  private var qrScanCallback: ((String?) -> Unit)? = null
+  private var isQRScanning by mutableStateOf(false)
+
   companion object {
     private const val TAG = "ImmersiveActivity"
     private const val SCENE_PERMISSION = "com.oculus.permission.USE_SCENE"
     private const val SCENE_PERMISSION_REQUEST = 1002
+    private const val CAMERA_PERMISSION = android.Manifest.permission.CAMERA
+    private const val CAMERA_PERMISSION_REQUEST = 1003
+    private const val HEADSET_CAMERA_PERMISSION = "horizonos.permission.HEADSET_CAMERA"
+    private const val HEADSET_CAMERA_PERMISSION_REQUEST = 1004
     const val EDGE_THICKNESS = 0.02f // 2cm edge thickness for room bounds
   }
 
   // MRUK Feature for scene-aware raycasting
   private lateinit var mrukFeature: MRUKFeature
+
+  // QR Scanner using Camera2 + ML Kit (more reliable than MRUK QR tracker)
+  private var qrScannerManager: QRScannerManager? = null
 
   // Pet model file paths in assets
   private val petModels = mapOf(
@@ -496,6 +530,22 @@ class ImmersiveActivity : AppSystemActivity() {
     // Register grabbable component for ISDK grabbing
     componentManager.registerComponent<IsdkGrabbable>(IsdkGrabbable.Companion)
     checkAndRequestScenePermission()
+    requestCameraPermission()  // Request camera permission at startup
+
+    // Initialize QR Code System using MRUK tracker
+    qrCodeSystem = QRCodeSystem { petId ->
+      // QR code detected - call the callback on main thread
+      runOnUiThread {
+        Log.d(TAG, "QR Code callback with pet ID: $petId")
+        isQRScanning = false
+        qrScanCallback?.invoke(petId)
+        qrScanCallback = null
+        // Stop the tracker after successful scan
+        mrukFeature.stopTrackers()
+      }
+    }
+    systemManager.registerSystem(qrCodeSystem)
+    Log.d(TAG, "QRCodeSystem registered")
 
     // Enable MR mode
     systemManager.findSystem<LocomotionSystem>().enableLocomotion(false)
@@ -524,6 +574,108 @@ class ImmersiveActivity : AppSystemActivity() {
       Log.d(TAG, "Permission ALREADY granted")
       scenePermissionGranted = true
     }
+  }
+
+  fun requestCameraPermission() {
+    Log.d(TAG, "=== CHECKING CAMERA PERMISSION ===")
+    val currentPermission = ContextCompat.checkSelfPermission(this, CAMERA_PERMISSION)
+    if (currentPermission != PackageManager.PERMISSION_GRANTED) {
+      Log.d(TAG, "Camera permission NOT granted - requesting...")
+      ActivityCompat.requestPermissions(this, arrayOf(CAMERA_PERMISSION), CAMERA_PERMISSION_REQUEST)
+    } else {
+      Log.d(TAG, "Camera permission ALREADY granted")
+    }
+  }
+
+  private fun startQRScan(onResult: (String?) -> Unit) {
+    Log.d(TAG, "Starting QR scan with Camera2 + ML Kit...")
+
+    // Check headset camera permission first
+    if (checkSelfPermission(HEADSET_CAMERA_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+      Log.w(TAG, "Headset camera permission not granted, requesting...")
+      qrScanCallback = onResult
+      requestPermissions(arrayOf(HEADSET_CAMERA_PERMISSION), HEADSET_CAMERA_PERMISSION_REQUEST)
+      return
+    }
+
+    // Initialize scanner if needed
+    if (qrScannerManager == null) {
+      qrScannerManager = QRScannerManager(this)
+      if (!qrScannerManager!!.initialize()) {
+        Log.e(TAG, "Failed to initialize QR scanner")
+        onResult(null)
+        return
+      }
+    }
+
+    isQRScanning = true
+    qrScanCallback = onResult
+
+    qrScannerManager?.startScanning { result ->
+      runOnUiThread {
+        Log.d(TAG, "QR scan result: $result")
+        isQRScanning = false
+        qrScanCallback?.invoke(result)
+        qrScanCallback = null
+      }
+    }
+  }
+
+  private fun stopQRScan() {
+    Log.d(TAG, "Stopping QR scan...")
+    isQRScanning = false
+    qrScanCallback = null
+    qrScannerManager?.stopScanning()
+  }
+
+  private var browserPanelId = 9000  // Counter for dynamic panel IDs
+
+  private fun openBrowserPanel() {
+    Log.d(TAG, "Opening browser panel")
+    showBrowserPanel = true
+
+    if (browserPanelEntity == null) {
+      // Position panel in front of the user at eye level
+      val position = Vector3(0f, 1.4f, -1.2f)
+      val panelId = browserPanelId++
+
+      // First register the panel dynamically
+      registerPanel(
+        PanelRegistration(panelId) {
+          config {
+            width = BROWSER_PANEL_WIDTH
+            height = BROWSER_PANEL_HEIGHT
+            layoutWidthInDp = BROWSER_PANEL_WIDTH * 1000  // Convert meters to dp
+            themeResourceId = R.style.PanelAppThemeTransparent
+          }
+          composePanel {
+            setContent {
+              BrowserPanel(
+                onClose = ::closeBrowserPanel,
+                onEnterPetId = { closeBrowserPanel() }
+              )
+            }
+          }
+        }
+      )
+
+      // Then create the panel entity
+      browserPanelEntity = Entity.createPanelEntity(
+        panelId,
+        Transform(Pose(position, Quaternion(1f, 0f, 0f, 0f))),
+        Grabbable(true, GrabbableType.FACE)
+      )
+      Log.d(TAG, "Browser panel entity created at $position with ID $panelId")
+    }
+  }
+
+  private fun closeBrowserPanel() {
+    Log.d(TAG, "Closing browser panel")
+    showBrowserPanel = false
+
+    browserPanelEntity?.destroy()
+    browserPanelEntity = null
+    Log.d(TAG, "Browser panel entity destroyed")
   }
 
   private fun loadSceneFromDevice() {
@@ -785,6 +937,19 @@ class ImmersiveActivity : AppSystemActivity() {
           Log.e(TAG, "Scene permission DENIED - grantResults: ${grantResults.toList()}")
         }
       }
+      HEADSET_CAMERA_PERMISSION_REQUEST -> {
+        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+          Log.d(TAG, "Headset camera permission GRANTED - starting QR scan")
+          // If we have a pending callback, start the scan
+          qrScanCallback?.let { callback ->
+            startQRScan(callback)
+          }
+        } else {
+          Log.e(TAG, "Headset camera permission DENIED")
+          qrScanCallback?.invoke(null)
+          qrScanCallback = null
+        }
+      }
     }
   }
 
@@ -834,7 +999,7 @@ class ImmersiveActivity : AppSystemActivity() {
       activityScope.launch {
         try {
           // Create entity with GLB mesh as a child of the panel
-          // Initial rotation: 180° around X-axis to flip upright
+          // Initial rotation: 180� around X-axis to flip upright
           val xFlipRadians = PI.toFloat()
           val initialRotation = Quaternion(
               kotlin.math.sin(xFlipRadians / 2).toFloat(),
@@ -949,7 +1114,7 @@ class ImmersiveActivity : AppSystemActivity() {
           // Quaternion for Y-axis rotation (spinning)
           val qy = Quaternion(0f, kotlin.math.sin(yRotRadians / 2), 0f, kotlin.math.cos(yRotRadians / 2))
 
-          // All pets need 180° X-axis flip to orient upright
+          // All pets need 180� X-axis flip to orient upright
           val xFlipRadians = PI.toFloat()
           val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
           // Combine rotations: first flip, then spin (qy * qx)
@@ -1147,7 +1312,7 @@ class ImmersiveActivity : AppSystemActivity() {
     val wallSize = Vector3(width, height, roomWallThickness)
     val wallRotation = Quaternion(0f, rotation, 0f)
 
-    Log.d(TAG, "Creating $name at $position, size=$wallSize, rotation=$rotation°")
+    Log.d(TAG, "Creating $name at $position, size=$wallSize, rotation=$rotation�")
 
     // Physics collider (invisible)
     val physicsEntity = Entity.create(
@@ -1314,18 +1479,18 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun logMrukRoomData() {
     val rooms = mrukFeature.rooms
     Log.d(TAG, "")
-    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+    Log.d(TAG, "---------------------------------------------------------------")
     Log.d(TAG, "MRUK DATA: ${rooms.size} room(s) found")
-    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+    Log.d(TAG, "---------------------------------------------------------------")
 
     rooms.forEachIndexed { roomIndex, room ->
       Log.d(TAG, "")
-      Log.d(TAG, "┌─────────────────────────────────────────────────────────────┐")
-      Log.d(TAG, "│ ROOM $roomIndex                                              │")
-      Log.d(TAG, "├─────────────────────────────────────────────────────────────┤")
-      Log.d(TAG, "│ Room anchor UUID: ${room.anchor.uuid}")
-      Log.d(TAG, "│ Anchors count: ${room.anchors.size}")
-      Log.d(TAG, "└─────────────────────────────────────────────────────────────┘")
+      Log.d(TAG, "+-------------------------------------------------------------+")
+      Log.d(TAG, "� ROOM $roomIndex                                              �")
+      Log.d(TAG, "+-------------------------------------------------------------�")
+      Log.d(TAG, "� Room anchor UUID: ${room.anchor.uuid}")
+      Log.d(TAG, "� Anchors count: ${room.anchors.size}")
+      Log.d(TAG, "+-------------------------------------------------------------+")
 
       // Log each anchor
       room.anchors.forEachIndexed { anchorIndex, anchorEntity ->
@@ -1334,23 +1499,23 @@ class ImmersiveActivity : AppSystemActivity() {
 
         if (mrukAnchor != null) {
           Log.d(TAG, "")
-          Log.d(TAG, "  ┌── ANCHOR $anchorIndex ──────────────────────────────────────")
-          Log.d(TAG, "  │ UUID: ${mrukAnchor.uuid}")
+          Log.d(TAG, "  +-- ANCHOR $anchorIndex --------------------------------------")
+          Log.d(TAG, "  � UUID: ${mrukAnchor.uuid}")
 
           // Transform
           if (transform != null) {
-            Log.d(TAG, "  │ Position: (${String.format("%.3f", transform.t.x)}, ${String.format("%.3f", transform.t.y)}, ${String.format("%.3f", transform.t.z)})")
-            Log.d(TAG, "  │ Rotation: (${String.format("%.3f", transform.q.x)}, ${String.format("%.3f", transform.q.y)}, ${String.format("%.3f", transform.q.z)}, ${String.format("%.3f", transform.q.w)})")
+            Log.d(TAG, "  � Position: (${String.format("%.3f", transform.t.x)}, ${String.format("%.3f", transform.t.y)}, ${String.format("%.3f", transform.t.z)})")
+            Log.d(TAG, "  � Rotation: (${String.format("%.3f", transform.q.x)}, ${String.format("%.3f", transform.q.y)}, ${String.format("%.3f", transform.q.z)}, ${String.format("%.3f", transform.q.w)})")
           }
 
           // Try to get all component types on this anchor to see what's available
-          Log.d(TAG, "  │ Components:")
-          Log.d(TAG, "  │   - Has MRUKAnchor: true")
-          Log.d(TAG, "  │   - Has Transform: ${anchorEntity.hasComponent<Transform>()}")
-          Log.d(TAG, "  │   - Has Box: ${anchorEntity.hasComponent<Box>()}")
-          Log.d(TAG, "  │   - Has Physics: ${anchorEntity.hasComponent<Physics>()}")
+          Log.d(TAG, "  � Components:")
+          Log.d(TAG, "  �   - Has MRUKAnchor: true")
+          Log.d(TAG, "  �   - Has Transform: ${anchorEntity.hasComponent<Transform>()}")
+          Log.d(TAG, "  �   - Has Box: ${anchorEntity.hasComponent<Box>()}")
+          Log.d(TAG, "  �   - Has Physics: ${anchorEntity.hasComponent<Physics>()}")
 
-          Log.d(TAG, "  └────────────────────────────────────────────────────────────")
+          Log.d(TAG, "  +------------------------------------------------------------")
         } else {
           Log.d(TAG, "  [ANCHOR $anchorIndex] No MRUKAnchor component")
           if (transform != null) {
@@ -1361,9 +1526,9 @@ class ImmersiveActivity : AppSystemActivity() {
     }
 
     Log.d(TAG, "")
-    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+    Log.d(TAG, "---------------------------------------------------------------")
     Log.d(TAG, "END MRUK DATA")
-    Log.d(TAG, "═══════════════════════════════════════════════════════════════")
+    Log.d(TAG, "---------------------------------------------------------------")
   }
 
   /**
@@ -1498,6 +1663,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       onSetupRoom = ::setupRoom,
                       onScanRoom = ::scanRoom,
                       onQuit = ::quitApp,
+                      onMinimize = ::minimizeApp,
                       firebaseManager = firebaseManager,
                       isEnvironmentSetup = isEnvironmentSetup,
                       isRoomMode = isRoomMode,
@@ -1507,6 +1673,11 @@ class ImmersiveActivity : AppSystemActivity() {
                       onRoomMeshToggle = ::toggleRoomMesh,
                       isFurnitureOccluderVisible = isFurnitureOccluderVisible,
                       onFurnitureOccluderToggle = ::toggleFurnitureOccluder,
+                      onRequestCameraPermission = ::requestCameraPermission,
+                      onOpenBrowser = ::openBrowserPanel,
+                      onStartQRScan = ::startQRScan,
+                      onStopQRScan = ::stopQRScan,
+                      isQRScanning = isQRScanning,
                       isPetAttentive = isPetAttentive,
                       hasBone = petHasBone,
                       // Fetch debug states
@@ -1552,6 +1723,9 @@ class ImmersiveActivity : AppSystemActivity() {
     roomColliderEntities.clear()
     // Destroy procedural mesh spawner
     procMeshSpawner?.destroy()
+    // Clean up QR scanner
+    qrScannerManager?.dispose()
+    qrScannerManager = null
     super.onSpatialShutdown()
   }
 
@@ -1561,6 +1735,18 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun quitApp() {
     Log.d(TAG, "Quitting app...")
     finish()
+  }
+
+  /**
+   * Minimize the app to show Quest home/system menu.
+   */
+  private fun minimizeApp() {
+    Log.d(TAG, "Minimizing app to show Quest home...")
+    val homeIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+      addCategory(android.content.Intent.CATEGORY_HOME)
+      addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    startActivity(homeIntent)
   }
 
   /**
@@ -3220,3 +3406,4 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
 }
+
