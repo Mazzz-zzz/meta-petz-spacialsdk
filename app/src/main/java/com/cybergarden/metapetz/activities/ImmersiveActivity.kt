@@ -179,7 +179,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private val pendingWalls = mutableListOf<PendingWall>()
 
   // Debug visibility toggles (reactive for Compose UI)
-  private var isRoomMeshVisible by mutableStateOf(true)
+  private var isRoomMeshVisible by mutableStateOf(false)  // Room mesh (walls/floor) hidden by default
+  private var isFurnitureOccluderVisible by mutableStateOf(true)  // Furniture occluders shown by default
 
   // Labels that represent room bounds (walls, floor, ceiling)
   private val roomBoundsLabels = setOf(MRUKLabel.WALL_FACE, MRUKLabel.FLOOR, MRUKLabel.CEILING)
@@ -1460,6 +1461,8 @@ class ImmersiveActivity : AppSystemActivity() {
                       onDebugGridToggle = ::toggleDebugGrid,
                       isRoomMeshVisible = isRoomMeshVisible,
                       onRoomMeshToggle = ::toggleRoomMesh,
+                      isFurnitureOccluderVisible = isFurnitureOccluderVisible,
+                      onFurnitureOccluderToggle = ::toggleFurnitureOccluder,
                       isPetAttentive = isPetAttentive,
                       hasBone = petHasBone,
                       // Fetch debug states
@@ -1532,7 +1535,7 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Toggle the room mesh visibility (walls, floor, furniture).
+   * Toggle the room mesh visibility (walls, floor, ceiling edges).
    * Physics colliders remain active regardless of visibility - only visual meshes toggle.
    */
   private fun toggleRoomMesh(visible: Boolean) {
@@ -1548,15 +1551,25 @@ class ImmersiveActivity : AppSystemActivity() {
     for (entity in roomColliderEntities) {
       entity.setComponent(Visible(visible))
     }
+    Log.d(TAG, "Toggled ${roomEdgeEntities.size + roomColliderEntities.size} room mesh entities visibility: $visible")
+  }
 
-    // Toggle visibility of furniture debug edge visualization
+  /**
+   * Toggle the furniture occluder visibility.
+   * These are the box meshes that occlude objects behind furniture.
+   */
+  private fun toggleFurnitureOccluder(visible: Boolean) {
+    Log.d(TAG, "Toggle furniture occluder visibility: $visible")
+    isFurnitureOccluderVisible = visible
+
+    // Toggle visibility of furniture occluder boxes
     for (entity in furnitureDebugSpheres) {
       entity.setComponent(Visible(visible))
     }
     for (entity in furniturePhysicsBoxes) {
       entity.setComponent(Visible(visible))
     }
-    Log.d(TAG, "Toggled ${furnitureDebugSpheres.size + furniturePhysicsBoxes.size} furniture debug entities visibility: $visible")
+    Log.d(TAG, "Toggled ${furnitureDebugSpheres.size + furniturePhysicsBoxes.size} furniture occluder entities visibility: $visible")
   }
 
   /**
@@ -2747,7 +2760,7 @@ class ImmersiveActivity : AppSystemActivity() {
       val occluderEntity = Entity.create(
         listOf(
           Transform(Pose(worldCenter, boxRotation)),
-          Visible(isRoomMeshVisible)
+          Visible(isFurnitureOccluderVisible)
         )
       )
 
