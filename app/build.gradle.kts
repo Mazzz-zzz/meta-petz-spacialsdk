@@ -60,7 +60,16 @@ android {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
   }
-  kotlinOptions { jvmTarget = "17" }
+  kotlinOptions {
+    jvmTarget = "17"
+    freeCompilerArgs += listOf(
+      "-opt-in=kotlin.RequiresOptIn",
+      "-Xsuppress-version-warnings"
+    )
+  }
+  tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    kotlinOptions.freeCompilerArgs += "-Xallow-unstable-dependencies"
+  }
 }
 
 //noinspection UseTomlInstead
@@ -119,8 +128,8 @@ dependencies {
   implementation("androidx.camera:camera-lifecycle:1.3.1")
   implementation("androidx.camera:camera-view:1.3.1")
 
-  // ML Kit Barcode Scanning for QR codes
-  implementation("com.google.mlkit:barcode-scanning:17.2.0")
+  // ZXing for QR code scanning (pure Java, no Google Play Services needed)
+  implementation("com.google.zxing:core:3.5.2")
 }
 
 val projectDir = layout.projectDirectory

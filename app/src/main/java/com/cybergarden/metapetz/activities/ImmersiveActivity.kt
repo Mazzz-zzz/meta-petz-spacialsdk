@@ -1,3 +1,5 @@
+@file:Suppress("EXPERIMENTAL_API_USAGE", "EXPERIMENTAL_IS_NOT_ENABLED")
+
 package com.cybergarden.metapetz.activities
 
 import android.annotation.SuppressLint
@@ -28,9 +30,11 @@ import com.cybergarden.metapetz.R
 import com.cybergarden.metapetz.ecs.ClapDetector
 import com.cybergarden.metapetz.ecs.NavGrid
 import com.cybergarden.metapetz.ecs.PetLocomotion
+import com.cybergarden.metapetz.ecs.QRCodeSystem
 import androidx.compose.ui.text.font.FontWeight
 import com.cybergarden.metapetz.model.PetData
 import com.cybergarden.metapetz.services.FirebaseManager
+import com.cybergarden.metapetz.services.QRScannerManager
 import com.cybergarden.metapetz.ui.OptionsPanel
 import com.cybergarden.metapetz.ui.PetInfoPanel
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
@@ -85,6 +89,7 @@ import com.meta.spatial.runtime.SemanticType
 import com.meta.spatial.mruk.MRUKFeature
 import com.meta.spatial.mruk.MRUKLoadDeviceResult
 import com.meta.spatial.mruk.MRUKStartEnvrionmentRaycasterResult
+import com.meta.spatial.mruk.MRUKStartTrackerResult
 import com.meta.spatial.mruk.MRUKAnchor
 import com.meta.spatial.mruk.MRUKRoom
 import com.meta.spatial.mruk.MRUKLabel
@@ -93,6 +98,8 @@ import com.meta.spatial.mruk.AnchorProceduralMesh
 import com.meta.spatial.mruk.AnchorProceduralMeshConfig
 import com.meta.spatial.mruk.MRUKPlane
 import com.meta.spatial.mruk.MRUKVolume
+import com.meta.spatial.mruk.Tracker
+import com.meta.spatial.core.SpatialSDKExperimentalAPI
 import com.meta.spatial.toolkit.getAbsoluteTransform
 import java.util.concurrent.CompletableFuture
 import com.meta.spatial.core.Entity
@@ -441,17 +448,27 @@ class ImmersiveActivity : AppSystemActivity() {
     FirebaseManager(applicationContext).also { it.updateLastActive() }
   }
 
+  // QR Code System using MRUK tracker
+  private lateinit var qrCodeSystem: QRCodeSystem
+  private var qrScanCallback: ((String?) -> Unit)? = null
+  private var isQRScanning by mutableStateOf(false)
+
   companion object {
     private const val TAG = "ImmersiveActivity"
     private const val SCENE_PERMISSION = "com.oculus.permission.USE_SCENE"
     private const val SCENE_PERMISSION_REQUEST = 1002
     private const val CAMERA_PERMISSION = android.Manifest.permission.CAMERA
     private const val CAMERA_PERMISSION_REQUEST = 1003
+    private const val HEADSET_CAMERA_PERMISSION = "horizonos.permission.HEADSET_CAMERA"
+    private const val HEADSET_CAMERA_PERMISSION_REQUEST = 1004
     const val EDGE_THICKNESS = 0.02f // 2cm edge thickness for room bounds
   }
 
   // MRUK Feature for scene-aware raycasting
   private lateinit var mrukFeature: MRUKFeature
+
+  // QR Scanner using Camera2 + ML Kit (more reliable than MRUK QR tracker)
+  private var qrScannerManager: QRScannerManager? = null
 
   // Pet model file paths in assets
   private val petModels = mapOf(
@@ -494,6 +511,21 @@ class ImmersiveActivity : AppSystemActivity() {
     checkAndRequestScenePermission()
     requestCameraPermission()  // Request camera permission at startup
 
+    // Initialize QR Code System using MRUK tracker
+    qrCodeSystem = QRCodeSystem { petId ->
+      // QR code detected - call the callback on main thread
+      runOnUiThread {
+        Log.d(TAG, "QR Code callback with pet ID: $petId")
+        isQRScanning = false
+        qrScanCallback?.invoke(petId)
+        qrScanCallback = null
+        // Stop the tracker after successful scan
+        mrukFeature.stopTrackers()
+      }
+    }
+    systemManager.registerSystem(qrCodeSystem)
+    Log.d(TAG, "QRCodeSystem registered")
+
     // Enable MR mode
     systemManager.findSystem<LocomotionSystem>().enableLocomotion(false)
     scene.enablePassthrough(true)
@@ -532,6 +564,47 @@ class ImmersiveActivity : AppSystemActivity() {
     } else {
       Log.d(TAG, "Camera permission ALREADY granted")
     }
+  }
+
+  private fun startQRScan(onResult: (String?) -> Unit) {
+    Log.d(TAG, "Starting QR scan with Camera2 + ML Kit...")
+
+    // Check headset camera permission first
+    if (checkSelfPermission(HEADSET_CAMERA_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+      Log.w(TAG, "Headset camera permission not granted, requesting...")
+      qrScanCallback = onResult
+      requestPermissions(arrayOf(HEADSET_CAMERA_PERMISSION), HEADSET_CAMERA_PERMISSION_REQUEST)
+      return
+    }
+
+    // Initialize scanner if needed
+    if (qrScannerManager == null) {
+      qrScannerManager = QRScannerManager(this)
+      if (!qrScannerManager!!.initialize()) {
+        Log.e(TAG, "Failed to initialize QR scanner")
+        onResult(null)
+        return
+      }
+    }
+
+    isQRScanning = true
+    qrScanCallback = onResult
+
+    qrScannerManager?.startScanning { result ->
+      runOnUiThread {
+        Log.d(TAG, "QR scan result: $result")
+        isQRScanning = false
+        qrScanCallback?.invoke(result)
+        qrScanCallback = null
+      }
+    }
+  }
+
+  private fun stopQRScan() {
+    Log.d(TAG, "Stopping QR scan...")
+    isQRScanning = false
+    qrScanCallback = null
+    qrScannerManager?.stopScanning()
   }
 
   private var browserPanelId = 9000  // Counter for dynamic panel IDs
@@ -841,6 +914,19 @@ class ImmersiveActivity : AppSystemActivity() {
           loadSceneFromDevice()
         } else {
           Log.e(TAG, "Scene permission DENIED - grantResults: ${grantResults.toList()}")
+        }
+      }
+      HEADSET_CAMERA_PERMISSION_REQUEST -> {
+        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+          Log.d(TAG, "Headset camera permission GRANTED - starting QR scan")
+          // If we have a pending callback, start the scan
+          qrScanCallback?.let { callback ->
+            startQRScan(callback)
+          }
+        } else {
+          Log.e(TAG, "Headset camera permission DENIED")
+          qrScanCallback?.invoke(null)
+          qrScanCallback = null
         }
       }
     }
@@ -1568,6 +1654,9 @@ class ImmersiveActivity : AppSystemActivity() {
                       onFurnitureOccluderToggle = ::toggleFurnitureOccluder,
                       onRequestCameraPermission = ::requestCameraPermission,
                       onOpenBrowser = ::openBrowserPanel,
+                      onStartQRScan = ::startQRScan,
+                      onStopQRScan = ::stopQRScan,
+                      isQRScanning = isQRScanning,
                       isPetAttentive = isPetAttentive,
                       hasBone = petHasBone,
                       // Fetch debug states
@@ -1613,6 +1702,9 @@ class ImmersiveActivity : AppSystemActivity() {
     roomColliderEntities.clear()
     // Destroy procedural mesh spawner
     procMeshSpawner?.destroy()
+    // Clean up QR scanner
+    qrScannerManager?.dispose()
+    qrScannerManager = null
     super.onSpatialShutdown()
   }
 

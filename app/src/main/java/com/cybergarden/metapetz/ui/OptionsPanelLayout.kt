@@ -71,6 +71,9 @@ fun OptionsPanel(
     onFurnitureOccluderToggle: ((Boolean) -> Unit)? = null,
     onRequestCameraPermission: (() -> Unit)? = null,
     onOpenBrowser: (() -> Unit)? = null,
+    onStartQRScan: ((onResult: (String?) -> Unit) -> Unit)? = null,
+    onStopQRScan: (() -> Unit)? = null,
+    isQRScanning: Boolean = false,
     // Debug state values
     isPetAttentive: Boolean = false,
     hasBone: Boolean = false,
@@ -355,15 +358,86 @@ fun OptionsPanel(
                 }
                 // Show QR Scanner
                 else if (showQRScanner) {
-                    QRScannerView(
-                        onCodeScanned = { scannedId ->
-                            petIdInput = scannedId
-                            showQRScanner = false
-                            showClaimFlow = true
-                        },
-                        onClose = { showQRScanner = false },
-                        onRequestPermission = onRequestCameraPermission
-                    )
+                    // LaunchedEffect to start scanning when entering this mode
+                    LaunchedEffect(showQRScanner) {
+                        if (showQRScanner && onStartQRScan != null) {
+                            onStartQRScan { result ->
+                                if (result != null) {
+                                    petIdInput = result
+                                    showQRScanner = false
+                                    showClaimFlow = true
+                                }
+                            }
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black)
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = if (isQRScanning) "Scanning for QR code..." else "QR Scanner",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        if (isQRScanning) {
+                            // Show scanning indicator
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF2196F3)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Point headset camera at QR code",
+                                color = Color.Gray,
+                                fontSize = 12.sp
+                            )
+                        } else {
+                            // Show Start Scan button when not scanning
+                            Text(
+                                text = "Press Start to begin scanning",
+                                color = Color.Gray,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            PrimaryButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                label = "Start Scan",
+                                onClick = {
+                                    Log.d("OptionsPanel", "Start Scan button clicked")
+                                    onStartQRScan?.invoke { result ->
+                                        Log.d("OptionsPanel", "QR scan result: $result")
+                                        if (result != null) {
+                                            petIdInput = result
+                                            showQRScanner = false
+                                            showClaimFlow = true
+                                        }
+                                    }
+                                }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        SecondaryButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = if (isQRScanning) "Cancel Scan" else "Close",
+                            onClick = {
+                                if (isQRScanning) {
+                                    onStopQRScan?.invoke()
+                                }
+                                showQRScanner = false
+                            }
+                        )
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
                 }
                 // Show embedded WebView browser for adoption
