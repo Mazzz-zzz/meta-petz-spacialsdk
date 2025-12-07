@@ -33,6 +33,10 @@ import com.meta.spatial.uiset.button.PrimaryButton
 import com.meta.spatial.uiset.button.SecondaryButton
 import com.meta.spatial.uiset.theme.LocalColorScheme
 import com.meta.spatial.uiset.theme.SpatialTheme
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.input.KeyboardType
 
 @Composable
 @Preview(
@@ -71,19 +75,35 @@ fun OptionsPanel(
     returningBone: Boolean = false
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
+    var claimedPet by remember { mutableStateOf<PetData?>(null) }
     var isLoadingDemoPet by remember { mutableStateOf(true) }
-    var spawnCooldownRemaining by remember { mutableStateOf(0) }  // Seconds remaining in cooldown
+    var isLoadingClaimedPet by remember { mutableStateOf(true) }
+    var spawnCooldownRemaining by remember { mutableStateOf(0) }
 
-    // Load first pet from "demoUser" user on mount
+    // Claim flow state
+    var showClaimFlow by remember { mutableStateOf(false) }
+    var petIdInput by remember { mutableStateOf("") }
+    var claimError by remember { mutableStateOf<String?>(null) }
+    var isClaiming by remember { mutableStateOf(false) }
+
+    // Load demo pet and claimed pet on mount
     LaunchedEffect(firebaseManager) {
         if (firebaseManager != null) {
+            // Load demo pet
             firebaseManager.getFirstPetFromUser("demoUser") { petData ->
                 demoPet = petData
                 isLoadingDemoPet = false
                 Log.d("OptionsPanel", "Demo pet loaded: ${petData?.name}")
             }
+            // Load claimed pet (if any)
+            firebaseManager.loadClaimedPet { petData ->
+                claimedPet = petData
+                isLoadingClaimedPet = false
+                Log.d("OptionsPanel", "Claimed pet loaded: ${petData?.name}")
+            }
         } else {
             isLoadingDemoPet = false
+            isLoadingClaimedPet = false
         }
     }
 
@@ -230,40 +250,170 @@ fun OptionsPanel(
             Spacer(modifier = Modifier.height(8.dp))
 
             if (isEnvironmentSetup) {
-                // Spawn Dog button
-                if (demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
-                    val isOnCooldown = spawnCooldownRemaining > 0
-                    PrimaryButton(
+                val isOnCooldown = spawnCooldownRemaining > 0
+                val hasClaimedPet = claimedPet != null
+
+                // Show claim flow dialog
+                if (showClaimFlow) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .then(if (isOnCooldown) Modifier.alpha(0.5f) else Modifier),
-                        label = if (isOnCooldown) "Spawning... (${spawnCooldownRemaining}s)" else "Spawn Dog",
-                        onClick = {
-                            if (isOnCooldown) return@PrimaryButton
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.1f))
+                            .padding(16.dp)
+                    ) {
+                        Text(
+                            text = "Enter Pet ID",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.DarkGray
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                            spawnCooldownRemaining = 5
+                        // ID input field
+                        BasicTextField(
+                            value = petIdInput,
+                            onValueChange = {
+                                petIdInput = it.uppercase().take(6)
+                                claimError = null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.White)
+                                .border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                fontSize = 18.sp,
+                                color = Color.Black,
+                                textAlign = TextAlign.Center
+                            ),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+                        )
 
-                            Log.d("OptionsPanel", "Fetching fresh demo pet data...")
-                            firebaseManager.getFirstPetFromUser("demoUser") { freshPetData ->
-                                if (freshPetData != null) {
-                                    demoPet = freshPetData
-                                    Log.d("OptionsPanel", "Fresh demo pet loaded: ${freshPetData.name}")
-                                    onSelectDemoPet(freshPetData)
-                                } else {
-                                    Log.e("OptionsPanel", "Failed to fetch fresh pet data, using cached")
-                                    onSelectDemoPet(demoPet!!)
+                        // Error message
+                        if (claimError != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = claimError!!,
+                                fontSize = 12.sp,
+                                color = Color.Red
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SecondaryButton(
+                                modifier = Modifier.weight(1f),
+                                label = "Cancel",
+                                onClick = {
+                                    showClaimFlow = false
+                                    petIdInput = ""
+                                    claimError = null
+                                }
+                            )
+                            PrimaryButton(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .then(if (isClaiming) Modifier.alpha(0.5f) else Modifier),
+                                label = if (isClaiming) "..." else "Claim",
+                                onClick = {
+                                    if (isClaiming || petIdInput.length < 4) return@PrimaryButton
+                                    if (firebaseManager == null) return@PrimaryButton
+
+                                    isClaiming = true
+                                    claimError = null
+
+                                    firebaseManager.claimPet(petIdInput) { success, error, petData ->
+                                        isClaiming = false
+                                        if (success && petData != null) {
+                                            claimedPet = petData
+                                            showClaimFlow = false
+                                            petIdInput = ""
+                                            // Auto-spawn the claimed pet
+                                            spawnCooldownRemaining = 5
+                                            onSelectDemoPet?.invoke(petData)
+                                        } else {
+                                            claimError = error ?: "Failed to claim pet"
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                } else {
+                    // Spawn Demo button - only show if user has no claimed pet
+                    if (!hasClaimedPet && demoPet != null && onSelectDemoPet != null && firebaseManager != null) {
+                        SecondaryButton(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (isOnCooldown) Modifier.alpha(0.5f) else Modifier),
+                            label = if (isOnCooldown) "Spawning... (${spawnCooldownRemaining}s)" else "Spawn Demo",
+                            onClick = {
+                                if (isOnCooldown) return@SecondaryButton
+                                spawnCooldownRemaining = 5
+                                firebaseManager.getFirstPetFromUser("demoUser") { freshPetData ->
+                                    if (freshPetData != null) {
+                                        demoPet = freshPetData
+                                        onSelectDemoPet(freshPetData)
+                                    } else {
+                                        onSelectDemoPet(demoPet!!)
+                                    }
                                 }
                             }
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                } else if (isLoadingDemoPet && firebaseManager != null) {
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    // Your Pet button
+                    if (onSelectDemoPet != null && firebaseManager != null) {
+                        PrimaryButton(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (isOnCooldown && hasClaimedPet) Modifier.alpha(0.5f) else Modifier),
+                            label = when {
+                                isLoadingClaimedPet -> "Loading..."
+                                isOnCooldown && hasClaimedPet -> "Spawning... (${spawnCooldownRemaining}s)"
+                                hasClaimedPet -> "Your Pet (${claimedPet!!.name})"
+                                else -> "Your Pet"
+                            },
+                            onClick = {
+                                if (isOnCooldown && hasClaimedPet) return@PrimaryButton
+
+                                if (hasClaimedPet) {
+                                    // Spawn claimed pet
+                                    spawnCooldownRemaining = 5
+                                    firebaseManager.loadClaimedPet { freshPetData ->
+                                        if (freshPetData != null) {
+                                            claimedPet = freshPetData
+                                            onSelectDemoPet(freshPetData)
+                                        } else {
+                                            onSelectDemoPet(claimedPet!!)
+                                        }
+                                    }
+                                } else {
+                                    // Show claim flow
+                                    showClaimFlow = true
+                                }
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+
+                if ((isLoadingDemoPet || isLoadingClaimedPet) && firebaseManager != null && !showClaimFlow) {
                     Text(
                         text = "Loading...",
                         fontSize = 14.sp,
                         color = Color.Gray
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
             } else {
                 Text(
