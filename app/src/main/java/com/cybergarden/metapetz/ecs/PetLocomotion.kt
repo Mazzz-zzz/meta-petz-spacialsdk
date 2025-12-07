@@ -219,6 +219,10 @@ class PetLocomotion(
     private var fetchTargetBone: Entity? = null
     private var isFetching = false
 
+    // Sit state
+    private var sitJob: Job? = null
+    private var isSitting = false
+
     // Target marker
     private var targetMarkerEntity: Entity? = null
 
@@ -263,6 +267,11 @@ class PetLocomotion(
 
     // Head entity provider for returning to player during fetch
     var getHeadEntity: (() -> Entity?)? = null
+
+    // Sit callbacks
+    var onSitStart: (() -> Unit)? = null              // Called when pet starts sitting
+    var onSitBored: (() -> Unit)? = null              // Called when pet gets bored and stops sitting
+    var onSitInterrupted: (() -> Unit)? = null        // Called when sit is interrupted by another action
 
     // Mouth bone entity (parented to pet during fetch return)
     private var mouthBoneEntity: Entity? = null
@@ -512,6 +521,9 @@ class PetLocomotion(
             return
         }
 
+        // Interrupt sitting if active
+        interruptSit()
+
         // Clamp target to floor polygon if set
         val clampedTarget = floorPolygon?.clamp(target) ?: target
         if (clampedTarget != target) {
@@ -718,6 +730,9 @@ class PetLocomotion(
         }
 
         Log.d(TAG, "Path found with ${path.size} nodes, starting smooth pathfinding")
+
+        // Interrupt sitting if active
+        interruptSit()
 
         // Cancel any existing walk
         walkJob?.cancel()
@@ -1027,6 +1042,7 @@ class PetLocomotion(
      */
     fun cleanup() {
         stopFetch()
+        stopSit()
         stopIdleWander()
         stopWalking()
         stopFacingPlayer()
@@ -1245,6 +1261,7 @@ class PetLocomotion(
         Log.d(TAG, "Starting fetch sequence (isRoomMode=$isRoomMode)")
 
         // Stop any current activity
+        interruptSit()
         stopWalking()
         stopIdleWander()
         stopFacingPlayer()
@@ -1532,6 +1549,141 @@ class PetLocomotion(
     }
 
     // ==================== END BONE FETCHING ====================
+
+    // ==================== SITTING ====================
+
+    /**
+     * Start the sit command.
+     * Pet will play sit animation and face the player.
+     * After 2-5 seconds (random), the pet gets bored and stops sitting.
+     * Sitting can be interrupted by walking, fetching, or other actions.
+     *
+     * @param headEntityProvider Function to get the player's head entity for facing
+     */
+    fun startSit(headEntityProvider: () -> Entity?) {
+        val pet = petEntity ?: run {
+            Log.w(TAG, "startSit called but petEntity is null")
+            return
+        }
+
+        // Don't start sit if already sitting
+        if (isSitting) {
+            Log.d(TAG, "Already sitting - extending sit duration")
+            extendSit()
+            return
+        }
+
+        // Don't start sit during fetch
+        if (isFetching) {
+            Log.d(TAG, "Cannot sit while fetching")
+            return
+        }
+
+        Log.d(TAG, "Starting sit")
+
+        // Stop any current activity
+        stopWalking()
+        stopIdleWander()
+
+        isSitting = true
+
+        // Play sit animation
+        playAnimation(ANIM_IDLE, loop = true)
+
+        // Notify callback
+        onSitStart?.invoke()
+
+        // Start facing player while sitting
+        startFacingPlayer(headEntityProvider)
+
+        // Start boredom timer (2-5 seconds)
+        startSitBoredomTimer()
+    }
+
+    /**
+     * Extend the sit duration by resetting the boredom timer.
+     * Called when user claps while pet is already sitting.
+     */
+    fun extendSit() {
+        if (!isSitting) return
+
+        Log.d(TAG, "Extending sit duration")
+        startSitBoredomTimer()
+    }
+
+    /**
+     * Start or restart the boredom timer for sitting.
+     * Pet will stop sitting after 2-5 seconds.
+     */
+    private fun startSitBoredomTimer() {
+        sitJob?.cancel()
+        sitJob = scope.launch {
+            // Random duration between 2-5 seconds
+            val boredomTime = Random.nextLong(2000, 5000)
+            Log.d(TAG, "Sit boredom timer started: ${boredomTime}ms")
+
+            delay(boredomTime)
+
+            if (isActive && isSitting) {
+                Log.d(TAG, "Pet got bored of sitting")
+                stopSitInternal(bored = true)
+            }
+        }
+    }
+
+    /**
+     * Stop sitting (internal).
+     * @param bored True if stopped due to boredom, false if interrupted
+     */
+    private fun stopSitInternal(bored: Boolean) {
+        if (!isSitting) return
+
+        Log.d(TAG, "Stopping sit (bored=$bored)")
+
+        sitJob?.cancel()
+        sitJob = null
+        isSitting = false
+
+        // Stop facing player
+        stopFacingPlayer()
+
+        // Return to wag animation
+        playAnimation(ANIM_WAG, loop = true)
+
+        // Notify appropriate callback
+        if (bored) {
+            onSitBored?.invoke()
+        } else {
+            onSitInterrupted?.invoke()
+        }
+    }
+
+    /**
+     * Interrupt sitting due to another action (walk, fetch, etc.)
+     * Called externally when starting other activities.
+     */
+    fun interruptSit() {
+        if (isSitting) {
+            Log.d(TAG, "Sit interrupted by another action")
+            stopSitInternal(bored = false)
+        }
+    }
+
+    /**
+     * Check if pet is currently sitting
+     */
+    fun isSitting(): Boolean = isSitting
+
+    /**
+     * Stop sitting completely (called during cleanup)
+     */
+    private fun stopSit() {
+        sitJob?.cancel()
+        sitJob = null
+        isSitting = false
+    }
+
+    // ==================== END SITTING ====================
 
     /**
      * Frame-rate independent smoothing function (from AnimationsSample DroneSystem)

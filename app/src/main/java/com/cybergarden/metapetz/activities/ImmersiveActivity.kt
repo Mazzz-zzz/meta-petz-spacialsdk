@@ -261,6 +261,7 @@ class ImmersiveActivity : AppSystemActivity() {
   enum class AttentionActivity {
     NONE,           // No activity - can timeout
     FACING_PLAYER,  // Just got attention, facing player - can timeout
+    SITTING,        // Sitting on command - has boredom timeout (2-5s), clap extends
     FETCHING        // Actively fetching bone - NO timeout
   }
 
@@ -287,7 +288,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var handDistance by mutableStateOf(0f)
   private var cumulativeDisplacement by mutableStateOf(0f)
 
-  // Clap detector for calling pet's attention
+  // Clap detector for calling pet's attention and raise hand for sit
   private val clapDetector: ClapDetector by lazy {
     ClapDetector(activityScope, systemManager).apply {
       // Play bone sound when cumulative displacement threshold reached
@@ -298,6 +299,11 @@ class ImmersiveActivity : AppSystemActivity() {
         }
         Log.d(TAG, "CLAP TRIGGERED! Playing bone sound and getting attention")
         callPetAttention()
+      }
+      // Raise hand gesture triggers sit command (only when pet is attentive)
+      onRaiseHandDetected = {
+        Log.d(TAG, "RAISE HAND DETECTED! Checking if pet is attentive...")
+        triggerSitFromGesture()
       }
       // Debug callbacks for entering/leaving active range
       onHandsTogether = {
@@ -412,6 +418,21 @@ class ImmersiveActivity : AppSystemActivity() {
       }
       onDropBone = { position ->
         spawnDroppedBone(position)
+      }
+      // Sit callbacks
+      onSitStart = {
+        Log.d(TAG, "Pet started sitting")
+      }
+      onSitBored = {
+        Log.d(TAG, "Pet got bored of sitting")
+        currentActivity = AttentionActivity.NONE
+        isPetAttentive = false
+        stopXpGain()
+        startIdleWander()
+      }
+      onSitInterrupted = {
+        Log.d(TAG, "Pet sit was interrupted")
+        // Activity state is managed by whatever interrupted the sit
       }
     }
   }
@@ -1597,6 +1618,8 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Called when clap is detected - pet turns to face player and pays attention.
+   * Clap always (re)activates attention. Use raise hand gesture for sit command.
+   * If already sitting, clap extends the sit duration.
    */
   private fun callPetAttention() {
     // Don't do anything if no pet is spawned
@@ -1608,6 +1631,30 @@ class ImmersiveActivity : AppSystemActivity() {
     // Don't interrupt fetching
     if (currentActivity == AttentionActivity.FETCHING) {
       Log.d(TAG, "Clap ignored - pet is fetching")
+      return
+    }
+
+    // If already sitting, extend the sit duration
+    if (currentActivity == AttentionActivity.SITTING) {
+      Log.d(TAG, "Clap while sitting - extending sit duration")
+      petLocomotion.extendSit()
+      // Play whistle sound as feedback
+      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+      if (headPos != null) {
+        whistlePlayer.play(headPos, 1.0f, false)
+      }
+      return
+    }
+
+    // If already attentive, just reset the timeout (don't trigger sit - use raise hand for that)
+    if (currentActivity == AttentionActivity.FACING_PLAYER) {
+      Log.d(TAG, "Clap while attentive - resetting attention timeout")
+      // Play whistle sound as feedback
+      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+      if (headPos != null) {
+        whistlePlayer.play(headPos, 1.0f, false)
+      }
+      resetAttentionTimeout()
       return
     }
 
@@ -1635,6 +1682,60 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Reset the attention timeout
     resetAttentionTimeout()
+  }
+
+  /**
+   * Trigger sit command from raise hand gesture.
+   * Only works if pet is attentive (FACING_PLAYER) or already sitting (extends sit).
+   */
+  private fun triggerSitFromGesture() {
+    // Don't do anything if no pet is spawned
+    if (currentPetEntity == null) {
+      Log.d(TAG, "Raise hand detected but no pet spawned - ignoring")
+      return
+    }
+
+    // If already sitting, extend the sit duration
+    if (currentActivity == AttentionActivity.SITTING) {
+      Log.d(TAG, "Raise hand while sitting - extending sit duration")
+      petLocomotion.extendSit()
+      // Play whistle sound as feedback
+      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+      if (headPos != null) {
+        whistlePlayer.play(headPos, 1.0f, false)
+      }
+      return
+    }
+
+    // Only trigger sit if pet is attentive (facing player)
+    if (currentActivity != AttentionActivity.FACING_PLAYER) {
+      Log.d(TAG, "Raise hand ignored - pet not attentive (activity=$currentActivity)")
+      return
+    }
+
+    Log.d(TAG, "Raise hand while attentive - commanding sit!")
+    startPetSit()
+  }
+
+  /**
+   * Start the sit command - pet sits and faces player.
+   * Called from raise hand gesture when pet is attentive.
+   */
+  private fun startPetSit() {
+    Log.d(TAG, "Starting sit command")
+
+    // Play whistle sound as feedback
+    val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+    if (headPos != null) {
+      whistlePlayer.play(headPos, 1.0f, false)
+    }
+
+    // Update activity state
+    currentActivity = AttentionActivity.SITTING
+    attentionResumeJob?.cancel()  // Cancel any pending attention timeout
+
+    // Start sit in locomotion
+    petLocomotion.startSit { getHeadEntity() }
   }
 
   /**
@@ -2071,7 +2172,8 @@ class ImmersiveActivity : AppSystemActivity() {
     // This is a command to the pet - no need to clap first!
     Log.d(TAG, "Bone thrown - auto-activating attention for fetch")
 
-    // Stop any current activity
+    // Stop any current activity (including sitting)
+    petLocomotion.interruptSit()
     petLocomotion.stopIdleWander()
     petLocomotion.stopFacingPlayer()
 
