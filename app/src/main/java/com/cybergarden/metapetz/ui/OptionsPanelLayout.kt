@@ -86,7 +86,7 @@ fun OptionsPanel(
     returningBone: Boolean = false,
     // Sit command debug states
     rightHandRaise: Float = 0f,  // Cumulative right hand Y raise (need 0.50m)
-    leftHandMovement: Float = 0f  // Cumulative left hand movement (must be < 10% of right)
+    leftHandBelowHead: Float = 0f  // How far left hand is below head (need 0.20m)
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -159,25 +159,14 @@ fun OptionsPanel(
             if (onSetupRoom != null) {
                 val isOutsideActive = isEnvironmentSetup && !isRoomMode
                 if (isOutsideActive) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color(0xFF1B5E20))
-                            .clickable {
-                                Log.d("OptionsPanel", "Outside button pressed")
-                                onSetupRoom()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Outside",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
+                    PrimaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Outside",
+                        onClick = {
+                            Log.d("OptionsPanel", "Outside button pressed")
+                            onSetupRoom()
+                        }
+                    )
                 } else {
                     SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
@@ -200,21 +189,11 @@ fun OptionsPanel(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(Color(0xFF424242)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Processing Room...",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
+                        SecondaryButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Processing Room...",
+                            onClick = { }
+                        )
                         Spacer(modifier = Modifier.height(4.dp))
                         LinearProgressIndicator(
                             modifier = Modifier
@@ -222,29 +201,18 @@ fun OptionsPanel(
                                 .height(4.dp)
                                 .clip(RoundedCornerShape(2.dp)),
                             color = Color(0xFF4CAF50),
-                            trackColor = Color(0xFF1B5E20)
+                            trackColor = Color(0xFF2E7D32)
                         )
                     }
                 } else if (isRoomScanActive) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color(0xFF1B5E20))
-                            .clickable {
-                                Log.d("OptionsPanel", "Room Scan button pressed")
-                                onScanRoom()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Room Scan",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
+                    PrimaryButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Room Scan",
+                        onClick = {
+                            Log.d("OptionsPanel", "Room Scan button pressed")
+                            onScanRoom()
+                        }
+                    )
                 } else {
                     SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
@@ -1112,7 +1080,7 @@ fun OptionsPanel(
 
                 // Sit Command Debug Section
                 Text(
-                    text = "Sit Command (Raise Hand)",
+                    text = "Sit Command (Raise R + L Low)",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF9C27B0),
@@ -1137,7 +1105,6 @@ fun OptionsPanel(
                         color = if (rightHandRaise >= 0.50f) Color(0xFF4CAF50) else Color.DarkGray
                     )
                 }
-                // Progress bar for right hand
                 LinearProgressIndicator(
                     progress = { (rightHandRaise / 0.50f).coerceIn(0f, 1f) },
                     modifier = Modifier
@@ -1150,35 +1117,32 @@ fun OptionsPanel(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Left hand movement (should stay low)
+                // Left hand below head progress bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "L Hand (stay still):",
+                        text = "L Hand↓ head:",
                         fontSize = 11.sp,
                         color = Color.DarkGray
                     )
-                    val maxAllowed = rightHandRaise * 0.10f  // 10% of right hand
-                    val isLeftOk = leftHandMovement <= maxAllowed || rightHandRaise < 0.01f
+                    val isBelowEnough = leftHandBelowHead >= 0.50f
                     Text(
-                        text = String.format("%.0fcm (max %.0fcm)", leftHandMovement * 100, maxAllowed * 100),
+                        text = String.format("%.0fcm / 50cm", leftHandBelowHead * 100),
                         fontSize = 11.sp,
-                        fontWeight = if (!isLeftOk) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isLeftOk) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        fontWeight = if (isBelowEnough) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isBelowEnough) Color(0xFF4CAF50) else Color.DarkGray
                     )
                 }
-                // Progress bar for left hand (red if moving too much)
-                val leftRatio = if (rightHandRaise > 0.01f) leftHandMovement / (rightHandRaise * 0.10f) else 0f
                 LinearProgressIndicator(
-                    progress = { leftRatio.coerceIn(0f, 1f) },
+                    progress = { (leftHandBelowHead / 0.50f).coerceIn(0f, 1f) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp)),
-                    color = if (leftRatio <= 1f) Color(0xFF4CAF50) else Color(0xFFF44336),
+                    color = if (leftHandBelowHead >= 0.50f) Color(0xFF4CAF50) else Color(0xFF9C27B0),
                     trackColor = Color(0xFF424242)
                 )
 

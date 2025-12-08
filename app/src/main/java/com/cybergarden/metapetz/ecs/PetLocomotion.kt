@@ -1309,7 +1309,17 @@ class PetLocomotion(
                 // Move to bone - method depends on mode
                 if (isRoomMode) {
                     // ROOM MODE: Use pathfinding
-                    moveToWithPathfinding(bonePos)
+                    // Find nearest walkable cell that also considers HEIGHT
+                    // This prevents the dog from jumping to elevated surfaces when the bone is on the floor
+                    val grid = navGrid
+                    val targetPos = if (grid != null) {
+                        grid.findNearestWalkableCell(bonePos.x, bonePos.y, bonePos.z, maxDistance = 1.0f)
+                            ?: bonePos  // Fallback to bone pos if no walkable cell found
+                    } else {
+                        bonePos
+                    }
+                    Log.d(TAG, "Fetch target adjusted from $bonePos to $targetPos (height-aware)")
+                    moveToWithPathfinding(targetPos)
                 } else {
                     // OUTSIDE MODE: Direct movement
                     moveTo(bonePos)

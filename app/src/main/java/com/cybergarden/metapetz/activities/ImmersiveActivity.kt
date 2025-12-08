@@ -301,6 +301,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Attention system - activity-based attention tracking
   enum class AttentionActivity {
+    SPAWNING,       // Just spawned, doing intro spin animation - no other rotations allowed
     IDLE,           // Wandering around, no attention
     FACING_PLAYER,  // Has attention, continuously facing player - can timeout
     WALKING,        // Walking to commanded position - has attention
@@ -341,9 +342,9 @@ class ImmersiveActivity : AppSystemActivity() {
   private var handDistance by mutableStateOf(0f)
   private var cumulativeDisplacement by mutableStateOf(0f)
 
-  // Raise hand (sit command) debug values
+  // Sit gesture debug values (right hand raise + left hand below head)
   private var rightHandRaise by mutableStateOf(0f)
-  private var leftHandMovement by mutableStateOf(0f)
+  private var leftHandBelowHead by mutableStateOf(0f)
 
   // Clap detector for calling pet's attention and raise hand for sit
   private val clapDetector: ClapDetector by lazy {
@@ -955,9 +956,9 @@ class ImmersiveActivity : AppSystemActivity() {
       while (true) {
         handDistance = clapDetector.currentDistance
         cumulativeDisplacement = clapDetector.currentCumulative
-        // Raise hand (sit command) debug values
+        // Sit gesture debug values
         rightHandRaise = clapDetector.currentRightHandRaise
-        leftHandMovement = clapDetector.currentLeftHandMovement
+        leftHandBelowHead = clapDetector.currentLeftHandBelowHead
         delay(100) // Update 10 times per second
       }
     }
@@ -1153,10 +1154,8 @@ class ImmersiveActivity : AppSystemActivity() {
           val wanderCenterZ = headTransform?.t?.z ?: 0f
           petLocomotion.setWanderArea(wanderCenterX, wanderCenterZ, 2.0f)
 
-          // Start idle wander mode
-          petLocomotion.startIdleWander()
-
-          // Start spinning animation
+          // Start spinning animation FIRST (sets SPAWNING state)
+          // Idle wander will start after spin completes
           startSpinning()
 
           // Spawn complete - allow new spawns after a brief delay
@@ -1173,16 +1172,32 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
 
+  private val SPAWN_SPIN_DURATION_MS = 3000L  // Spin for 3 seconds on spawn
+
   private fun startSpinning() {
     val entity = currentPetEntity ?: return
+
+    // Set SPAWNING state to prevent other rotations from interfering
+    currentActivity = AttentionActivity.SPAWNING
+    Log.d(TAG, "Starting spawn spin animation (${SPAWN_SPIN_DURATION_MS}ms)")
 
     spinningJob = activityScope.launch {
       var angle = 0f
       val rotationSpeed = 0.5f // Degrees per frame (slow rotation)
       var time = 0f // Time tracker for animations
+      val startTime = System.currentTimeMillis()
 
       while (isActive) {
         try {
+          // Check if spin duration has elapsed
+          val elapsed = System.currentTimeMillis() - startTime
+          if (elapsed >= SPAWN_SPIN_DURATION_MS) {
+            Log.d(TAG, "Spawn spin complete, transitioning to IDLE and starting wander")
+            currentActivity = AttentionActivity.IDLE
+            petLocomotion.startIdleWander()  // Start wandering after spin completes
+            break
+          }
+
           // Update rotation around Y axis
           angle = (angle + rotationSpeed) % 360f
           val yRotRadians = angle * PI.toFloat() / 180f
@@ -1190,7 +1205,7 @@ class ImmersiveActivity : AppSystemActivity() {
           // Quaternion for Y-axis rotation (spinning)
           val qy = Quaternion(0f, kotlin.math.sin(yRotRadians / 2), 0f, kotlin.math.cos(yRotRadians / 2))
 
-          // All pets need 180� X-axis flip to orient upright
+          // All pets need 180° X-axis flip to orient upright
           val xFlipRadians = PI.toFloat()
           val qx = Quaternion(kotlin.math.sin(xFlipRadians / 2).toFloat(), 0f, 0f, kotlin.math.cos(xFlipRadians / 2).toFloat())
           // Combine rotations: first flip, then spin (qy * qx)
@@ -1223,6 +1238,7 @@ class ImmersiveActivity : AppSystemActivity() {
           delay(16) // ~60 FPS
         } catch (e: Exception) {
           // Entity might have been destroyed, stop spinning
+          currentActivity = AttentionActivity.IDLE
           break
         }
       }
@@ -1898,9 +1914,9 @@ class ImmersiveActivity : AppSystemActivity() {
                       distanceToBone = debugDistanceToBone,
                       bonePickedUp = debugBonePickedUp,
                       returningBone = debugReturningBone,
-                      // Sit command debug states
+                      // Sit gesture debug (right hand raise + left hand below head)
                       rightHandRaise = rightHandRaise,
-                      leftHandMovement = leftHandMovement
+                      leftHandBelowHead = leftHandBelowHead
                   )
                 }
               }
@@ -2264,6 +2280,7 @@ class ImmersiveActivity : AppSystemActivity() {
   /**
    * Show the attention indicator above the pet's head.
    * Shows whenever activity is NOT IDLE - follows the pet continuously.
+   * Uses plumbob.glb model (like The Sims) with rotation animation.
    */
   private fun showAttentionIndicator() {
     // Already showing
@@ -2277,36 +2294,46 @@ class ImmersiveActivity : AppSystemActivity() {
       petTransform.t.z
     )
 
-    // Create yellow/orange attention indicator (flattened sphere = disc)
+    // Create plumbob indicator using GLB model with transparency
     attentionIndicatorEntity = Entity.create(
       listOf(
-        Mesh(android.net.Uri.parse("mesh://sphere")),
-        Sphere(0.06f),
+        Mesh("apk:///models/plumbob.glb".toUri()),
         Material().apply {
-          baseColor = Color4(1f, 0.8f, 0f, 1f)  // Yellow/orange, full opacity
+          baseColor = Color4(0.3f, 1f, 0.5f, 0.6f)  // Transparent green
           unlit = true
         },
         Transform(Pose(indicatorPos, Quaternion())),
-        Scale(Vector3(1f, 0.3f, 1f))  // Flatten to disc shape
+        Scale(Vector3(0.03f, 0.03f, 0.03f))  // Much smaller
       )
     )
 
-    Log.d(TAG, "Attention indicator shown")
+    Log.d(TAG, "Attention indicator shown (plumbob.glb)")
 
-    // Follow pet continuously
+    // Follow pet continuously with rotation and subtle pulsing
     attentionIndicatorJob = activityScope.launch {
+      var time = 0f
       while (isActive && attentionIndicatorEntity != null) {
-        delay(50)  // Update ~20 times per second
+        delay(30)  // Update ~33 times per second
 
-        // Update indicator position to follow pet
+        val indicator = attentionIndicatorEntity ?: break
         val currentPetTransform = currentPetEntity?.tryGetComponent<Transform>()?.transform
+
         if (currentPetTransform != null) {
           val newPos = Vector3(
             currentPetTransform.t.x,
             currentPetTransform.t.y + INDICATOR_HEIGHT_OFFSET,
             currentPetTransform.t.z
           )
-          attentionIndicatorEntity?.setComponent(Transform(Pose(newPos, Quaternion())))
+
+          // Rotate slowly like Sims plumbob
+          time += 0.05f
+          val rotation = Quaternion(0f, kotlin.math.sin(time), 0f, kotlin.math.cos(time))
+
+          indicator.setComponent(Transform(Pose(newPos, rotation)))
+
+          // Subtle pulse between 0.9 and 1.1
+          val pulseScale = 0.03f * (1f + 0.1f * kotlin.math.sin(time * 2f))
+          indicator.setComponent(Scale(Vector3(pulseScale, pulseScale, pulseScale)))
         }
       }
     }
@@ -2917,6 +2944,13 @@ class ImmersiveActivity : AppSystemActivity() {
                 continue
               }
               val bonePos = boneTransform.t
+
+              // Floor collision - prevent bones from phasing through floor
+              val minY = floorHeight() + 0.02f  // Slightly above floor
+              if (bonePos.y < minY) {
+                val correctedPos = Vector3(bonePos.x, minY, bonePos.z)
+                bone.setComponent(Transform(Pose(correctedPos, boneTransform.q)))
+              }
 
               // Check distance to right hand
               if (rightHandPos != null) {

@@ -50,19 +50,18 @@ class ClapDetector(
         // How often to check hand positions
         private const val SAMPLE_DELAY_MS = 30L
 
-        // ===== RAISE HAND GESTURE (for sit command) =====
-        // Right hand must raise this much (Y direction) to trigger sit
-        private const val RAISE_HAND_THRESHOLD = 0.50f  // 50cm
+        // ===== SIT GESTURE (raise right hand + left hand below head) =====
+        // Right hand must raise this much cumulatively
+        private const val RIGHT_HAND_RAISE_THRESHOLD = 0.50f  // 50cm cumulative raise
 
-        // Left hand must move less than this ratio of right hand movement
-        // If right hand moves 50cm, left must move < 5cm (10%)
-        private const val LEFT_HAND_MAX_RATIO = 0.10f
+        // Left hand must be this far below head to trigger sit
+        private const val LEFT_HAND_BELOW_HEAD_THRESHOLD = 0.50f  // 50cm below head
 
-        // Time window for raise hand gesture
-        private const val RAISE_HAND_WINDOW_MS = 2000L
+        // Time window for right hand raise accumulation
+        private const val SIT_GESTURE_WINDOW_MS = 3000L
 
-        // Cooldown after raise hand detection
-        private const val RAISE_HAND_COOLDOWN_MS = 2000L
+        // Cooldown after sit gesture detection
+        private const val SIT_GESTURE_COOLDOWN_MS = 2000L
     }
 
     private var detectionJob: Job? = null
@@ -82,19 +81,16 @@ class ClapDetector(
     var currentCumulative: Float = 0f
         private set
 
-    // Raise hand tracking (sit gesture)
-    private var lastRightHandY: Float? = null
-    private var lastLeftHandY: Float? = null
+    // Sit gesture tracking (right hand raise + left hand below head)
+    private var lastSitGestureDetectionMs: Long = 0L
+    private var sitGestureWindowStartMs: Long = 0L
     private var cumulativeRightHandRaise: Float = 0f
-    private var cumulativeLeftHandMovement: Float = 0f
-    private var raiseHandWindowStartMs: Long = 0L
-    private var lastRaiseHandDetectionMs: Long = 0L
-    private var raiseHandTriggeredThisWindow: Boolean = false  // Prevent multiple triggers per window
+    private var lastRightHandY: Float = -1f
 
-    // Raise hand cumulative values (exposed for debug UI)
-    var currentRightHandRaise: Float = 0f
+    // Debug values for sit gesture (exposed for debug UI)
+    var currentRightHandRaise: Float = 0f  // Cumulative right hand Y raise
         private set
-    var currentLeftHandMovement: Float = 0f
+    var currentLeftHandBelowHead: Float = 0f  // How far left hand is below head (positive = below)
         private set
 
     // Callback when clap is detected
@@ -167,14 +163,11 @@ class ClapDetector(
     }
 
     private fun resetRaiseHandTracking() {
-        lastRightHandY = null
-        lastLeftHandY = null
         cumulativeRightHandRaise = 0f
-        cumulativeLeftHandMovement = 0f
-        raiseHandWindowStartMs = 0L
-        raiseHandTriggeredThisWindow = false
+        lastRightHandY = -1f
+        sitGestureWindowStartMs = 0L
         currentRightHandRaise = 0f
-        currentLeftHandMovement = 0f
+        currentLeftHandBelowHead = 0f
     }
 
     /**
@@ -363,107 +356,86 @@ class ClapDetector(
     }
 
     /**
-     * Detect "raise right hand" gesture for sit command.
-     *
-     * Triggers when:
-     * - Right hand raises ~50cm (cumulative Y movement upward)
-     * - Left hand stays relatively still (< 10% of right hand movement)
-     * - Within 2 second window
-     *
-     * This is geared toward right-handed users giving a "sit" hand signal.
+     * Detect sit gesture: raise right hand 50cm cumulatively while left hand is 20cm below head.
+     * Both conditions must be met to trigger.
      */
     private fun detectRaiseHand() {
         val currentTime = System.currentTimeMillis()
 
         // Check cooldown
-        if (currentTime - lastRaiseHandDetectionMs < RAISE_HAND_COOLDOWN_MS) {
+        if (currentTime - lastSitGestureDetectionMs < SIT_GESTURE_COOLDOWN_MS) {
             return
         }
 
-        // Get hand positions
+        // Get hand and head positions
         val leftHandPos = getLeftHandPosition()
         val rightHandPos = getRightHandPosition()
+        val headPos = getHeadPosition()
 
-        if (leftHandPos == null || rightHandPos == null) {
+        if (leftHandPos == null || rightHandPos == null || headPos == null) {
+            currentLeftHandBelowHead = 0f
             return
         }
 
-        // Check for invalid hand positions (at origin means tracking lost)
-        if (isNearOrigin(leftHandPos) || isNearOrigin(rightHandPos)) {
+        // Check for invalid positions (at origin means tracking lost)
+        if (isNearOrigin(leftHandPos) || isNearOrigin(rightHandPos) || isNearOrigin(headPos)) {
+            currentLeftHandBelowHead = 0f
             return
         }
 
-        val rightY = rightHandPos.y
-        val leftY = leftHandPos.y
+        // Calculate how far left hand is below head (positive = below)
+        val belowHead = headPos.y - leftHandPos.y
+        currentLeftHandBelowHead = belowHead
 
-        // Start window on first valid sample
-        if (raiseHandWindowStartMs == 0L) {
-            raiseHandWindowStartMs = currentTime
-            lastRightHandY = rightY
-            lastLeftHandY = leftY
-            return
-        }
+        // Check if left hand condition is met (20cm below head)
+        val leftHandConditionMet = belowHead >= LEFT_HAND_BELOW_HEAD_THRESHOLD
+
+        // Track right hand Y raise (only count upward movement)
+        val rightHandY = rightHandPos.y
 
         // Reset window if expired
-        if (currentTime - raiseHandWindowStartMs > RAISE_HAND_WINDOW_MS) {
+        if (sitGestureWindowStartMs == 0L) {
+            sitGestureWindowStartMs = currentTime
+        } else if (currentTime - sitGestureWindowStartMs > SIT_GESTURE_WINDOW_MS) {
+            // Window expired, reset
+            cumulativeRightHandRaise = 0f
+            sitGestureWindowStartMs = currentTime
+            lastRightHandY = -1f
+        }
+
+        // Track cumulative upward movement of right hand
+        if (lastRightHandY >= 0) {
+            val deltaY = rightHandY - lastRightHandY
+            if (deltaY > 0) {
+                // Only count upward movement
+                cumulativeRightHandRaise += deltaY
+            }
+        }
+        lastRightHandY = rightHandY
+        currentRightHandRaise = cumulativeRightHandRaise
+
+        // Check if right hand raise threshold is met
+        val rightHandConditionMet = cumulativeRightHandRaise >= RIGHT_HAND_RAISE_THRESHOLD
+
+        // Trigger if BOTH conditions are met
+        if (rightHandConditionMet && leftHandConditionMet) {
+            Log.d(TAG, "SIT GESTURE DETECTED! Right raised ${cumulativeRightHandRaise * 100}cm, left ${belowHead * 100}cm below head")
+            lastSitGestureDetectionMs = currentTime
             resetRaiseHandTracking()
-            raiseHandWindowStartMs = currentTime
-            lastRightHandY = rightY
-            lastLeftHandY = leftY
-            return
+            onRaiseHandDetected?.invoke()
         }
+    }
 
-        // Calculate deltas (only if we have previous values)
-        val prevRightY = lastRightHandY
-        val prevLeftY = lastLeftHandY
-
-        if (prevRightY != null && prevLeftY != null) {
-            val rightDeltaY = rightY - prevRightY
-            val leftDeltaY = abs(leftY - prevLeftY)
-
-            // Only accumulate upward movement for right hand (positive Y delta)
-            // This ensures we're tracking a raise, not just any movement
-            if (rightDeltaY > 0.001f) {  // Small threshold to ignore noise
-                cumulativeRightHandRaise += rightDeltaY
-            }
-
-            // Accumulate absolute Y movement for left hand (should stay still)
-            if (leftDeltaY > 0.001f) {  // Small threshold to ignore noise
-                cumulativeLeftHandMovement += leftDeltaY
-            }
-
-            // Update debug values
-            currentRightHandRaise = cumulativeRightHandRaise
-            currentLeftHandMovement = cumulativeLeftHandMovement
-
-            // Check if gesture is complete (only trigger once per window)
-            if (cumulativeRightHandRaise >= RAISE_HAND_THRESHOLD && !raiseHandTriggeredThisWindow) {
-                // Calculate max allowed left hand movement
-                val maxLeftMovement = cumulativeRightHandRaise * LEFT_HAND_MAX_RATIO
-
-                // Left hand must have moved at least a tiny bit (not null/zero tracking)
-                // but less than the threshold ratio
-                val leftHandValid = cumulativeLeftHandMovement > 0.001f &&
-                                   cumulativeLeftHandMovement < maxLeftMovement
-
-                // Mark as triggered so we don't fire multiple times
-                raiseHandTriggeredThisWindow = true
-
-                if (leftHandValid) {
-                    Log.d(TAG, "RAISE HAND DETECTED! Right: $cumulativeRightHandRaise, Left: $cumulativeLeftHandMovement (max: $maxLeftMovement)")
-                    lastRaiseHandDetectionMs = currentTime
-                    // Don't reset immediately - let window timer reset so user can see the result
-                    onRaiseHandDetected?.invoke()
-                } else {
-                    // Left hand moved too much or not at all - probably a different gesture
-                    Log.d(TAG, "Raise hand rejected - Left hand movement: $cumulativeLeftHandMovement (max: $maxLeftMovement)")
-                    // Don't reset immediately - let window timer reset so user can see why it failed
-                }
-            }
-        }
-
-        // Store current positions for next frame
-        lastRightHandY = rightY
-        lastLeftHandY = leftY
+    /**
+     * Get head position from PlayerBodyAttachmentSystem
+     */
+    private fun getHeadPosition(): Vector3? {
+        return systemManager
+            .tryFindSystem<PlayerBodyAttachmentSystem>()
+            ?.tryGetLocalPlayerAvatarBody()
+            ?.head
+            ?.tryGetComponent<Transform>()
+            ?.transform
+            ?.t
     }
 }
