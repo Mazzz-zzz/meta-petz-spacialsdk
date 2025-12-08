@@ -194,6 +194,13 @@ class ImmersiveActivity : AppSystemActivity() {
   data class PendingWall(val worldPos: Vector3, val worldRot: Quaternion, val width: Float)
   private val pendingWalls = mutableListOf<PendingWall>()
 
+  // Current room tracking - only process anchors from the room user is in
+  private var currentProcessedRoomUuid: String? = null
+  private var roomChangeCheckJob: Job? = null
+
+  // Loading state for heavy room processing
+  private var isRoomProcessing by mutableStateOf(false)
+
   // Debug visibility toggles (reactive for Compose UI)
   private var isRoomMeshVisible by mutableStateOf(false)  // Room mesh (walls/floor) hidden by default
   private var isFurnitureOccluderVisible by mutableStateOf(true)  // Furniture occluders shown by default
@@ -1444,50 +1451,181 @@ class ImmersiveActivity : AppSystemActivity() {
   /**
    * Load scene from device and log room data.
    * Called after scene capture completes.
+   * Only processes the CURRENT room the user is in (not all scanned rooms).
    */
   private fun loadSceneFromDeviceWithLogging() {
+    isRoomProcessing = true
     mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
       if (error != null) {
         Log.e(TAG, "loadSceneFromDevice error: ${error.message}", error)
+        isRoomProcessing = false
       }
       if (result == MRUKLoadDeviceResult.SUCCESS) {
         Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
-        Log.d(TAG, "AnchorProceduralMesh will now create visible meshes for all room anchors")
         logMrukRoomData()
 
-        // Clear any room bounds that may have been created by onAnchorAdded callbacks during load
-        // This ensures we don't have duplicates when we manually process anchors below
-        clearRoomBoundsEdges()
-
-        // Manually process existing anchors to create wall colliders
-        // This is needed because onAnchorAdded only fires for NEW anchors,
-        // not anchors that already exist when re-scanning
-        for (room in mrukFeature.rooms) {
-          Log.d(TAG, "Processing ${room.anchors.size} existing anchors for room ${room.anchor.uuid}")
-          for (anchor in room.anchors) {
-            onAnchorAddedHandler(room, anchor)
-          }
+        // Get the CURRENT room only - don't process all rooms
+        val currentRoom = mrukFeature.getCurrentRoom()
+        if (currentRoom == null) {
+          Log.w(TAG, "No current room detected - user may not be in a scanned room")
+          Log.w(TAG, "Total rooms available: ${mrukFeature.rooms.size}")
+          isRoomProcessing = false
+          isEnvironmentSetup = false
+          return@whenComplete
         }
 
-        // Process any walls that were queued before NavGrid was created
-        processPendingWalls()
+        val roomUuid = currentRoom.anchor.uuid.toString()
+        Log.d(TAG, "=== PROCESSING CURRENT ROOM ONLY ===")
+        Log.d(TAG, "Current room UUID: $roomUuid")
+        Log.d(TAG, "Total rooms loaded: ${mrukFeature.rooms.size} (only processing current)")
 
-        // After processing all anchors, keep only the largest connected walkable region
-        navGrid?.let { grid ->
-          grid.keepLargestConnectedRegion()
-          Log.d(TAG, "NavGrid finalized: ${grid.getWalkableCellCount()} walkable cells")
-
-          // Create debug visualization once after all furniture/walls are blocked
-          // (hidden by default - checkbox toggles visibility, not entity creation)
-          grid.createDebugVisualization(showBlocked = true)
-          Log.d(TAG, "NavGrid debug visualization created (hidden)")
+        // Process room on background thread to avoid UI jank
+        activityScope.launch {
+          processRoomAnchors(currentRoom, roomUuid)
         }
-
-        // Mark environment as set up
-        isEnvironmentSetup = true
       } else {
         Log.e(TAG, "MRUK load failed with result: $result")
         Log.w(TAG, "Please set up your room in Quest Settings > Physical Space > Space Setup")
+        isRoomProcessing = false
+      }
+    }
+  }
+
+  /**
+   * Process anchors for a specific room. Runs heavy work on background thread.
+   */
+  private suspend fun processRoomAnchors(room: MRUKRoom, roomUuid: String) {
+    // Clear any existing room data first (on main thread for entity operations)
+    clearRoomBoundsEdges()
+
+    // Track which room we're processing
+    currentProcessedRoomUuid = roomUuid
+
+    Log.d(TAG, "Processing ${room.anchors.size} anchors for current room $roomUuid")
+
+    // Process anchors (entity creation must be on main thread)
+    for (anchor in room.anchors) {
+      onAnchorAddedHandler(room, anchor)
+    }
+
+    // Process any walls that were queued before NavGrid was created
+    processPendingWalls()
+
+    // Finalize NavGrid (can do heavy computation)
+    navGrid?.let { grid ->
+      // Heavy work - keep largest connected region
+      grid.keepLargestConnectedRegion()
+      Log.d(TAG, "NavGrid finalized: ${grid.getWalkableCellCount()} walkable cells")
+
+      // Create debug visualization (entity creation on main thread)
+      grid.createDebugVisualization(showBlocked = true)
+      Log.d(TAG, "NavGrid debug visualization created (hidden)")
+    }
+
+    // Mark environment as set up
+    isEnvironmentSetup = true
+    isRoomProcessing = false
+
+    // Start room change detection
+    startRoomChangeDetection()
+
+    Log.d(TAG, "Room processing complete for $roomUuid")
+  }
+
+  /**
+   * Start polling for room changes. When user moves to a different room,
+   * clear the old room's entities and rebuild for the new room.
+   */
+  private fun startRoomChangeDetection() {
+    roomChangeCheckJob?.cancel()
+    roomChangeCheckJob = activityScope.launch {
+      Log.d(TAG, "Room change detection started")
+      while (isActive) {
+        delay(2000) // Check every 2 seconds
+
+        if (!isRoomMode) continue // Only check in room mode
+
+        val currentRoom = mrukFeature.getCurrentRoom()
+        val currentUuid = currentRoom?.anchor?.uuid?.toString()
+
+        if (currentUuid != null && currentUuid != currentProcessedRoomUuid) {
+          Log.d(TAG, "=== ROOM CHANGE DETECTED ===")
+          Log.d(TAG, "Old room: $currentProcessedRoomUuid")
+          Log.d(TAG, "New room: $currentUuid")
+
+          // Clear old room data and rebuild for new room
+          rebuildForNewRoom(currentRoom, currentUuid)
+        }
+      }
+    }
+  }
+
+  /**
+   * Clear old room's entities and rebuild for a new room.
+   */
+  private suspend fun rebuildForNewRoom(room: MRUKRoom, roomUuid: String) {
+    isRoomProcessing = true
+
+    // Clear all existing room data
+    clearRoomBoundsEdges()
+    navGrid?.clearDebugVisualization()
+    navGrid = null
+    petLocomotion.setNavGrid(null)
+    furnitureQuads.clear()
+    furnitureDebugSpheres.forEach { it.destroy() }
+    furnitureDebugSpheres.clear()
+    furniturePhysicsBoxes.forEach { it.destroy() }
+    furniturePhysicsBoxes.clear()
+    pendingWalls.clear()
+
+    Log.d(TAG, "Cleared old room data, rebuilding for new room")
+
+    // Reinitialize NavGrid for new room
+    initializeNavGridForRoom(room)
+
+    // Process new room
+    processRoomAnchors(room, roomUuid)
+  }
+
+  /**
+   * Initialize NavGrid for a specific room based on its floor anchor.
+   */
+  private fun initializeNavGridForRoom(room: MRUKRoom) {
+    // Find floor anchor to get room bounds
+    for (anchor in room.anchors) {
+      val mrukAnchor = anchor.tryGetComponent<MRUKAnchor>() ?: continue
+      val labels = mutableListOf<String>()
+      for (i in 0 until mrukAnchor.labelsCount) {
+        mrukAnchor.labels[i]?.let { labels.add(it) }
+      }
+
+      if (labels.any { it == MRUKLabel.FLOOR.name }) {
+        val transform = anchor.tryGetComponent<Transform>()?.transform ?: continue
+        val planeComponent = anchor.tryGetComponent<MRUKPlane>() ?: continue
+
+        val floorY = transform.t.y
+        val width = planeComponent.max.x - planeComponent.min.x
+        val height = planeComponent.max.y - planeComponent.min.y
+
+        // Calculate min/max bounds from anchor position and plane dimensions
+        val minX = transform.t.x - width / 2
+        val maxX = transform.t.x + width / 2
+        val minZ = transform.t.z - height / 2
+        val maxZ = transform.t.z + height / 2
+
+        Log.d(TAG, "Initializing NavGrid from floor: ${width}x${height} at Y=$floorY")
+        Log.d(TAG, "NavGrid bounds: X[$minX, $maxX] Z[$minZ, $maxZ]")
+
+        navGrid = NavGrid(
+            cellSize = 0.15f,
+            minX = minX,
+            maxX = maxX,
+            minZ = minZ,
+            maxZ = maxZ,
+            floorY = floorY
+        )
+        petLocomotion.setNavGrid(navGrid)
+        break
       }
     }
   }
@@ -1686,6 +1824,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       firebaseManager = firebaseManager,
                       isEnvironmentSetup = isEnvironmentSetup,
                       isRoomMode = isRoomMode,
+                      isRoomProcessing = isRoomProcessing,
                       isDebugGridEnabled = isDebugGridEnabled,
                       onDebugGridToggle = ::toggleDebugGrid,
                       isRoomMeshVisible = isRoomMeshVisible,
@@ -1725,6 +1864,8 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     clapDetector.stop()
     attentionResumeJob?.cancel()
+    roomChangeCheckJob?.cancel()
+    roomChangeCheckJob = null
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
     // Clean up bone pickup system
@@ -2154,6 +2295,12 @@ class ImmersiveActivity : AppSystemActivity() {
         }
 
         override fun onAnchorAdded(room: MRUKRoom, anchor: Entity) {
+            // Only process anchors for the CURRENT room we're tracking
+            val roomUuid = room.anchor.uuid.toString()
+            if (currentProcessedRoomUuid != null && roomUuid != currentProcessedRoomUuid) {
+                Log.d(TAG, "Ignoring anchor from different room: $roomUuid (current: $currentProcessedRoomUuid)")
+                return
+            }
             // Create edge geometry for room bounds anchors (walls, floor, ceiling)
             onAnchorAddedHandler(room, anchor)
         }

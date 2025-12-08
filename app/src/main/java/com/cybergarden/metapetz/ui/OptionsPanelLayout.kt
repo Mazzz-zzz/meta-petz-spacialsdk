@@ -63,6 +63,7 @@ fun OptionsPanel(
     firebaseManager: FirebaseManager? = null,
     isEnvironmentSetup: Boolean = false,
     isRoomMode: Boolean = false,  // true = room scan mode, false = outside mode
+    isRoomProcessing: Boolean = false,  // true = room is being processed (loading)
     isDebugGridEnabled: Boolean = false,
     onDebugGridToggle: ((Boolean) -> Unit)? = null,
     isRoomMeshVisible: Boolean = false,
@@ -187,10 +188,41 @@ fun OptionsPanel(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Room Scan button (MRUK) - highlighted when active
+            // Room Scan button (MRUK) - highlighted when active, shows loading state
             if (onScanRoom != null) {
                 val isRoomScanActive = isEnvironmentSetup && isRoomMode
-                if (isRoomScanActive) {
+                if (isRoomProcessing) {
+                    // Show loading state while room is being processed
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(Color(0xFF424242)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Processing Room...",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = Color(0xFF4CAF50),
+                            trackColor = Color(0xFF1B5E20)
+                        )
+                    }
+                } else if (isRoomScanActive) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
