@@ -694,6 +694,96 @@ class NavGrid(
         return grid[gx][gz]
     }
 
+    // ==================== MANUAL EDITING ====================
+
+    /**
+     * Manually block a cell at a world position.
+     * Used for debug/edit mode to mark areas as non-walkable.
+     * @return true if cell was blocked, false if out of bounds or already blocked
+     */
+    fun blockCellAtWorldPos(worldX: Float, worldZ: Float): Boolean {
+        val gx = worldToGridX(worldX)
+        val gz = worldToGridZ(worldZ)
+
+        if (gx < 0 || gx >= gridWidth || gz < 0 || gz >= gridHeight) {
+            return false
+        }
+
+        if (!grid[gx][gz]) return false  // Already blocked
+
+        grid[gx][gz] = false
+        walkableCellsDirty = true
+        updateDebugSphereColor(gx, gz)
+        Log.d(TAG, "Manually blocked cell ($gx, $gz)")
+        return true
+    }
+
+    /**
+     * Manually unblock a cell at a world position.
+     * Used for debug/edit mode to mark areas as walkable.
+     * @return true if cell was unblocked, false if out of bounds or already walkable
+     */
+    fun unblockCellAtWorldPos(worldX: Float, worldZ: Float): Boolean {
+        val gx = worldToGridX(worldX)
+        val gz = worldToGridZ(worldZ)
+
+        if (gx < 0 || gx >= gridWidth || gz < 0 || gz >= gridHeight) {
+            return false
+        }
+
+        if (grid[gx][gz]) return false  // Already walkable
+
+        grid[gx][gz] = true
+        walkableCellsDirty = true
+        updateDebugSphereColor(gx, gz)
+        Log.d(TAG, "Manually unblocked cell ($gx, $gz)")
+        return true
+    }
+
+    /**
+     * Get grid cell indices at a world position.
+     * @return Pair(gx, gz) or null if out of bounds
+     */
+    fun getGridCellAt(worldX: Float, worldZ: Float): Pair<Int, Int>? {
+        val gx = worldToGridX(worldX)
+        val gz = worldToGridZ(worldZ)
+
+        if (gx < 0 || gx >= gridWidth || gz < 0 || gz >= gridHeight) {
+            return null
+        }
+        return Pair(gx, gz)
+    }
+
+    /**
+     * Update the debug sphere color for a single cell after manual edit.
+     */
+    private fun updateDebugSphereColor(gx: Int, gz: Int) {
+        if (!debugVisualizationCreated) return
+
+        // Calculate index in the debug entities list
+        val index = gx * gridHeight + gz
+        if (index >= debugEntities.size) return
+
+        val entity = debugEntities[index]
+        val isWalkable = grid[gx][gz]
+
+        val color = if (isWalkable) {
+            val distToBlocked = getDistanceToNearestBlocked(gx, gz)
+            val t = (distToBlocked / 5f).coerceIn(0f, 1f)
+            Color4(1f - t * 0.8f, 1f, 0.2f, 0.5f)
+        } else {
+            // Red for blocked
+            Color4(1f, 0.2f, 0.2f, 0.5f)
+        }
+
+        entity.setComponent(Material().apply {
+            baseColor = color
+            unlit = true
+        })
+    }
+
+    // ==================== END MANUAL EDITING ====================
+
     /**
      * Get a random walkable point for wandering.
      * Returns null if no walkable cells exist.

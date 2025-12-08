@@ -1962,3 +1962,167 @@ class PointToMoveSystem(
         pointerEntity = null
     }
 }
+
+/**
+ * NavGridEditSystem - Allows manual editing of NavGrid cells via pointing.
+ *
+ * When enabled:
+ * - Shows an orange pointer at the targeted NavGrid cell
+ * - Pinch/trigger toggles the cell between walkable/blocked
+ * - Updates debug visualization in real-time
+ */
+class NavGridEditSystem(
+    private val mrukFeature: MRUKFeature,
+    private val getNavGrid: () -> NavGrid?,
+    private val floorY: Float = 0f
+) : SystemBase() {
+
+    companion object {
+        private const val TAG = "NavGridEditSystem"
+    }
+
+    var isEnabled = false
+        set(value) {
+            field = value
+            Log.d(TAG, "Edit mode ${if (value) "enabled" else "disabled"}")
+            if (!value) {
+                pointerEntity?.setComponent(Visible(false))
+            }
+        }
+
+    private var pointerEntity: Entity? = null
+    private var lastTriggerTime = 0L
+    private val triggerCooldown = 200L  // Fast response for editing
+
+    private fun getRightHand(): Entity? {
+        return systemManager
+            .tryFindSystem<PlayerBodyAttachmentSystem>()
+            ?.tryGetLocalPlayerAvatarBody()
+            ?.rightHand
+    }
+
+    private fun getOrCreatePointer(): Entity {
+        pointerEntity?.let { return it }
+
+        // Create an orange sphere as the edit pointer
+        val pointer = Entity.create(
+            listOf(
+                Mesh(android.net.Uri.parse("mesh://sphere")),
+                Sphere(0.05f),  // Slightly larger for visibility
+                Material().apply {
+                    baseColor = Color4(1f, 0.5f, 0f, 0.9f)  // Orange
+                    unlit = true
+                },
+                Transform(Pose(Vector3(0f, -100f, 0f), Quaternion())),
+                Scale(Vector3(1f, 0.5f, 1f)),  // Disc shape
+                Visible(false)
+            )
+        )
+        pointerEntity = pointer
+        Log.d(TAG, "Created edit pointer entity")
+        return pointer
+    }
+
+    override fun execute() {
+        if (!isEnabled) return
+
+        val currentTime = System.currentTimeMillis()
+        val pointer = getOrCreatePointer()
+        val navGrid = getNavGrid()
+
+        if (navGrid == null) {
+            pointer.setComponent(Visible(false))
+            return
+        }
+
+        // Get right hand pose
+        val rightHand = getRightHand()
+        val rightHandPose = rightHand?.tryGetComponent<Transform>()?.transform
+
+        if (rightHandPose == null || rightHandPose == Pose()) {
+            pointer.setComponent(Visible(false))
+            return
+        }
+
+        // Get pointing direction
+        val direction = (rightHandPose.q * Vector3(0f, 0f, 1f)).normalize()
+
+        // Raycast to floor plane
+        val hitPoint = raycastFloorPlane(rightHandPose.t, direction, navGrid.floorY)
+
+        if (hitPoint != null) {
+            // Check if this is a valid grid cell
+            val gridCell = navGrid.getGridCellAt(hitPoint.x, hitPoint.z)
+
+            if (gridCell != null) {
+                // Show pointer at cell center
+                val cellCenter = navGrid.gridToWorld(gridCell.first, gridCell.second)
+                pointer.setComponent(Transform(Pose(
+                    Vector3(cellCenter.x, cellCenter.y + 0.02f, cellCenter.z),
+                    Quaternion()
+                )))
+                pointer.setComponent(Visible(true))
+
+                // Update pointer color based on current cell state
+                val isWalkable = navGrid.isWalkable(hitPoint.x, hitPoint.z)
+                pointer.setComponent(Material().apply {
+                    baseColor = if (isWalkable) {
+                        Color4(1f, 0.3f, 0f, 0.9f)  // Orange-red (will block)
+                    } else {
+                        Color4(0f, 1f, 0.3f, 0.9f)  // Green (will unblock)
+                    }
+                    unlit = true
+                })
+
+                // Check for trigger/pinch to toggle cell
+                val controller = rightHand.tryGetComponent<Controller>()
+                val triggerMask = ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR or ButtonBits.ButtonA
+                val isPinch = if (controller != null) {
+                    (controller.buttonState and triggerMask) != 0
+                } else {
+                    false
+                }
+
+                if (isPinch && (currentTime - lastTriggerTime > triggerCooldown)) {
+                    lastTriggerTime = currentTime
+
+                    // Toggle the cell
+                    if (isWalkable) {
+                        navGrid.blockCellAtWorldPos(hitPoint.x, hitPoint.z)
+                        Log.d(TAG, "Blocked cell at (${gridCell.first}, ${gridCell.second})")
+                    } else {
+                        navGrid.unblockCellAtWorldPos(hitPoint.x, hitPoint.z)
+                        Log.d(TAG, "Unblocked cell at (${gridCell.first}, ${gridCell.second})")
+                    }
+                }
+            } else {
+                pointer.setComponent(Visible(false))
+            }
+        } else {
+            pointer.setComponent(Visible(false))
+        }
+    }
+
+    /**
+     * Simple floor plane raycast
+     */
+    private fun raycastFloorPlane(origin: Vector3, direction: Vector3, planeY: Float): Vector3? {
+        // If pointing roughly horizontal or up, no floor hit
+        if (direction.y >= -0.01f) return null
+
+        // Calculate intersection with Y = planeY
+        val t = (planeY - origin.y) / direction.y
+        if (t < 0 || t > 20f) return null  // Max 20m distance
+
+        return Vector3(
+            origin.x + direction.x * t,
+            planeY,
+            origin.z + direction.z * t
+        )
+    }
+
+    fun cleanup() {
+        pointerEntity?.destroy()
+        pointerEntity = null
+    }
+}

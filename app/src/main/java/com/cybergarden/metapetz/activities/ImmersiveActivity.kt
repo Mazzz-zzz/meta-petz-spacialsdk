@@ -29,7 +29,9 @@ import com.cybergarden.metapetz.BuildConfig
 import com.cybergarden.metapetz.R
 import com.cybergarden.metapetz.ecs.ClapDetector
 import com.cybergarden.metapetz.ecs.NavGrid
+import com.cybergarden.metapetz.ecs.NavGridEditSystem
 import com.cybergarden.metapetz.ecs.PetLocomotion
+import com.cybergarden.metapetz.ecs.PettingDetector
 import com.cybergarden.metapetz.ecs.QRCodeSystem
 import androidx.compose.ui.text.font.FontWeight
 import com.cybergarden.metapetz.model.PetData
@@ -149,6 +151,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private var isEnvironmentSetup by mutableStateOf(false)
   private var isRoomMode by mutableStateOf(false)  // true = scanned room with pathfinding, false = outside mode
   private var isDebugGridEnabled by mutableStateOf(false)
+  private var isNavGridEditMode by mutableStateOf(false)
+  private var navGridEditSystem: NavGridEditSystem? = null
   private var spinningJob: Job? = null
   private var panelEntity: Entity? = null
   private var showBrowserPanel by mutableStateOf(false)
@@ -342,9 +346,10 @@ class ImmersiveActivity : AppSystemActivity() {
   private var handDistance by mutableStateOf(0f)
   private var cumulativeDisplacement by mutableStateOf(0f)
 
-  // Sit gesture debug values (right hand raise + left hand below head)
-  private var rightHandRaise by mutableStateOf(0f)
-  private var leftHandBelowHead by mutableStateOf(0f)
+  // Petting debug values
+  private var pettingDistanceToPet by mutableStateOf(-1f)
+  private var pettingCumulative by mutableStateOf(0f)
+  private var isHandInPetRange by mutableStateOf(false)
 
   // Clap detector for calling pet's attention and raise hand for sit
   private val clapDetector: ClapDetector by lazy {
@@ -374,6 +379,49 @@ class ImmersiveActivity : AppSystemActivity() {
       }
     }
   }
+
+  // Petting detector for detecting when player pets the animal
+  private val pettingDetector: PettingDetector by lazy {
+    PettingDetector(activityScope, systemManager).apply {
+      getPetEntity = { currentPetEntity }
+      onPettingDetected = { handPosition ->
+        Log.d(TAG, "PETTING DETECTED! Awarding XP")
+        awardPettingXp()
+        // Spawn a burst of hearts with wider spread
+        repeat(5) {
+          val heartPos = Vector3(
+              handPosition.x + (Random.nextFloat() - 0.5f) * 0.25f,
+              handPosition.y + 0.05f + Random.nextFloat() * 0.1f,
+              handPosition.z + (Random.nextFloat() - 0.5f) * 0.25f
+          )
+          spawnHeartParticle(heartPos)
+        }
+        // If pet is idle, accumulate petting toward getting attention
+        if (currentActivity == AttentionActivity.IDLE) {
+          cumulativePettingForAttention++
+          Log.d(TAG, "Petting count: $cumulativePettingForAttention / $PETTING_ATTENTION_THRESHOLD")
+          if (cumulativePettingForAttention >= PETTING_ATTENTION_THRESHOLD) {
+            Log.d(TAG, "Enough petting! Pet now has your attention (silent)")
+            cumulativePettingForAttention = 0
+            callPetAttention(silent = true)
+          }
+        } else {
+          // Reset counter if pet already has attention
+          cumulativePettingForAttention = 0
+        }
+      }
+      onSpawnHeart = { position ->
+        spawnHeartParticle(position)
+      }
+    }
+  }
+
+  // Active heart particles for cleanup
+  private val activeHearts = mutableListOf<Entity>()
+
+  // Cumulative petting count for getting attention (resets when attention is gained or timeout)
+  private var cumulativePettingForAttention = 0
+  private val PETTING_ATTENTION_THRESHOLD = 3  // Need 3 petting detections to get attention
 
   // Pet locomotion system for point-to-move functionality
   private val petLocomotion: PetLocomotion by lazy {
@@ -951,14 +999,19 @@ class ImmersiveActivity : AppSystemActivity() {
     clapDetector.start()
     Log.d(TAG, "Clap detector started")
 
+    // Start petting detection for XP and hearts
+    pettingDetector.start()
+    Log.d(TAG, "Petting detector started")
+
     // Start periodic distance updates for debug UI
     activityScope.launch {
       while (true) {
         handDistance = clapDetector.currentDistance
         cumulativeDisplacement = clapDetector.currentCumulative
-        // Sit gesture debug values
-        rightHandRaise = clapDetector.currentRightHandRaise
-        leftHandBelowHead = clapDetector.currentLeftHandBelowHead
+        // Petting debug values
+        pettingDistanceToPet = pettingDetector.currentDistanceToPet
+        pettingCumulative = pettingDetector.currentCumulativeMovement
+        isHandInPetRange = pettingDetector.isHandInRange
         delay(100) // Update 10 times per second
       }
     }
@@ -1914,9 +1967,14 @@ class ImmersiveActivity : AppSystemActivity() {
                       distanceToBone = debugDistanceToBone,
                       bonePickedUp = debugBonePickedUp,
                       returningBone = debugReturningBone,
-                      // Sit gesture debug (right hand raise + left hand below head)
-                      rightHandRaise = rightHandRaise,
-                      leftHandBelowHead = leftHandBelowHead
+                      // Petting debug
+                      pettingDistanceToPet = pettingDistanceToPet,
+                      pettingCumulative = pettingCumulative,
+                      isHandInPetRange = isHandInPetRange,
+                      // NavGrid edit mode
+                      isNavGridEditMode = isNavGridEditMode,
+                      onNavGridEditModeToggle = ::toggleNavGridEditMode,
+                      onRecalculateCulling = ::recalculateNavGridCulling
                   )
                 }
               }
@@ -1936,6 +1994,10 @@ class ImmersiveActivity : AppSystemActivity() {
   override fun onSpatialShutdown() {
     spinningJob?.cancel()
     clapDetector.stop()
+    pettingDetector.stop()
+    // Cleanup any active hearts
+    activeHearts.forEach { try { it.destroy() } catch (_: Exception) {} }
+    activeHearts.clear()
     attentionResumeJob?.cancel()
     hideAttentionIndicator()
     roomChangeCheckJob?.cancel()
@@ -1997,6 +2059,64 @@ class ImmersiveActivity : AppSystemActivity() {
       grid.showDebugVisualization()
     } else {
       grid.hideDebugVisualization()
+      // Also disable edit mode when hiding grid
+      if (isNavGridEditMode) {
+        toggleNavGridEditMode(false)
+      }
+    }
+  }
+
+  /**
+   * Toggle NavGrid edit mode - allows pointing at cells to block them.
+   */
+  private fun toggleNavGridEditMode(enabled: Boolean) {
+    Log.d(TAG, "Toggle NavGrid edit mode: $enabled")
+    isNavGridEditMode = enabled
+
+    if (enabled) {
+      val grid = navGrid ?: return
+      val mruk = mrukFeature ?: return
+
+      // Create the edit system if it doesn't exist
+      if (navGridEditSystem == null) {
+        navGridEditSystem = NavGridEditSystem(
+          mrukFeature = mruk,
+          getNavGrid = { navGrid },
+          floorY = grid.floorY
+        )
+        systemManager.registerSystem(navGridEditSystem!!)
+        Log.d(TAG, "NavGrid edit system registered")
+      }
+      navGridEditSystem?.isEnabled = true
+    } else {
+      navGridEditSystem?.isEnabled = false
+    }
+  }
+
+  /**
+   * Recalculate NavGrid culling - removes small disconnected walkable regions.
+   * Also refreshes the debug visualization.
+   */
+  private fun recalculateNavGridCulling() {
+    val grid = navGrid ?: run {
+      Log.w(TAG, "Cannot recalculate culling - no NavGrid")
+      return
+    }
+
+    Log.d(TAG, "Recalculating NavGrid culling...")
+    val beforeCount = grid.getWalkableCellCount()
+
+    // Run the culling algorithm
+    grid.keepLargestConnectedRegion()
+
+    val afterCount = grid.getWalkableCellCount()
+    Log.d(TAG, "Culling complete: $beforeCount -> $afterCount walkable cells (removed ${beforeCount - afterCount})")
+
+    // Refresh debug visualization if visible
+    if (isDebugGridEnabled) {
+      grid.clearDebugVisualization()
+      grid.createDebugVisualization(showBlocked = true)
+      grid.showDebugVisualization()
     }
   }
 
@@ -2043,7 +2163,7 @@ class ImmersiveActivity : AppSystemActivity() {
    * Clap always (re)activates attention. Use raise hand gesture for sit command.
    * If already sitting, clap extends the sit duration.
    */
-  private fun callPetAttention() {
+  private fun callPetAttention(silent: Boolean = false) {
     // Don't do anything if no pet is spawned
     if (currentPetEntity == null) {
       Log.d(TAG, "Clap detected but no pet spawned - ignoring")
@@ -2070,12 +2190,14 @@ class ImmersiveActivity : AppSystemActivity() {
       return
     }
 
-    Log.d(TAG, "Clap detected! Calling pet attention")
+    Log.d(TAG, "Calling pet attention (silent=$silent)")
 
-    // Play whistle sound at head position
-    val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-    if (headPos != null) {
-      whistlePlayer.play(headPos, 1.0f, false)
+    // Play whistle sound at head position (unless silent)
+    if (!silent) {
+      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+      if (headPos != null) {
+        whistlePlayer.play(headPos, 1.0f, false)
+      }
     }
 
     // Set pet as attentive with FACING_PLAYER activity
@@ -2205,6 +2327,85 @@ class ImmersiveActivity : AppSystemActivity() {
     xpGainJob?.cancel()
     xpGainJob = null
     Log.d(TAG, "XP gain stopped")
+  }
+
+  /**
+   * Spawn a heart particle at position that floats up and shrinks out.
+   * Uses pinkheart.glb model.
+   */
+  private fun spawnHeartParticle(position: Vector3) {
+    try {
+      val entity = Entity.create(
+          listOf(
+              Mesh("apk:///models/pinkheart.glb".toUri()),
+              Transform(Pose(position, Quaternion())),
+              Scale(Vector3(0.03f, 0.03f, 0.03f)),
+              Visible(true)
+          )
+      )
+
+      activeHearts.add(entity)
+
+      // Animate floating up and shrinking (no material updates to avoid flicker)
+      activityScope.launch {
+        val startY = position.y
+        val duration = 1500L
+        val startTime = System.currentTimeMillis()
+        val floatHeight = 0.4f
+        val wobbleAmount = 0.03f
+        val startScale = 0.03f
+
+        while (isActive) {
+          val elapsed = System.currentTimeMillis() - startTime
+          val t = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
+
+          if (t >= 1f) break
+
+          val easedT = 1f - (1f - t) * (1f - t)
+          val wobble = sin(t * 5f * PI.toFloat()) * wobbleAmount * (1f - t)
+          val newY = startY + floatHeight * easedT
+          val newPos = Vector3(position.x + wobble, newY, position.z)
+
+          // Shrink as it rises
+          val scale = startScale * (1f - easedT * 0.7f)
+
+          entity.setComponent(Transform(Pose(newPos, Quaternion(0f, elapsed * 0.1f % 360f, 0f))))
+          entity.setComponent(Scale(Vector3(scale, scale, scale)))
+
+          delay(16)
+        }
+
+        try {
+          activeHearts.remove(entity)
+          entity.destroy()
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to destroy heart: ${e.message}")
+        }
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to spawn heart particle: ${e.message}", e)
+    }
+  }
+
+  /**
+   * Award XP for petting the pet.
+   */
+  private fun awardPettingXp() {
+    currentPetData?.let { petData ->
+      var newXp = petData.xp + PettingDetector.XP_PER_PET
+      var newLevel = petData.level
+
+      if (newXp >= 1f) {
+        newXp = 0f
+        newLevel += 1
+        Log.d(TAG, "Level up from petting! New level: $newLevel")
+        firebaseManager.updatePetLevel("demoUser", petData.firebaseKey, newLevel)
+      }
+
+      firebaseManager.updatePetXp("demoUser", petData.firebaseKey, newXp)
+      currentPetData = petData.copy(xp = newXp, level = newLevel)
+      Log.d(TAG, "Petting XP awarded: ${(newXp * 100).toInt()}%")
+    }
   }
 
   // Distance tracking for fetch debug
@@ -3519,10 +3720,10 @@ class ImmersiveActivity : AppSystemActivity() {
     val rightWorldX = worldPos.x + rightRotated.x
     val rightWorldZ = worldPos.z + rightRotated.z
 
-    // Block points every 15cm along the wall
-    val pointSpacing = 0.15f  // 15cm spacing
+    // Block points every 10cm along the wall for denser coverage
+    val pointSpacing = 0.10f  // 10cm spacing (denser than before)
     val numPoints = maxOf(2, (width / pointSpacing).toInt() + 1)
-    val blockRadius = 0.075f  // 7.5cm blocking radius (15cm total diameter)
+    val blockRadius = 0.12f  // 12cm blocking radius (24cm total diameter) - ensures overlap
 
     for (i in 0 until numPoints) {
       val t = if (numPoints > 1) i.toFloat() / (numPoints - 1) else 0.5f
@@ -3539,7 +3740,7 @@ class ImmersiveActivity : AppSystemActivity() {
       grid.blockPolygon(blockCorners, padding = 0f)
     }
 
-    Log.d(TAG, "Blocked wall with $numPoints points every 15cm, each blocking ${blockRadius*2}m area")
+    Log.d(TAG, "Blocked wall with $numPoints points every 10cm, each blocking ${blockRadius*2}m area")
   }
 
   /**

@@ -84,9 +84,14 @@ fun OptionsPanel(
     distanceToBone: Float = -1f,  // -1 = no target bone
     bonePickedUp: Boolean = false,
     returningBone: Boolean = false,
-    // Sit command debug states
-    rightHandRaise: Float = 0f,  // Cumulative right hand Y raise (need 0.50m)
-    leftHandBelowHead: Float = 0f  // How far left hand is below head (need 0.20m)
+    // Petting debug states
+    pettingDistanceToPet: Float = -1f,  // Distance from hand to pet (-1 = no pet)
+    pettingCumulative: Float = 0f,  // Cumulative petting movement
+    isHandInPetRange: Boolean = false,  // Is hand within petting range
+    // NavGrid edit mode
+    isNavGridEditMode: Boolean = false,
+    onNavGridEditModeToggle: ((Boolean) -> Unit)? = null,
+    onRecalculateCulling: (() -> Unit)? = null
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -916,6 +921,45 @@ fun OptionsPanel(
                     }
                 }
 
+                // NavGrid Edit Mode toggle (point to block cells)
+                if (onNavGridEditModeToggle != null && isDebugGridEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = isNavGridEditMode,
+                            onCheckedChange = { enabled ->
+                                Log.d("OptionsPanel", "NavGrid edit mode toggled: $enabled")
+                                onNavGridEditModeToggle(enabled)
+                            },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = Color(0xFFFF5722),
+                                uncheckedColor = Color.Gray
+                            )
+                        )
+                        Text(
+                            text = "Edit NavGrid (pinch to block)",
+                            fontSize = 14.sp,
+                            color = if (isNavGridEditMode) Color(0xFFFF5722) else Color.DarkGray
+                        )
+                    }
+                }
+
+                // Recalculate culling button
+                if (onRecalculateCulling != null && isDebugGridEnabled) {
+                    SecondaryButton(
+                        label = "Recalculate Culling",
+                        onClick = {
+                            Log.d("OptionsPanel", "Recalculate culling clicked")
+                            onRecalculateCulling()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    )
+                }
+
                 // Room Mesh visibility toggle (debug)
                 if (onRoomMeshToggle != null) {
                     Row(
@@ -1078,71 +1122,72 @@ fun OptionsPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Sit Command Debug Section
+                // Petting Debug Section
                 Text(
-                    text = "Sit Command (Raise R + L Low)",
+                    text = "Petting (move hand near pet)",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF9C27B0),
+                    color = Color(0xFFE91E63),
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
 
-                // Right hand raise progress bar
+                // Distance to pet
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(
+                                    if (isHandInPetRange) Color(0xFFE91E63) else Color.Gray,
+                                    shape = CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "In range:",
+                            fontSize = 11.sp,
+                            color = Color.DarkGray
+                        )
+                    }
                     Text(
-                        text = "R Hand↑:",
+                        text = if (pettingDistanceToPet >= 0) String.format("%.0fcm", pettingDistanceToPet * 100) else "N/A",
                         fontSize = 11.sp,
-                        color = Color.DarkGray
-                    )
-                    Text(
-                        text = String.format("%.0fcm / 50cm", rightHandRaise * 100),
-                        fontSize = 11.sp,
-                        fontWeight = if (rightHandRaise >= 0.50f) FontWeight.Bold else FontWeight.Normal,
-                        color = if (rightHandRaise >= 0.50f) Color(0xFF4CAF50) else Color.DarkGray
+                        fontWeight = if (isHandInPetRange) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isHandInPetRange) Color(0xFFE91E63) else Color.DarkGray
                     )
                 }
-                LinearProgressIndicator(
-                    progress = { (rightHandRaise / 0.50f).coerceIn(0f, 1f) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = if (rightHandRaise >= 0.50f) Color(0xFF4CAF50) else Color(0xFF9C27B0),
-                    trackColor = Color(0xFF424242)
-                )
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Left hand below head progress bar
+                // Petting progress bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "L Hand↓ head:",
+                        text = "Pet progress:",
                         fontSize = 11.sp,
                         color = Color.DarkGray
                     )
-                    val isBelowEnough = leftHandBelowHead >= 0.50f
                     Text(
-                        text = String.format("%.0fcm / 50cm", leftHandBelowHead * 100),
+                        text = String.format("%.0fcm / 15cm", pettingCumulative * 100),
                         fontSize = 11.sp,
-                        fontWeight = if (isBelowEnough) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isBelowEnough) Color(0xFF4CAF50) else Color.DarkGray
+                        fontWeight = if (pettingCumulative >= 0.15f) FontWeight.Bold else FontWeight.Normal,
+                        color = if (pettingCumulative >= 0.15f) Color(0xFF4CAF50) else Color.DarkGray
                     )
                 }
                 LinearProgressIndicator(
-                    progress = { (leftHandBelowHead / 0.50f).coerceIn(0f, 1f) },
+                    progress = { (pettingCumulative / 0.15f).coerceIn(0f, 1f) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp)),
-                    color = if (leftHandBelowHead >= 0.50f) Color(0xFF4CAF50) else Color(0xFF9C27B0),
+                    color = if (pettingCumulative >= 0.15f) Color(0xFF4CAF50) else Color(0xFFE91E63),
                     trackColor = Color(0xFF424242)
                 )
 
