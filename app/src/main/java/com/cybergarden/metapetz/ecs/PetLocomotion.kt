@@ -459,8 +459,9 @@ class PetLocomotion(
 
             while (isActive && isFacingPlayer) {
                 try {
-                    // Skip rotation when pet is walking - walk has its own rotation code
-                    if (isWalking) {
+                    // Skip rotation when pet is walking or sitting
+                    // Walk has its own rotation, sitting should lock rotation
+                    if (isWalking || isSitting) {
                         delay(16)
                         continue
                     }
