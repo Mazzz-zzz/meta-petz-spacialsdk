@@ -769,8 +769,20 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   private var browserPanelId = 9000  // Counter for dynamic panel IDs
+  private var currentBrowserUrl = "https://metapetz.com"  // Current URL for browser panel
 
   private fun openBrowserPanel() {
+    openBrowserWithUrl("https://metapetz.com")
+  }
+
+  private fun openPetPage(petShortId: String) {
+    val url = "https://metapetz.com/view/$petShortId"
+    Log.d(TAG, "Opening pet page: $url")
+    openBrowserWithUrl(url)
+  }
+
+  private fun openBrowserWithUrl(url: String) {
+    currentBrowserUrl = url
     Log.d(TAG, "Opening browser panel")
     showBrowserPanel = true
 
@@ -792,7 +804,8 @@ class ImmersiveActivity : AppSystemActivity() {
             setContent {
               BrowserPanel(
                 onClose = ::closeBrowserPanel,
-                onEnterPetId = { closeBrowserPanel() }
+                onEnterPetId = { closeBrowserPanel() },
+                initialUrl = currentBrowserUrl
               )
             }
           }
@@ -1255,9 +1268,9 @@ class ImmersiveActivity : AppSystemActivity() {
   )
 
   // Hat offset above pet's head (local space, relative to pet entity)
-  private val HAT_OFFSET_DEFAULT = Vector3(0f, 0.126f, 0.03f)  // Above head, slightly forward
-  private val HAT_OFFSET_JUMP = Vector3(0f, 0.15f, 0.05f)      // During jump: higher + more forward
-  private val HAT_OFFSET_EAT = Vector3(0f, 0.10f, 0.06f)       // During eat: lower + more forward (head bends down)
+  private val HAT_OFFSET_DEFAULT = Vector3(0f, 0.126f, 0.033f)  // Above head, slightly forward
+  private val HAT_OFFSET_JUMP = Vector3(0f, 0.15f, 0.055f)      // During jump: higher + more forward
+  private val HAT_OFFSET_EAT = Vector3(0f, 0.10f, 0.066f)       // During eat: lower + more forward (head bends down)
   // 180 degree rotation around X axis to flip upside down
   private val HAT_ROTATION = Quaternion(1f, 0f, 0f, 0f)  // 180° X flip
   private val HAT_BASE_SCALE = 0.15f  // Base scale for hats (they're huge by default)
@@ -2144,7 +2157,9 @@ class ImmersiveActivity : AppSystemActivity() {
                       onRecalculateCulling = ::recalculateNavGridCulling,
                       // Accessories visibility
                       showAccessories = showAccessories,
-                      onShowAccessoriesToggle = ::setAccessoriesVisible
+                      onShowAccessoriesToggle = ::setAccessoriesVisible,
+                      // Open pet page
+                      onOpenPetPage = ::openPetPage
                   )
                 }
               }

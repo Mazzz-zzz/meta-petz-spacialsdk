@@ -83,7 +83,9 @@ fun OptionsPanel(
     onRecalculateCulling: (() -> Unit)? = null,
     // Accessories visibility
     showAccessories: Boolean = true,
-    onShowAccessoriesToggle: ((Boolean) -> Unit)? = null
+    onShowAccessoriesToggle: ((Boolean) -> Unit)? = null,
+    // Open pet page in browser
+    onOpenPetPage: ((String) -> Unit)? = null  // Opens browser to pet's page with shortId
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -799,6 +801,26 @@ fun OptionsPanel(
                                     )
                                 }
                             }
+                            // Show wifi/link button to view pet page
+                            if (petCount >= 1 && onOpenPetPage != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(24.dp))
+                                        .background(Color(0xFF2196F3))
+                                        .clickable {
+                                            // Open first pet's page (or selected pet)
+                                            val petId = claimedPets.firstOrNull()?.shortId ?: return@clickable
+                                            onOpenPetPage(petId)
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "🌐",
+                                        fontSize = 20.sp
+                                    )
+                                }
+                            }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                     }
@@ -1154,7 +1176,8 @@ fun PetInfoPanel(
 @Composable
 fun BrowserPanel(
     onClose: () -> Unit,
-    onEnterPetId: () -> Unit
+    onEnterPetId: () -> Unit,
+    initialUrl: String = "https://metapetz.com"
 ) {
     SpatialTheme(colorScheme = getPanelTheme()) {
         Column(
@@ -1227,7 +1250,7 @@ fun BrowserPanel(
                         settings.domStorageEnabled = true
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
-                        loadUrl("https://metapetz.com")
+                        loadUrl(initialUrl)
                     }
                 },
                 modifier = Modifier
