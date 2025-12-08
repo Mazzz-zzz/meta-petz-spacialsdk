@@ -302,7 +302,8 @@ class ImmersiveActivity : AppSystemActivity() {
   // Attention system - activity-based attention tracking
   enum class AttentionActivity {
     IDLE,           // Wandering around, no attention
-    FACING_PLAYER,  // Has attention, facing player - can timeout
+    FACING_PLAYER,  // Has attention, continuously facing player - can timeout
+    WALKING,        // Walking to commanded position - has attention
     SITTING,        // Sitting on command - has boredom timeout
     FETCHING        // Actively fetching bone - NO timeout
   }
@@ -383,16 +384,28 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "Pet started walking")
       }
       onWalkEnd = {
-        // Don't reset attention timeout during fetch - fetch coroutine manages its own state
-        if (currentActivity != AttentionActivity.FETCHING) {
-          Log.d(TAG, "Pet finished walking - resetting attention timeout")
+        // Don't interfere during fetch - fetch coroutine manages its own state
+        if (currentActivity == AttentionActivity.FETCHING) {
+          Log.d(TAG, "Pet finished walking during fetch - skipping")
+        } else if (moveCommandCount >= MAX_MOVE_COMMANDS) {
+          // Pet hit move limit - lose attention
+          Log.d(TAG, "Walk finished - pet loses attention (too many commands)")
+          isPetAttentive = false
+          currentActivity = AttentionActivity.IDLE
+          stopXpGain()
+          hideAttentionIndicator()
+          petLocomotion.stopFacingPlayer()
+          startIdleWander()
+        } else if (isPetAttentive && currentActivity == AttentionActivity.WALKING) {
+          // Return to FACING_PLAYER if still attentive
+          Log.d(TAG, "Walk finished - returning to FACING_PLAYER")
+          currentActivity = AttentionActivity.FACING_PLAYER
+          petLocomotion.startFacingPlayer { this@ImmersiveActivity.getHeadEntity() }
           resetAttentionTimeout()
-        } else {
-          Log.d(TAG, "Pet finished walking during fetch - skipping timeout reset")
         }
       }
-      // Tell PetLocomotion about attention state - only accept move commands when FACING_PLAYER
-      isAttentive = { isPetAttentive && currentActivity == AttentionActivity.FACING_PLAYER }
+      // Tell PetLocomotion about attention state - accept move commands when FACING_PLAYER or WALKING
+      isAttentive = { isPetAttentive && (currentActivity == AttentionActivity.FACING_PLAYER || currentActivity == AttentionActivity.WALKING) }
       // Provide head entity for fetch return
       getHeadEntity = { this@ImmersiveActivity.getHeadEntity() }
       // Fetch callbacks
@@ -401,7 +414,7 @@ class ImmersiveActivity : AppSystemActivity() {
         isPetAttentive = true
         currentActivity = AttentionActivity.FETCHING  // Lock attention during fetch
         attentionResumeJob?.cancel()  // Cancel any pending timeout
-        stopAttentionIndicator()  // Remove indicator during fetch
+        showAttentionIndicator()  // Show indicator during fetch (activity != IDLE)
         // Debug states
         debugFetchState = "MOVING_TO_BONE"
         debugBonePickedUp = false
@@ -431,6 +444,7 @@ class ImmersiveActivity : AppSystemActivity() {
         currentActivity = AttentionActivity.IDLE
         // Resume idle wander after fetch
         isPetAttentive = false
+        hideAttentionIndicator()
         startIdleWander()
         // Debug states
         debugFetchState = "IDLE"
@@ -467,6 +481,7 @@ class ImmersiveActivity : AppSystemActivity() {
         petHasBone = false
         currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
+        hideAttentionIndicator()
         startIdleWander()
         // Debug states
         debugFetchState = "IDLE"
@@ -491,34 +506,27 @@ class ImmersiveActivity : AppSystemActivity() {
         currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
         stopXpGain()
+        hideAttentionIndicator()
         startIdleWander()
       }
       onSitInterrupted = {
         Log.d(TAG, "Pet sit was interrupted")
         // Activity state is managed by whatever interrupted the sit
       }
-      // Track move commands to prevent XP farming
+      // Track move commands and set WALKING state
       onTargetSet = { _ ->
         moveCommandCount++
-        Log.d(TAG, "Move command $moveCommandCount/$MAX_MOVE_COMMANDS")
+        Log.d(TAG, "Move command $moveCommandCount/$MAX_MOVE_COMMANDS - setting WALKING state")
+
+        // Stop facing player while walking
+        petLocomotion.stopFacingPlayer()
+
+        // Set WALKING state (still has attention)
+        currentActivity = AttentionActivity.WALKING
+        showAttentionIndicator()  // Keep showing indicator during walk
+
         if (moveCommandCount >= MAX_MOVE_COMMANDS) {
-          Log.d(TAG, "Pet tired of being bossed around - losing attention after walk")
-          // Don't lose attention immediately - let the walk complete first
-          // The walk end callback will handle the attention loss
-          activityScope.launch {
-            // Wait for walk to finish (onWalkEnd will be called)
-            // Then lose attention
-            delay(500)  // Small delay to ensure walk starts
-            while (petLocomotion.isCurrentlyWalking()) {
-              delay(100)
-            }
-            Log.d(TAG, "Walk finished - pet now loses attention from too many commands")
-            isPetAttentive = false
-            currentActivity = AttentionActivity.IDLE
-            stopXpGain()
-            stopAttentionIndicator()
-            startIdleWander()
-          }
+          Log.d(TAG, "Pet tired of being bossed around - will lose attention after walk")
         }
       }
     }
@@ -1913,7 +1921,7 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     clapDetector.stop()
     attentionResumeJob?.cancel()
-    stopAttentionIndicator()
+    hideAttentionIndicator()
     roomChangeCheckJob?.cancel()
     roomChangeCheckJob = null
     petLocomotion.cleanup()
@@ -2066,8 +2074,8 @@ class ImmersiveActivity : AppSystemActivity() {
     petLocomotion.stopWalking()
     petLocomotion.stopIdleWander()
 
-    // Turn to face the player once (not continuous tracking)
-    petLocomotion.turnToFacePlayer(getHeadEntity())
+    // Start continuously facing the player with smooth rotation
+    petLocomotion.startFacingPlayer { getHeadEntity() }
 
     // Start XP gain coroutine
     startXpGain()
@@ -2117,7 +2125,7 @@ class ImmersiveActivity : AppSystemActivity() {
     // Update activity state
     currentActivity = AttentionActivity.SITTING
     attentionResumeJob?.cancel()  // Cancel any pending attention timeout
-    stopAttentionIndicator()  // Remove indicator during sit
+    showAttentionIndicator()  // Show indicator during sit (activity != IDLE)
 
     // Award 2% XP bonus for sitting
     currentPetData?.let { petData ->
@@ -2232,7 +2240,7 @@ class ImmersiveActivity : AppSystemActivity() {
     attentionResumeJob?.cancel()
 
     // Start fading attention indicator
-    startAttentionIndicator()
+    showAttentionIndicator()
 
     attentionResumeJob = activityScope.launch {
       delay(ATTENTION_TIMEOUT_MS)
@@ -2247,20 +2255,19 @@ class ImmersiveActivity : AppSystemActivity() {
       isPetAttentive = false
       currentActivity = AttentionActivity.IDLE
       stopXpGain()  // Stop XP accumulation when attention is lost
-      stopAttentionIndicator()  // Remove indicator when attention is lost
+      hideAttentionIndicator()  // Remove indicator when attention is lost
       petLocomotion.stopFacingPlayer()
       petLocomotion.startIdleWander()
     }
   }
 
   /**
-   * Create and start fading the attention indicator above the pet's head.
-   * The indicator starts at full opacity and fades to 0 over ATTENTION_TIMEOUT_MS.
+   * Show the attention indicator above the pet's head.
+   * Shows whenever activity is NOT IDLE - follows the pet continuously.
    */
-  private fun startAttentionIndicator() {
-    // Cancel any existing indicator job
-    attentionIndicatorJob?.cancel()
-    attentionIndicatorEntity?.destroy()
+  private fun showAttentionIndicator() {
+    // Already showing
+    if (attentionIndicatorEntity != null) return
 
     val petEntity = currentPetEntity ?: return
     val petTransform = petEntity.tryGetComponent<Transform>()?.transform ?: return
@@ -2284,17 +2291,12 @@ class ImmersiveActivity : AppSystemActivity() {
       )
     )
 
-    Log.d(TAG, "Attention indicator created at $indicatorPos")
+    Log.d(TAG, "Attention indicator shown")
 
-    // Start fading animation
-    val startTime = System.currentTimeMillis()
+    // Follow pet continuously
     attentionIndicatorJob = activityScope.launch {
-      while (isActive) {
+      while (isActive && attentionIndicatorEntity != null) {
         delay(50)  // Update ~20 times per second
-
-        val elapsed = System.currentTimeMillis() - startTime
-        val progress = (elapsed.toFloat() / ATTENTION_TIMEOUT_MS).coerceIn(0f, 1f)
-        val alpha = 1f - progress  // Fade from 1.0 to 0.0
 
         // Update indicator position to follow pet
         val currentPetTransform = currentPetEntity?.tryGetComponent<Transform>()?.transform
@@ -2306,29 +2308,19 @@ class ImmersiveActivity : AppSystemActivity() {
           )
           attentionIndicatorEntity?.setComponent(Transform(Pose(newPos, Quaternion())))
         }
-
-        // Update alpha
-        attentionIndicatorEntity?.setComponent(
-          Material().apply {
-            baseColor = Color4(1f, 0.8f, 0f, alpha)
-            unlit = true
-          }
-        )
-
-        if (progress >= 1f) break
       }
     }
   }
 
   /**
-   * Stop and remove the attention indicator.
+   * Hide and remove the attention indicator.
    */
-  private fun stopAttentionIndicator() {
+  private fun hideAttentionIndicator() {
     attentionIndicatorJob?.cancel()
     attentionIndicatorJob = null
     attentionIndicatorEntity?.destroy()
     attentionIndicatorEntity = null
-    Log.d(TAG, "Attention indicator removed")
+    Log.d(TAG, "Attention indicator hidden")
   }
 
   private fun loadGLXF(): Job {
@@ -2670,6 +2662,7 @@ class ImmersiveActivity : AppSystemActivity() {
     isPetAttentive = true
     currentActivity = AttentionActivity.FETCHING
     attentionResumeJob?.cancel()  // No timeout during fetch
+    showAttentionIndicator()  // Show indicator during fetch (activity != IDLE)
 
     activityScope.launch {
       // Wait for physics to settle (bone to land/stop bouncing)
@@ -2681,6 +2674,7 @@ class ImmersiveActivity : AppSystemActivity() {
         // Reset attention state if fetch didn't start
         currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
+        hideAttentionIndicator()
         petLocomotion.startIdleWander()
         return@launch
       }
@@ -2690,6 +2684,7 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "Pet no longer exists, skipping fetch")
         currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
+        hideAttentionIndicator()
         return@launch
       }
 

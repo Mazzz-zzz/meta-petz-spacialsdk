@@ -406,13 +406,19 @@ class PetLocomotion(
         isWalking = false
     }
 
+    // Turn to face player job (for smooth tweening)
+    private var turnToFaceJob: Job? = null
+
     /**
-     * Turn the pet to face the player's head position (for attention)
+     * Turn the pet to face the player's head position with smooth tweening.
      * @param headEntity The player's head entity
      */
     fun turnToFacePlayer(headEntity: Entity?) {
         val pet = petEntity ?: return
         val headPos = headEntity?.tryGetComponent<Transform>()?.transform?.t ?: return
+
+        // Cancel any existing turn job
+        turnToFaceJob?.cancel()
 
         try {
             val transform = pet.getComponent<Transform>()
@@ -424,17 +430,32 @@ class PetLocomotion(
             val distance = sqrt(dx * dx + dz * dz)
 
             if (distance > 0.01f) {
-                // Create direction vector (normalized)
                 val direction = Vector3(dx / distance, 0f, dz / distance)
-
-                // Create rotation to face player
                 val targetRotation = Quaternion.lookRotationAroundY(direction)
+                val startRotation = transform.transform.q
 
-                // Apply rotation
-                transform.transform.q = targetRotation
-                pet.setComponent(transform)
+                Log.d(TAG, "Pet turning to face player at $headPos (tweening)")
 
-                Log.d(TAG, "Pet turned to face player at $headPos")
+                // Smooth tween over ~0.5 seconds
+                turnToFaceJob = scope.launch {
+                    val duration = 500L
+                    val startTime = System.currentTimeMillis()
+
+                    while (isActive) {
+                        val elapsed = System.currentTimeMillis() - startTime
+                        val t = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
+
+                        // Ease out cubic for smooth deceleration
+                        val eased = 1f - (1f - t) * (1f - t) * (1f - t)
+
+                        val currentTransform = pet.tryGetComponent<Transform>() ?: break
+                        currentTransform.transform.q = startRotation.slerp(targetRotation, eased)
+                        pet.setComponent(currentTransform)
+
+                        if (t >= 1f) break
+                        delay(16) // ~60 FPS
+                    }
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to turn pet to face player: ${e.message}")

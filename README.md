@@ -22,6 +22,28 @@ Create unique virtual companions with full color and accessory customization:
 - **XP progression** - Earn experience from interactions, level up your pet
 - **Visual feedback** - Pet animations respond to stat levels
 
+### Attention & Command System
+
+Gesture-based attention system with activity states reflecting real pet behavior:
+
+**Activity States:**
+- **IDLE** - Pet wanders around autonomously
+- **FACING_PLAYER** - Pet has attention, continuously smooth-tracks your head
+- **WALKING** - Pet walking to commanded position (maintains attention)
+- **SITTING** - Pet sitting on command (10s duration, awards 2% XP)
+- **FETCHING** - Pet fetching a thrown bone (awards 5% XP on completion)
+
+**Gestures:**
+- **Clap** - Call pet's attention (triggers whistle sound, pet turns to face you)
+- **Raise Hand** - Sit command (only when pet has attention)
+- **Point & Click** - Direct pet to walk somewhere (limit: 2 commands per session)
+
+**Attention Mechanics:**
+- 5-second timeout when FACING_PLAYER - pet loses attention if no command given
+- Timeout resets on each command or clap
+- Move command limit prevents XP farming (pet gets "tired of being bossed around")
+- Visual indicator (yellow disc) shows above pet during any non-IDLE activity
+
 ## Technical Highlights
 
 ### NavGrid Pathfinding System
