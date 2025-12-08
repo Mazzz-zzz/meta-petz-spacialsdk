@@ -1592,13 +1592,11 @@ class PetLocomotion(
         isSitting = true
 
         // Play sit animation
-        playAnimation(ANIM_IDLE, loop = true)
+        playAnimation(ANIM_IDLE, loop = false)  // Hold at end frame, no twerking
 
         // Notify callback
         onSitStart?.invoke()
 
-        // Start facing player while sitting
-        startFacingPlayer(headEntityProvider)
 
         // Start boredom timer (2-5 seconds)
         startSitBoredomTimer()

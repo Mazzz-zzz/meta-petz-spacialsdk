@@ -268,6 +268,25 @@ class ImmersiveActivity : AppSystemActivity() {
   private val bark2Player: SceneAudioPlayer by lazy {
     SceneAudioPlayer(scene, bark2Sound)
   }
+  private val bark3Sound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/bark3.wav")
+  }
+  private val bark3Player: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, bark3Sound)
+  }
+
+  /**
+   * Play a random bark sound (1-3) at the pet's position
+   */
+  private fun playRandomBark() {
+    val petPos = currentPetEntity?.tryGetComponent<Transform>()?.transform?.t ?: return
+    when ((1..3).random()) {
+      1 -> bark1Player.play(petPos, 1.0f, false)
+      2 -> bark2Player.play(petPos, 1.0f, false)
+      3 -> bark3Player.play(petPos, 1.0f, false)
+    }
+    Log.d(TAG, "Playing random bark")
+  }
 
   // Bone throw cooldown - prevent immediate re-grab after throwing
   private var boneGrabTimeMs: Long = 0L
@@ -1824,22 +1843,12 @@ class ImmersiveActivity : AppSystemActivity() {
     if (currentActivity == AttentionActivity.SITTING) {
       Log.d(TAG, "Clap while sitting - extending sit duration")
       petLocomotion.extendSit()
-      // Play whistle sound as feedback
-      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-      if (headPos != null) {
-        whistlePlayer.play(headPos, 1.0f, false)
-      }
       return
     }
 
     // If already attentive, just reset the timeout (don't trigger sit - use raise hand for that)
     if (currentActivity == AttentionActivity.FACING_PLAYER) {
       Log.d(TAG, "Clap while attentive - resetting attention timeout")
-      // Play whistle sound as feedback
-      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-      if (headPos != null) {
-        whistlePlayer.play(headPos, 1.0f, false)
-      }
       resetAttentionTimeout()
       return
     }
@@ -1885,11 +1894,6 @@ class ImmersiveActivity : AppSystemActivity() {
     if (currentActivity == AttentionActivity.SITTING) {
       Log.d(TAG, "Raise hand while sitting - extending sit duration")
       petLocomotion.extendSit()
-      // Play whistle sound as feedback
-      val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-      if (headPos != null) {
-        whistlePlayer.play(headPos, 1.0f, false)
-      }
       return
     }
 
@@ -1910,11 +1914,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun startPetSit() {
     Log.d(TAG, "Starting sit command")
 
-    // Play whistle sound as feedback
-    val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-    if (headPos != null) {
-      whistlePlayer.play(headPos, 1.0f, false)
-    }
+    // Play bark when sitting
+    playRandomBark()
 
     // Update activity state
     currentActivity = AttentionActivity.SITTING
