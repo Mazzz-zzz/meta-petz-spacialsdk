@@ -301,14 +301,14 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Attention system - activity-based attention tracking
   enum class AttentionActivity {
-    NONE,           // No activity - can timeout
-    FACING_PLAYER,  // Just got attention, facing player - can timeout
-    SITTING,        // Sitting on command - has boredom timeout (2-5s), clap extends
+    IDLE,           // Wandering around, no attention
+    FACING_PLAYER,  // Has attention, facing player - can timeout
+    SITTING,        // Sitting on command - has boredom timeout
     FETCHING        // Actively fetching bone - NO timeout
   }
 
   private var isPetAttentive by mutableStateOf(false)
-  private var currentActivity by mutableStateOf(AttentionActivity.NONE)
+  private var currentActivity by mutableStateOf(AttentionActivity.IDLE)
   private var attentionResumeJob: Job? = null
   private val ATTENTION_TIMEOUT_MS = 5000L
 
@@ -325,10 +325,24 @@ class ImmersiveActivity : AppSystemActivity() {
   private var xpGainJob: Job? = null
   private val XP_GAIN_PER_TICK = 0.01f  // 1% per tick (stored as 0.01)
   private val XP_GAIN_INTERVAL_MS = 2000L
+  private val SIT_XP_BONUS = 0.02f  // 2% XP bonus when sitting
+
+  // Move command limit per attention session (prevents XP farming)
+  private var moveCommandCount = 0
+  private val MAX_MOVE_COMMANDS = 2  // Pet gets tired after 2 move commands
+
+  // Attention indicator - fading disc above pet's head
+  private var attentionIndicatorEntity: Entity? = null
+  private var attentionIndicatorJob: Job? = null
+  private val INDICATOR_HEIGHT_OFFSET = 0.35f  // Height above pet
 
   // Hand distance for debug UI (updated by clap detector)
   private var handDistance by mutableStateOf(0f)
   private var cumulativeDisplacement by mutableStateOf(0f)
+
+  // Raise hand (sit command) debug values
+  private var rightHandRaise by mutableStateOf(0f)
+  private var leftHandMovement by mutableStateOf(0f)
 
   // Clap detector for calling pet's attention and raise hand for sit
   private val clapDetector: ClapDetector by lazy {
@@ -387,6 +401,7 @@ class ImmersiveActivity : AppSystemActivity() {
         isPetAttentive = true
         currentActivity = AttentionActivity.FETCHING  // Lock attention during fetch
         attentionResumeJob?.cancel()  // Cancel any pending timeout
+        stopAttentionIndicator()  // Remove indicator during fetch
         // Debug states
         debugFetchState = "MOVING_TO_BONE"
         debugBonePickedUp = false
@@ -413,7 +428,7 @@ class ImmersiveActivity : AppSystemActivity() {
       onFetchComplete = { bone ->
         Log.d(TAG, "Pet completed fetch!")
         petHasBone = false
-        currentActivity = AttentionActivity.NONE
+        currentActivity = AttentionActivity.IDLE
         // Resume idle wander after fetch
         isPetAttentive = false
         startIdleWander()
@@ -450,7 +465,7 @@ class ImmersiveActivity : AppSystemActivity() {
       onFetchCancelled = {
         Log.d(TAG, "Fetch was cancelled")
         petHasBone = false
-        currentActivity = AttentionActivity.NONE
+        currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
         startIdleWander()
         // Debug states
@@ -473,7 +488,7 @@ class ImmersiveActivity : AppSystemActivity() {
       }
       onSitBored = {
         Log.d(TAG, "Pet got bored of sitting")
-        currentActivity = AttentionActivity.NONE
+        currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
         stopXpGain()
         startIdleWander()
@@ -481,6 +496,30 @@ class ImmersiveActivity : AppSystemActivity() {
       onSitInterrupted = {
         Log.d(TAG, "Pet sit was interrupted")
         // Activity state is managed by whatever interrupted the sit
+      }
+      // Track move commands to prevent XP farming
+      onTargetSet = { _ ->
+        moveCommandCount++
+        Log.d(TAG, "Move command $moveCommandCount/$MAX_MOVE_COMMANDS")
+        if (moveCommandCount >= MAX_MOVE_COMMANDS) {
+          Log.d(TAG, "Pet tired of being bossed around - losing attention after walk")
+          // Don't lose attention immediately - let the walk complete first
+          // The walk end callback will handle the attention loss
+          activityScope.launch {
+            // Wait for walk to finish (onWalkEnd will be called)
+            // Then lose attention
+            delay(500)  // Small delay to ensure walk starts
+            while (petLocomotion.isCurrentlyWalking()) {
+              delay(100)
+            }
+            Log.d(TAG, "Walk finished - pet now loses attention from too many commands")
+            isPetAttentive = false
+            currentActivity = AttentionActivity.IDLE
+            stopXpGain()
+            stopAttentionIndicator()
+            startIdleWander()
+          }
+        }
       }
     }
   }
@@ -908,6 +947,9 @@ class ImmersiveActivity : AppSystemActivity() {
       while (true) {
         handDistance = clapDetector.currentDistance
         cumulativeDisplacement = clapDetector.currentCumulative
+        // Raise hand (sit command) debug values
+        rightHandRaise = clapDetector.currentRightHandRaise
+        leftHandMovement = clapDetector.currentLeftHandMovement
         delay(100) // Update 10 times per second
       }
     }
@@ -1511,15 +1553,19 @@ class ImmersiveActivity : AppSystemActivity() {
     // Process any walls that were queued before NavGrid was created
     processPendingWalls()
 
-    // Finalize NavGrid (can do heavy computation)
+    // Finalize NavGrid - heavy computation on background thread
     navGrid?.let { grid ->
-      // Heavy work - keep largest connected region
-      grid.keepLargestConnectedRegion()
-      Log.d(TAG, "NavGrid finalized: ${grid.getWalkableCellCount()} walkable cells")
+      Log.d(TAG, "Starting NavGrid finalization on background thread...")
 
-      // Create debug visualization (entity creation on main thread)
-      grid.createDebugVisualization(showBlocked = true)
-      Log.d(TAG, "NavGrid debug visualization created (hidden)")
+      // Run heavy computation on background thread
+      kotlinx.coroutines.withContext(Dispatchers.Default) {
+        grid.keepLargestConnectedRegion()
+        Log.d(TAG, "NavGrid finalized: ${grid.getWalkableCellCount()} walkable cells")
+      }
+
+      // Debug visualization is now lazy - only created when user enables debug grid
+      // This avoids creating thousands of entities on room load
+      Log.d(TAG, "NavGrid ready (debug visualization deferred until requested)")
     }
 
     // Mark environment as set up
@@ -1836,14 +1882,17 @@ class ImmersiveActivity : AppSystemActivity() {
                       onStartQRScan = ::startQRScan,
                       onStopQRScan = ::stopQRScan,
                       isQRScanning = isQRScanning,
-                      isPetAttentive = isPetAttentive,
+                      isPetAttentive = isPetAttentive && currentActivity == AttentionActivity.FACING_PLAYER,
                       hasBone = petHasBone,
                       // Fetch debug states
                       fetchState = debugFetchState,
                       activityState = currentActivity.name,
                       distanceToBone = debugDistanceToBone,
                       bonePickedUp = debugBonePickedUp,
-                      returningBone = debugReturningBone
+                      returningBone = debugReturningBone,
+                      // Sit command debug states
+                      rightHandRaise = rightHandRaise,
+                      leftHandMovement = leftHandMovement
                   )
                 }
               }
@@ -1864,6 +1913,7 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     clapDetector.stop()
     attentionResumeJob?.cancel()
+    stopAttentionIndicator()
     roomChangeCheckJob?.cancel()
     roomChangeCheckJob = null
     petLocomotion.cleanup()
@@ -1911,13 +1961,15 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Toggle the NavGrid debug visualization visibility.
-   * Uses Visible component toggle for fast performance (no entity creation/destruction).
+   * Creates visualization lazily on first enable to avoid lag during room processing.
    */
   private fun toggleDebugGrid(enabled: Boolean) {
     Log.d(TAG, "Toggle debug grid: $enabled")
     isDebugGridEnabled = enabled
     val grid = navGrid ?: return
     if (enabled) {
+      // Create visualization lazily on first enable
+      grid.createDebugVisualization(showBlocked = true)
       grid.showDebugVisualization()
     } else {
       grid.hideDebugVisualization()
@@ -2006,12 +2058,16 @@ class ImmersiveActivity : AppSystemActivity() {
     isPetAttentive = true
     currentActivity = AttentionActivity.FACING_PLAYER
 
+    // Reset move command counter for new attention session
+    moveCommandCount = 0
+    Log.d(TAG, "Move command counter reset for new attention session")
+
     // Cancel any current walk and stop idle wander
     petLocomotion.stopWalking()
     petLocomotion.stopIdleWander()
 
-    // Start continuously facing the player with smooth rotation
-    petLocomotion.startFacingPlayer { getHeadEntity() }
+    // Turn to face the player once (not continuous tracking)
+    petLocomotion.turnToFacePlayer(getHeadEntity())
 
     // Start XP gain coroutine
     startXpGain()
@@ -2061,6 +2117,22 @@ class ImmersiveActivity : AppSystemActivity() {
     // Update activity state
     currentActivity = AttentionActivity.SITTING
     attentionResumeJob?.cancel()  // Cancel any pending attention timeout
+    stopAttentionIndicator()  // Remove indicator during sit
+
+    // Award 2% XP bonus for sitting
+    currentPetData?.let { petData ->
+      var newXp = petData.xp + SIT_XP_BONUS
+      var newLevel = petData.level
+      if (newXp >= 1f) {
+        newXp = 0f
+        newLevel += 1
+        Log.d(TAG, "Level up from sit! New level: $newLevel")
+        firebaseManager.updatePetLevel("demoUser", petData.firebaseKey, newLevel)
+      }
+      Log.d(TAG, "Sit XP bonus: +${(SIT_XP_BONUS * 100).toInt()}%, new total: ${(newXp * 100).toInt()}%")
+      currentPetData = petData.copy(xp = newXp, level = newLevel)
+      firebaseManager.updatePetXp("demoUser", petData.firebaseKey, newXp)
+    }
 
     // Start sit in locomotion
     petLocomotion.startSit { getHeadEntity() }
@@ -2158,6 +2230,10 @@ class ImmersiveActivity : AppSystemActivity() {
    */
   private fun resetAttentionTimeout() {
     attentionResumeJob?.cancel()
+
+    // Start fading attention indicator
+    startAttentionIndicator()
+
     attentionResumeJob = activityScope.launch {
       delay(ATTENTION_TIMEOUT_MS)
 
@@ -2169,11 +2245,90 @@ class ImmersiveActivity : AppSystemActivity() {
 
       Log.d(TAG, "Attention timeout - pet loses attention and resumes wandering")
       isPetAttentive = false
-      currentActivity = AttentionActivity.NONE
+      currentActivity = AttentionActivity.IDLE
       stopXpGain()  // Stop XP accumulation when attention is lost
+      stopAttentionIndicator()  // Remove indicator when attention is lost
       petLocomotion.stopFacingPlayer()
       petLocomotion.startIdleWander()
     }
+  }
+
+  /**
+   * Create and start fading the attention indicator above the pet's head.
+   * The indicator starts at full opacity and fades to 0 over ATTENTION_TIMEOUT_MS.
+   */
+  private fun startAttentionIndicator() {
+    // Cancel any existing indicator job
+    attentionIndicatorJob?.cancel()
+    attentionIndicatorEntity?.destroy()
+
+    val petEntity = currentPetEntity ?: return
+    val petTransform = petEntity.tryGetComponent<Transform>()?.transform ?: return
+    val indicatorPos = Vector3(
+      petTransform.t.x,
+      petTransform.t.y + INDICATOR_HEIGHT_OFFSET,
+      petTransform.t.z
+    )
+
+    // Create yellow/orange attention indicator (flattened sphere = disc)
+    attentionIndicatorEntity = Entity.create(
+      listOf(
+        Mesh(android.net.Uri.parse("mesh://sphere")),
+        Sphere(0.06f),
+        Material().apply {
+          baseColor = Color4(1f, 0.8f, 0f, 1f)  // Yellow/orange, full opacity
+          unlit = true
+        },
+        Transform(Pose(indicatorPos, Quaternion())),
+        Scale(Vector3(1f, 0.3f, 1f))  // Flatten to disc shape
+      )
+    )
+
+    Log.d(TAG, "Attention indicator created at $indicatorPos")
+
+    // Start fading animation
+    val startTime = System.currentTimeMillis()
+    attentionIndicatorJob = activityScope.launch {
+      while (isActive) {
+        delay(50)  // Update ~20 times per second
+
+        val elapsed = System.currentTimeMillis() - startTime
+        val progress = (elapsed.toFloat() / ATTENTION_TIMEOUT_MS).coerceIn(0f, 1f)
+        val alpha = 1f - progress  // Fade from 1.0 to 0.0
+
+        // Update indicator position to follow pet
+        val currentPetTransform = currentPetEntity?.tryGetComponent<Transform>()?.transform
+        if (currentPetTransform != null) {
+          val newPos = Vector3(
+            currentPetTransform.t.x,
+            currentPetTransform.t.y + INDICATOR_HEIGHT_OFFSET,
+            currentPetTransform.t.z
+          )
+          attentionIndicatorEntity?.setComponent(Transform(Pose(newPos, Quaternion())))
+        }
+
+        // Update alpha
+        attentionIndicatorEntity?.setComponent(
+          Material().apply {
+            baseColor = Color4(1f, 0.8f, 0f, alpha)
+            unlit = true
+          }
+        )
+
+        if (progress >= 1f) break
+      }
+    }
+  }
+
+  /**
+   * Stop and remove the attention indicator.
+   */
+  private fun stopAttentionIndicator() {
+    attentionIndicatorJob?.cancel()
+    attentionIndicatorJob = null
+    attentionIndicatorEntity?.destroy()
+    attentionIndicatorEntity = null
+    Log.d(TAG, "Attention indicator removed")
   }
 
   private fun loadGLXF(): Job {
@@ -2524,7 +2679,7 @@ class ImmersiveActivity : AppSystemActivity() {
       if (bone !in thrownBones) {
         Log.d(TAG, "Bone no longer exists, skipping fetch")
         // Reset attention state if fetch didn't start
-        currentActivity = AttentionActivity.NONE
+        currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
         petLocomotion.startIdleWander()
         return@launch
@@ -2533,7 +2688,7 @@ class ImmersiveActivity : AppSystemActivity() {
       // Verify pet is still available
       if (currentPetEntity == null) {
         Log.d(TAG, "Pet no longer exists, skipping fetch")
-        currentActivity = AttentionActivity.NONE
+        currentActivity = AttentionActivity.IDLE
         isPetAttentive = false
         return@launch
       }

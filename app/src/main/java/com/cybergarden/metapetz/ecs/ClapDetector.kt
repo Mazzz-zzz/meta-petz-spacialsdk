@@ -89,6 +89,7 @@ class ClapDetector(
     private var cumulativeLeftHandMovement: Float = 0f
     private var raiseHandWindowStartMs: Long = 0L
     private var lastRaiseHandDetectionMs: Long = 0L
+    private var raiseHandTriggeredThisWindow: Boolean = false  // Prevent multiple triggers per window
 
     // Raise hand cumulative values (exposed for debug UI)
     var currentRightHandRaise: Float = 0f
@@ -171,6 +172,7 @@ class ClapDetector(
         cumulativeRightHandRaise = 0f
         cumulativeLeftHandMovement = 0f
         raiseHandWindowStartMs = 0L
+        raiseHandTriggeredThisWindow = false
         currentRightHandRaise = 0f
         currentLeftHandMovement = 0f
     }
@@ -434,8 +436,8 @@ class ClapDetector(
             currentRightHandRaise = cumulativeRightHandRaise
             currentLeftHandMovement = cumulativeLeftHandMovement
 
-            // Check if gesture is complete
-            if (cumulativeRightHandRaise >= RAISE_HAND_THRESHOLD) {
+            // Check if gesture is complete (only trigger once per window)
+            if (cumulativeRightHandRaise >= RAISE_HAND_THRESHOLD && !raiseHandTriggeredThisWindow) {
                 // Calculate max allowed left hand movement
                 val maxLeftMovement = cumulativeRightHandRaise * LEFT_HAND_MAX_RATIO
 
@@ -444,15 +446,18 @@ class ClapDetector(
                 val leftHandValid = cumulativeLeftHandMovement > 0.001f &&
                                    cumulativeLeftHandMovement < maxLeftMovement
 
+                // Mark as triggered so we don't fire multiple times
+                raiseHandTriggeredThisWindow = true
+
                 if (leftHandValid) {
                     Log.d(TAG, "RAISE HAND DETECTED! Right: $cumulativeRightHandRaise, Left: $cumulativeLeftHandMovement (max: $maxLeftMovement)")
                     lastRaiseHandDetectionMs = currentTime
-                    resetRaiseHandTracking()
+                    // Don't reset immediately - let window timer reset so user can see the result
                     onRaiseHandDetected?.invoke()
                 } else {
                     // Left hand moved too much or not at all - probably a different gesture
                     Log.d(TAG, "Raise hand rejected - Left hand movement: $cumulativeLeftHandMovement (max: $maxLeftMovement)")
-                    resetRaiseHandTracking()
+                    // Don't reset immediately - let window timer reset so user can see why it failed
                 }
             }
         }

@@ -83,7 +83,10 @@ fun OptionsPanel(
     activityState: String = "NONE",  // NONE, FACING_PLAYER, FETCHING
     distanceToBone: Float = -1f,  // -1 = no target bone
     bonePickedUp: Boolean = false,
-    returningBone: Boolean = false
+    returningBone: Boolean = false,
+    // Sit command debug states
+    rightHandRaise: Float = 0f,  // Cumulative right hand Y raise (need 0.50m)
+    leftHandMovement: Float = 0f  // Cumulative left hand movement (must be < 10% of right)
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -1107,15 +1110,91 @@ fun OptionsPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // Sit Command Debug Section
+                Text(
+                    text = "Sit Command (Raise Hand)",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF9C27B0),
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+
+                // Right hand raise progress bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "R Hand↑:",
+                        fontSize = 11.sp,
+                        color = Color.DarkGray
+                    )
+                    Text(
+                        text = String.format("%.0fcm / 50cm", rightHandRaise * 100),
+                        fontSize = 11.sp,
+                        fontWeight = if (rightHandRaise >= 0.50f) FontWeight.Bold else FontWeight.Normal,
+                        color = if (rightHandRaise >= 0.50f) Color(0xFF4CAF50) else Color.DarkGray
+                    )
+                }
+                // Progress bar for right hand
+                LinearProgressIndicator(
+                    progress = { (rightHandRaise / 0.50f).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (rightHandRaise >= 0.50f) Color(0xFF4CAF50) else Color(0xFF9C27B0),
+                    trackColor = Color(0xFF424242)
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Left hand movement (should stay low)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "L Hand (stay still):",
+                        fontSize = 11.sp,
+                        color = Color.DarkGray
+                    )
+                    val maxAllowed = rightHandRaise * 0.10f  // 10% of right hand
+                    val isLeftOk = leftHandMovement <= maxAllowed || rightHandRaise < 0.01f
+                    Text(
+                        text = String.format("%.0fcm (max %.0fcm)", leftHandMovement * 100, maxAllowed * 100),
+                        fontSize = 11.sp,
+                        fontWeight = if (!isLeftOk) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isLeftOk) Color(0xFF4CAF50) else Color(0xFFF44336)
+                    )
+                }
+                // Progress bar for left hand (red if moving too much)
+                val leftRatio = if (rightHandRaise > 0.01f) leftHandMovement / (rightHandRaise * 0.10f) else 0f
+                LinearProgressIndicator(
+                    progress = { leftRatio.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (leftRatio <= 1f) Color(0xFF4CAF50) else Color(0xFFF44336),
+                    trackColor = Color(0xFF424242)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
                 // Clear local data button
                 if (firebaseManager != null) {
                     SecondaryButton(
                         modifier = Modifier.fillMaxWidth(),
                         label = "Clear Local Data",
                         onClick = {
-                            Log.d("OptionsPanel", "Clearing local data")
+                            Log.d("OptionsPanel", "Clearing local data and triggering room rescan")
                             firebaseManager.clearAllClaimedPets()
                             claimedPets = emptyList()
+                            // Trigger room rescan to clear old MRUK furniture data
+                            onScanRoom?.invoke()
                         }
                     )
                 }
