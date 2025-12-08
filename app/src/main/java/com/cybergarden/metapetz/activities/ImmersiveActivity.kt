@@ -1268,9 +1268,9 @@ class ImmersiveActivity : AppSystemActivity() {
   )
 
   // Hat offset above pet's head (local space, relative to pet entity)
-  private val HAT_OFFSET_DEFAULT = Vector3(0f, 0.126f, 0.033f)  // Above head, slightly forward
-  private val HAT_OFFSET_JUMP = Vector3(0f, 0.15f, 0.055f)      // During jump: higher + more forward
-  private val HAT_OFFSET_EAT = Vector3(0f, 0.10f, 0.066f)       // During eat: lower + more forward (head bends down)
+  private val HAT_OFFSET_DEFAULT = Vector3(0f, 0.126f, 0.04f)  // Above head, slightly forward
+  private val HAT_OFFSET_JUMP = Vector3(0f, 0.15f, 0.061f)      // During jump: higher + more forward
+  private val HAT_OFFSET_EAT = Vector3(0f, 0.10f, 0.073f)       // During eat: lower + more forward (head bends down)
   // 180 degree rotation around X axis to flip upside down
   private val HAT_ROTATION = Quaternion(1f, 0f, 0f, 0f)  // 180° X flip
   private val HAT_BASE_SCALE = 0.15f  // Base scale for hats (they're huge by default)
