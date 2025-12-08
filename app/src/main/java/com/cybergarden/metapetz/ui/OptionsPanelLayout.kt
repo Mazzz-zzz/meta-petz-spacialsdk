@@ -75,19 +75,8 @@ fun OptionsPanel(
     onStartQRScan: ((onResult: (String?) -> Unit) -> Unit)? = null,
     onStopQRScan: (() -> Unit)? = null,
     isQRScanning: Boolean = false,
-    // Debug state values
-    isPetAttentive: Boolean = false,
-    hasBone: Boolean = false,
-    // Fetch debug states
-    fetchState: String = "IDLE",  // IDLE, MOVING_TO_BONE, PICKING_UP, RETURNING
-    activityState: String = "NONE",  // NONE, FACING_PLAYER, FETCHING
-    distanceToBone: Float = -1f,  // -1 = no target bone
-    bonePickedUp: Boolean = false,
-    returningBone: Boolean = false,
-    // Petting debug states
-    pettingDistanceToPet: Float = -1f,  // Distance from hand to pet (-1 = no pet)
-    pettingCumulative: Float = 0f,  // Cumulative petting movement
-    isHandInPetRange: Boolean = false,  // Is hand within petting range
+    // Pet activity state
+    activityState: String = "IDLE",  // IDLE, FACING_PLAYER, FETCHING, WALKING
     // NavGrid edit mode
     isNavGridEditMode: Boolean = false,
     onNavGridEditModeToggle: ((Boolean) -> Unit)? = null,
@@ -987,209 +976,28 @@ fun OptionsPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Pet state debug values - Row 1: Attention & Activity
+                // Pet activity state
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(
-                                    if (isPetAttentive) Color(0xFF4CAF50) else Color.Gray,
-                                    shape = CircleShape
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Attn",
-                            fontSize = 12.sp,
-                            color = Color.DarkGray
-                        )
-                    }
                     Text(
-                        text = "Act: $activityState",
+                        text = "Activity:",
                         fontSize = 12.sp,
+                        color = Color.DarkGray
+                    )
+                    Text(
+                        text = activityState,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
                         color = when (activityState) {
                             "FETCHING" -> Color(0xFF2196F3)
                             "FACING_PLAYER" -> Color(0xFF4CAF50)
+                            "WALKING" -> Color(0xFFFF9800)
                             else -> Color.Gray
                         }
                     )
                 }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // Row 2: Fetch State
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Fetch:",
-                        fontSize = 12.sp,
-                        color = Color.DarkGray
-                    )
-                    Text(
-                        text = fetchState,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = when (fetchState) {
-                            "MOVING_TO_BONE" -> Color(0xFFFF9800)
-                            "PICKING_UP" -> Color(0xFF9C27B0)
-                            "RETURNING" -> Color(0xFF2196F3)
-                            else -> Color.Gray
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // Row 3: Distance to bone
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Dist to bone:",
-                        fontSize = 12.sp,
-                        color = Color.DarkGray
-                    )
-                    Text(
-                        text = if (distanceToBone >= 0) String.format("%.2fm", distanceToBone) else "N/A",
-                        fontSize = 12.sp,
-                        color = if (distanceToBone in 0f..0.2f) Color(0xFF4CAF50) else Color.DarkGray
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // Row 4: Bone states
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(
-                                    if (bonePickedUp) Color(0xFF9C27B0) else Color.Gray,
-                                    shape = CircleShape
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Picked",
-                            fontSize = 11.sp,
-                            color = Color.DarkGray
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(
-                                    if (hasBone) Color(0xFFFF9800) else Color.Gray,
-                                    shape = CircleShape
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "InMouth",
-                            fontSize = 11.sp,
-                            color = Color.DarkGray
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(
-                                    if (returningBone) Color(0xFF2196F3) else Color.Gray,
-                                    shape = CircleShape
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Return",
-                            fontSize = 11.sp,
-                            color = Color.DarkGray
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Petting Debug Section
-                Text(
-                    text = "Petting (move hand near pet)",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFE91E63),
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-
-                // Distance to pet
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(
-                                    if (isHandInPetRange) Color(0xFFE91E63) else Color.Gray,
-                                    shape = CircleShape
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "In range:",
-                            fontSize = 11.sp,
-                            color = Color.DarkGray
-                        )
-                    }
-                    Text(
-                        text = if (pettingDistanceToPet >= 0) String.format("%.0fcm", pettingDistanceToPet * 100) else "N/A",
-                        fontSize = 11.sp,
-                        fontWeight = if (isHandInPetRange) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isHandInPetRange) Color(0xFFE91E63) else Color.DarkGray
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // Petting progress bar
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Pet progress:",
-                        fontSize = 11.sp,
-                        color = Color.DarkGray
-                    )
-                    Text(
-                        text = String.format("%.0fcm / 15cm", pettingCumulative * 100),
-                        fontSize = 11.sp,
-                        fontWeight = if (pettingCumulative >= 0.15f) FontWeight.Bold else FontWeight.Normal,
-                        color = if (pettingCumulative >= 0.15f) Color(0xFF4CAF50) else Color.DarkGray
-                    )
-                }
-                LinearProgressIndicator(
-                    progress = { (pettingCumulative / 0.15f).coerceIn(0f, 1f) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = if (pettingCumulative >= 0.15f) Color(0xFF4CAF50) else Color(0xFFE91E63),
-                    trackColor = Color(0xFF424242)
-                )
 
                 Spacer(modifier = Modifier.height(12.dp))
 

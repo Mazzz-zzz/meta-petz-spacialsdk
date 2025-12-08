@@ -123,6 +123,8 @@ import com.meta.spatial.toolkit.PlaybackState
 import com.meta.spatial.toolkit.PlaybackType
 import com.meta.spatial.core.Query
 import com.meta.spatial.core.Vector2
+import com.meta.spatial.runtime.ButtonBits
+import com.meta.spatial.toolkit.Controller
 import com.meta.spatial.toolkit.PlayerBodyAttachmentSystem
 import com.meta.spatial.toolkit.SceneObjectSystem
 import com.meta.spatial.core.Color4
@@ -346,10 +348,6 @@ class ImmersiveActivity : AppSystemActivity() {
   private var handDistance by mutableStateOf(0f)
   private var cumulativeDisplacement by mutableStateOf(0f)
 
-  // Petting debug values
-  private var pettingDistanceToPet by mutableStateOf(-1f)
-  private var pettingCumulative by mutableStateOf(0f)
-  private var isHandInPetRange by mutableStateOf(false)
 
   // Clap detector for calling pet's attention and raise hand for sit
   private val clapDetector: ClapDetector by lazy {
@@ -1008,10 +1006,6 @@ class ImmersiveActivity : AppSystemActivity() {
       while (true) {
         handDistance = clapDetector.currentDistance
         cumulativeDisplacement = clapDetector.currentCumulative
-        // Petting debug values
-        pettingDistanceToPet = pettingDetector.currentDistanceToPet
-        pettingCumulative = pettingDetector.currentCumulativeMovement
-        isHandInPetRange = pettingDetector.isHandInRange
         delay(100) // Update 10 times per second
       }
     }
@@ -1970,18 +1964,8 @@ class ImmersiveActivity : AppSystemActivity() {
                       onStartQRScan = ::startQRScan,
                       onStopQRScan = ::stopQRScan,
                       isQRScanning = isQRScanning,
-                      isPetAttentive = isPetAttentive && currentActivity == AttentionActivity.FACING_PLAYER,
-                      hasBone = petHasBone,
-                      // Fetch debug states
-                      fetchState = debugFetchState,
+                      // Pet activity state
                       activityState = currentActivity.name,
-                      distanceToBone = debugDistanceToBone,
-                      bonePickedUp = debugBonePickedUp,
-                      returningBone = debugReturningBone,
-                      // Petting debug
-                      pettingDistanceToPet = pettingDistanceToPet,
-                      pettingCumulative = pettingCumulative,
-                      isHandInPetRange = isHandInPetRange,
                       // NavGrid edit mode
                       isNavGridEditMode = isNavGridEditMode,
                       onNavGridEditModeToggle = ::toggleNavGridEditMode,
@@ -2821,7 +2805,13 @@ class ImmersiveActivity : AppSystemActivity() {
               val vel = vectorScale(delta, 1f / dt)
               Log.d(TAG, "Bone velocity sample dt=$dt vel=$vel")
               val speed = vectorLength(vel)
-              if (speed > 1f) {
+
+              // Check if trigger is held - don't throw if holding trigger or pinching (ButtonA)
+              val controller = h.tryGetComponent<Controller>()
+              val triggerMask = ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR or ButtonBits.ButtonA
+              val isHoldingTrigger = controller != null && (controller.buttonState and triggerMask) != 0
+
+              if (speed > 1f && !isHoldingTrigger) {
                 // Capture current world position and velocity before destroying
                 val worldPos = handPose.t
                 val worldRot = handPose.q
