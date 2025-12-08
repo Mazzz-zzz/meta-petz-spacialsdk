@@ -1652,7 +1652,17 @@ class ImmersiveActivity : AppSystemActivity() {
     // Start room change detection
     startRoomChangeDetection()
 
-    Log.d(TAG, "Room processing complete for $roomUuid")
+    // Log comprehensive room summary
+    Log.d(TAG, "=== ROOM PROCESSING COMPLETE ===")
+    Log.d(TAG, "Room UUID: $roomUuid")
+    Log.d(TAG, "NavGrid: ${navGrid?.gridWidth}x${navGrid?.gridHeight} cells, ${navGrid?.getWalkableCellCount()} walkable")
+    Log.d(TAG, "NavGrid bounds: X[${navGrid?.minX}, ${navGrid?.maxX}] Z[${navGrid?.minZ}, ${navGrid?.maxZ}]")
+    Log.d(TAG, "NavGrid floor Y: ${navGrid?.floorY}")
+    Log.d(TAG, "Wall physics colliders: ${roomBoundsPhysicsEntities.size}")
+    Log.d(TAG, "Room edge entities (visual): ${roomEdgeEntities.size}")
+    Log.d(TAG, "Furniture physics boxes: ${furniturePhysicsBoxes.size}")
+    Log.d(TAG, "Physics floor at Y: ${physicsFloorEntity?.tryGetComponent<Transform>()?.transform?.t?.y}")
+    Log.d(TAG, "================================")
   }
 
   /**
@@ -1748,6 +1758,7 @@ class ImmersiveActivity : AppSystemActivity() {
             floorY = floorY
         )
         petLocomotion.setNavGrid(navGrid)
+        updatePhysicsFloorToRoomY(floorY)  // Match physics floor to actual room floor
         break
       }
     }
@@ -2559,19 +2570,45 @@ class ImmersiveActivity : AppSystemActivity() {
       )
     }
   }
+  private var physicsFloorEntity: Entity? = null
+
   private fun createPhysicsFloor() {
+    // Destroy old floor if exists
+    physicsFloorEntity?.destroy()
+
     val floorY = floorHeight() - 0.02f
-    Entity.create(
+    physicsFloorEntity = Entity.create(
         listOf(
-            Box(Vector3(10f, 0.04f, 10f)), // large thin box as collider
+            Box(Vector3(20f, 0.1f, 20f)), // Larger, thicker floor collider
             Transform(Pose(Vector3(0f, floorY, 0f))),
             Physics().apply {
               state = PhysicsState.KINEMATIC
               shape = "box"
-              dimensions = Vector3(10f, 0.04f, 10f)
+              dimensions = Vector3(20f, 0.1f, 20f)
             }
         )
     )
+    Log.d(TAG, "Created physics floor at y=$floorY (20x20m)")
+  }
+
+  /**
+   * Update physics floor to match actual room floor Y position.
+   * Called after room scan completes.
+   */
+  private fun updatePhysicsFloorToRoomY(roomFloorY: Float) {
+    physicsFloorEntity?.destroy()
+    physicsFloorEntity = Entity.create(
+        listOf(
+            Box(Vector3(20f, 0.1f, 20f)),
+            Transform(Pose(Vector3(0f, roomFloorY - 0.05f, 0f))),
+            Physics().apply {
+              state = PhysicsState.KINEMATIC
+              shape = "box"
+              dimensions = Vector3(20f, 0.1f, 20f)
+            }
+        )
+    )
+    Log.d(TAG, "Updated physics floor to room Y=${roomFloorY - 0.05f}")
   }
 
   /**
@@ -3146,11 +3183,38 @@ class ImmersiveActivity : AppSystemActivity() {
               }
               val bonePos = boneTransform.t
 
-              // Floor collision - prevent bones from phasing through floor
-              val minY = floorHeight() + 0.02f  // Slightly above floor
+              // === BONE BOUNDARY CHECKING ===
+
+              // 1. Check if bone escaped room bounds (X/Z) - destroy it
+              val grid = navGrid
+              if (grid != null) {
+                val margin = 0.3f  // 30cm margin before destroying
+                val escaped = bonePos.x < grid.minX - margin ||
+                              bonePos.x > grid.maxX + margin ||
+                              bonePos.z < grid.minZ - margin ||
+                              bonePos.z > grid.maxZ + margin
+
+                if (escaped) {
+                  Log.d(TAG, "Bone ${bone.id} escaped room bounds at (${bonePos.x}, ${bonePos.z}), destroying")
+                  bonesToRemove.add(bone)
+                  bone.destroy()
+                  continue  // Skip to next bone
+                }
+              }
+
+              // 2. Floor collision - teleport bones back above floor
+              val actualFloorY = navGrid?.floorY ?: floorHeight()
+              val minY = actualFloorY + 0.03f  // Bone center should be slightly above floor
               if (bonePos.y < minY) {
+                Log.d(TAG, "Bone ${bone.id} below floor: y=${bonePos.y} < $minY, correcting")
                 val correctedPos = Vector3(bonePos.x, minY, bonePos.z)
                 bone.setComponent(Transform(Pose(correctedPos, boneTransform.q)))
+                // Reset velocity to stop continued falling
+                val physics = bone.tryGetComponent<Physics>()
+                if (physics != null) {
+                  physics.linearVelocity = Vector3(0f, 0f, 0f)
+                  bone.setComponent(physics)
+                }
               }
 
               // Check distance to right hand
@@ -3360,10 +3424,15 @@ class ImmersiveActivity : AppSystemActivity() {
     )
     roomEdgeEntities.addAll(edges)
 
-    // Create physics collider for wall faces only (not floor/ceiling)
-    val isWall = anchorLabels.any { it == MRUKLabel.WALL_FACE.name }
-    if (isWall) {
+    // Create physics collider for walls and doors (windows stay open so you can throw bones out!)
+    val needsWallCollider = anchorLabels.any {
+      it == MRUKLabel.WALL_FACE.name ||
+      it == MRUKLabel.DOOR_FRAME.name
+      // WINDOW_FRAME excluded - bones can escape through windows
+    }
+    if (needsWallCollider) {
       createWallPhysicsCollider(anchorPose, width, height)
+      Log.d(TAG, "Created wall collider for: $anchorLabels")
       // Also block wall footprint in NavGrid
       blockWallInNavGrid(anchorEntity, anchorPose, width)
     }
@@ -3813,6 +3882,7 @@ class ImmersiveActivity : AppSystemActivity() {
     val floorY = anchorPose.t.y
     navGrid = NavGrid.fromFloorPolygon(floorPolygon, floorY)
     petLocomotion.setNavGrid(navGrid)
+    updatePhysicsFloorToRoomY(floorY)  // Match physics floor to actual room floor
     Log.d(TAG, "NavGrid created: ${navGrid?.gridWidth}x${navGrid?.gridHeight} cells, ${navGrid?.getWalkableCellCount()} walkable")
   }
 
@@ -3821,7 +3891,7 @@ class ImmersiveActivity : AppSystemActivity() {
    * The collider matches the wall's full dimensions.
    */
   private fun createWallPhysicsCollider(pose: Pose, width: Float, height: Float) {
-    val wallThickness = 0.1f
+    val wallThickness = 0.1f  // 10cm thick
     val wallSize = Vector3(width, height, wallThickness)
 
     Log.d(TAG, "Creating wall physics collider: size=$wallSize at ${pose.t}")
