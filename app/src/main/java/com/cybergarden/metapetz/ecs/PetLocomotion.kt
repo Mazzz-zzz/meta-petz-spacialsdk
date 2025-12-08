@@ -273,6 +273,12 @@ class PetLocomotion(
     var onSitBored: (() -> Unit)? = null              // Called when pet gets bored and stops sitting
     var onSitInterrupted: (() -> Unit)? = null        // Called when sit is interrupted by another action
 
+    // Animation state callbacks (for accessory offset adjustments)
+    var onJumpStart: (() -> Unit)? = null             // Called when jump animation starts
+    var onJumpEnd: (() -> Unit)? = null               // Called when jump animation ends
+    var onEatStart: (() -> Unit)? = null              // Called when eat/pickup animation starts
+    var onEatEnd: (() -> Unit)? = null                // Called when eat/pickup animation ends
+
     // Mouth bone entity (parented to pet during fetch return)
     private var mouthBoneEntity: Entity? = null
 
@@ -815,9 +821,11 @@ class PetLocomotion(
                     if (heightDiff > 0.1f && !isJumping) {
                         // Need to jump UP - perform jump arc
                         isJumping = true
+                        onJumpStart?.invoke()
                         playAnimation(ANIM_JUMP, loop = false)
                         performJumpArc(currentPos, Vector3(targetWaypoint.x, targetWaypoint.y + petModelYOffset, targetWaypoint.z))
                         isJumping = false
+                        onJumpEnd?.invoke()
                         playAnimation(ANIM_WALKLOOP, loop = true)
                         // After jump, continue to next iteration
                         continue
@@ -1378,10 +1386,12 @@ class PetLocomotion(
                 }
 
                 // Play eat animation for bone pickup
+                onEatStart?.invoke()
                 playAnimation(ANIM_EAT, loop = false)
 
                 // Wait for eat animation and tween to complete
                 delay(1000)
+                onEatEnd?.invoke()
 
                 // === PHASE 3: Return to player ===
                 fetchState = FetchState.RETURNING

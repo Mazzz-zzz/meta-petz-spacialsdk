@@ -34,6 +34,7 @@ import com.cybergarden.metapetz.ecs.PetLocomotion
 import com.cybergarden.metapetz.ecs.PettingDetector
 import com.cybergarden.metapetz.ecs.QRCodeSystem
 import androidx.compose.ui.text.font.FontWeight
+import com.cybergarden.metapetz.model.Accessory
 import com.cybergarden.metapetz.model.PetData
 import com.cybergarden.metapetz.services.FirebaseManager
 import com.cybergarden.metapetz.services.QRScannerManager
@@ -150,6 +151,8 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentPet by mutableStateOf<String?>(null)
   private var currentPetData by mutableStateOf<PetData?>(null)
   private var currentPetEntity: Entity? = null
+  private val accessoryEntities = mutableListOf<Entity>()  // Hat and other accessories attached to pet
+  private var showAccessories by mutableStateOf(true)  // Toggle accessory visibility
   private var isEnvironmentSetup by mutableStateOf(false)
   private var isRoomMode by mutableStateOf(false)  // true = scanned room with pathfinding, false = outside mode
   private var isDebugGridEnabled by mutableStateOf(false)
@@ -547,6 +550,23 @@ class ImmersiveActivity : AppSystemActivity() {
       // Sit callbacks
       onSitStart = {
         Log.d(TAG, "Pet started sitting")
+      }
+      // Animation callbacks for accessory offset adjustments
+      onJumpStart = {
+        Log.d(TAG, "Jump started - adjusting hat offset")
+        animateHatOffset(HAT_OFFSET_JUMP, 80L)
+      }
+      onJumpEnd = {
+        Log.d(TAG, "Jump ended - restoring hat offset")
+        animateHatOffset(HAT_OFFSET_DEFAULT, 100L)
+      }
+      onEatStart = {
+        Log.d(TAG, "Eat started - adjusting hat offset")
+        animateHatOffset(HAT_OFFSET_EAT, 150L)
+      }
+      onEatEnd = {
+        Log.d(TAG, "Eat ended - restoring hat offset")
+        animateHatOffset(HAT_OFFSET_DEFAULT, 150L)
       }
       onSitBored = {
         Log.d(TAG, "Pet got bored of sitting")
@@ -1113,7 +1133,8 @@ class ImmersiveActivity : AppSystemActivity() {
     spinningJob?.cancel()
     spinningJob = null
 
-    // Remove previous pet if it exists
+    // Remove previous pet and accessories if they exist
+    cleanupAccessories()
     currentPetEntity?.destroy()
     currentPetEntity = null
 
@@ -1194,6 +1215,11 @@ class ImmersiveActivity : AppSystemActivity() {
           petLocomotion.setMrukFeature(mrukFeature)  // Enable collision raycasting
           petLocomotion.setThrownBones(thrownBones)  // Enable bone pushing
 
+          // Spawn accessories (hats, etc.) from pet data
+          currentPetData?.accessories?.let { accessories ->
+            spawnAccessories(currentPetEntity!!, accessories)
+          }
+
           // Set wander area based on current head position
           val headEntity = getHeadEntity()
           val headTransform = headEntity?.tryGetComponent<Transform>()?.transform
@@ -1220,6 +1246,151 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   private val SPAWN_SPIN_DURATION_MS = 3000L  // Spin for 3 seconds on spawn
+
+  // Accessory model mapping: type -> asset path
+  private val accessoryModels = mapOf(
+    "partyhat" to "models/partyhattex.glb",
+    "spinhat" to "models/spinhattex.glb",
+    "wizhat" to "models/wizhattex.glb"
+  )
+
+  // Hat offset above pet's head (local space, relative to pet entity)
+  private val HAT_OFFSET_DEFAULT = Vector3(0f, 0.126f, 0.03f)  // Above head, slightly forward
+  private val HAT_OFFSET_JUMP = Vector3(0f, 0.15f, 0.05f)      // During jump: higher + more forward
+  private val HAT_OFFSET_EAT = Vector3(0f, 0.10f, 0.06f)       // During eat: lower + more forward (head bends down)
+  // 180 degree rotation around X axis to flip upside down
+  private val HAT_ROTATION = Quaternion(1f, 0f, 0f, 0f)  // 180° X flip
+  private val HAT_BASE_SCALE = 0.15f  // Base scale for hats (they're huge by default)
+  private var hatOffsetAnimJob: Job? = null  // Job for animating hat offset
+
+  /**
+   * Spawn accessories (hats, etc.) and attach them to the pet entity.
+   * Uses similar pattern to bone attachment - TransformParent with local offset.
+   */
+  private fun spawnAccessories(petEntity: Entity, accessories: List<Accessory>) {
+    // Clean up any existing accessories
+    cleanupAccessories()
+
+    for (accessory in accessories) {
+      val modelPath = accessoryModels[accessory.type]
+      if (modelPath == null) {
+        Log.w(TAG, "Unknown accessory type: ${accessory.type}")
+        continue
+      }
+
+      try {
+        // Colorize the accessory GLB with ass1/ass2 colors
+        val colorizedFile = GlbColorizer.colorizeAccessoryGlb(
+          this,
+          modelPath,
+          accessory,
+          "${accessory.type}_${accessory.ass1.replace("#", "")}_${accessory.ass2.replace("#", "")}.glb"
+        )
+
+        val meshUri = if (colorizedFile != null) {
+          "file://${colorizedFile.absolutePath}"
+        } else {
+          // Fallback to original model
+          Log.w(TAG, "Failed to colorize accessory, using original")
+          "apk:///$modelPath"
+        }
+
+        // Apply base scale * accessory scale
+        val finalScale = HAT_BASE_SCALE * accessory.scale
+        Log.d(TAG, "Spawning accessory ${accessory.type} from: $meshUri with scale $finalScale (base=$HAT_BASE_SCALE * acc=${accessory.scale})")
+
+        // Create accessory entity parented to pet
+        val accessoryEntity = Entity.create(
+          listOf(
+            Mesh(meshUri.toUri()),
+            Transform(Pose(HAT_OFFSET_DEFAULT, HAT_ROTATION)),
+            Scale(Vector3(finalScale, finalScale, finalScale)),
+            Visible(true),
+            TransformParent(petEntity)
+          )
+        )
+
+        accessoryEntities.add(accessoryEntity)
+        Log.d(TAG, "Spawned accessory: ${accessory.type} (entity id=${accessoryEntity.id})")
+
+      } catch (e: Exception) {
+        Log.e(TAG, "Error spawning accessory ${accessory.type}: ${e.message}", e)
+      }
+    }
+
+    Log.d(TAG, "Spawned ${accessoryEntities.size} accessories")
+  }
+
+  /**
+   * Clean up all accessory entities
+   */
+  private fun cleanupAccessories() {
+    hatOffsetAnimJob?.cancel()
+    hatOffsetAnimJob = null
+    for (entity in accessoryEntities) {
+      try {
+        entity.destroy()
+      } catch (e: Exception) {
+        Log.w(TAG, "Error destroying accessory entity: ${e.message}")
+      }
+    }
+    accessoryEntities.clear()
+  }
+
+  /**
+   * Toggle accessory visibility
+   */
+  private fun setAccessoriesVisible(visible: Boolean) {
+    showAccessories = visible
+    for (entity in accessoryEntities) {
+      try {
+        entity.setComponent(Visible(visible))
+      } catch (e: Exception) {
+        Log.w(TAG, "Error setting accessory visibility: ${e.message}")
+      }
+    }
+    Log.d(TAG, "Accessories visibility set to: $visible")
+  }
+
+  /**
+   * Animate all accessories to a target offset over duration
+   */
+  private fun animateHatOffset(targetOffset: Vector3, durationMs: Long = 100L) {
+    hatOffsetAnimJob?.cancel()
+    hatOffsetAnimJob = activityScope.launch {
+      if (accessoryEntities.isEmpty()) return@launch
+
+      // Get current offset from first accessory
+      val firstAccessory = accessoryEntities.firstOrNull() ?: return@launch
+      val currentTransform = firstAccessory.tryGetComponent<Transform>()?.transform ?: return@launch
+      val startOffset = currentTransform.t
+
+      val startTime = System.currentTimeMillis()
+      while (isActive) {
+        val elapsed = System.currentTimeMillis() - startTime
+        val t = (elapsed.toFloat() / durationMs).coerceIn(0f, 1f)
+
+        // Lerp to target offset
+        val newOffset = Vector3(
+          startOffset.x + (targetOffset.x - startOffset.x) * t,
+          startOffset.y + (targetOffset.y - startOffset.y) * t,
+          startOffset.z + (targetOffset.z - startOffset.z) * t
+        )
+
+        // Apply to all accessories
+        for (entity in accessoryEntities) {
+          try {
+            entity.setComponent(Transform(Pose(newOffset, HAT_ROTATION)))
+          } catch (e: Exception) {
+            // Entity might be destroyed
+          }
+        }
+
+        if (t >= 1f) break
+        delay(16) // ~60fps
+      }
+    }
+  }
 
   private fun startSpinning() {
     val entity = currentPetEntity ?: return
@@ -1911,6 +2082,7 @@ class ImmersiveActivity : AppSystemActivity() {
                             currentPetData = null
                             petLocomotion.stopIdleWander() // Stop idle wander
                             petLocomotion.setPetEntity(null, null) // Clear locomotion
+                            cleanupAccessories()
                             currentPetEntity?.destroy()
                             currentPetEntity = null
                           }
@@ -1969,7 +2141,10 @@ class ImmersiveActivity : AppSystemActivity() {
                       // NavGrid edit mode
                       isNavGridEditMode = isNavGridEditMode,
                       onNavGridEditModeToggle = ::toggleNavGridEditMode,
-                      onRecalculateCulling = ::recalculateNavGridCulling
+                      onRecalculateCulling = ::recalculateNavGridCulling,
+                      // Accessories visibility
+                      showAccessories = showAccessories,
+                      onShowAccessoriesToggle = ::setAccessoriesVisible
                   )
                 }
               }

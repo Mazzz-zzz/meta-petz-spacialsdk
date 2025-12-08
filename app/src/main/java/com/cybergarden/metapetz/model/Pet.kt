@@ -20,13 +20,25 @@ data class PetData(
     val xp: Float = 0f,            // XP as decimal (0.0 to 1.0), displayed as percentage
     val xpToNextLevel: Float = 1f, // 1.0 = 100%
     val bonesFetched: Int = 0,     // Total bones successfully fetched and returned
-    val userPath: String = ""      // The Firebase user path where this pet lives (e.g., "demoUser")
+    val userPath: String = "",     // The Firebase user path where this pet lives (e.g., "demoUser")
+    val accessories: List<Accessory> = emptyList()  // List of accessories (hats, etc.)
 )
 
 data class PetColors(
     val coat: String = "#3A8DFF",
     val eye: String = "#FFFFFF",
     val snout: String = "#222222"
+)
+
+/**
+ * Accessory data - hats and other wearables
+ * Types: "partyhat", "spinhat", "wizhat"
+ */
+data class Accessory(
+    val type: String = "",        // "partyhat", "spinhat", "wizhat"
+    val ass1: String = "#FFFFFF", // Primary color (material name "ass1")
+    val ass2: String = "#FFFFFF", // Secondary color (material name "ass2")
+    val scale: Float = 1.0f       // Scale multiplier
 )
 
 // Predefined pets list

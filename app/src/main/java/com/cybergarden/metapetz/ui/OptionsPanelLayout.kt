@@ -80,7 +80,10 @@ fun OptionsPanel(
     // NavGrid edit mode
     isNavGridEditMode: Boolean = false,
     onNavGridEditModeToggle: ((Boolean) -> Unit)? = null,
-    onRecalculateCulling: (() -> Unit)? = null
+    onRecalculateCulling: (() -> Unit)? = null,
+    // Accessories visibility
+    showAccessories: Boolean = true,
+    onShowAccessoriesToggle: ((Boolean) -> Unit)? = null
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -815,6 +818,32 @@ fun OptionsPanel(
                     color = Color.Gray
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Accessories toggle (show when environment is setup)
+            if (isEnvironmentSetup && onShowAccessoriesToggle != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = showAccessories,
+                        onCheckedChange = { checked ->
+                            Log.d("OptionsPanel", "Show accessories toggled: $checked")
+                            onShowAccessoriesToggle(checked)
+                        },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF9C27B0),
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Text(
+                        text = "Show Accessories",
+                        fontSize = 14.sp,
+                        color = Color.DarkGray
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))

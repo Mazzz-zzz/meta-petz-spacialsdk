@@ -3,6 +3,7 @@ package com.cybergarden.metapetz.services
 import android.content.Context
 import android.provider.Settings
 import android.util.Log
+import com.cybergarden.metapetz.model.Accessory
 import com.cybergarden.metapetz.model.PetColors
 import com.cybergarden.metapetz.model.PetData
 import com.google.firebase.FirebaseApp
@@ -221,6 +222,22 @@ class FirebaseManager(private val context: Context) {
 
     private fun parsePetData(snapshot: DataSnapshot, userPath: String = ""): PetData {
         val colors = snapshot.child("colors")
+
+        // Parse accessories array
+        val accessoriesList = mutableListOf<Accessory>()
+        val accessoriesSnapshot = snapshot.child("accessories")
+        for (accSnapshot in accessoriesSnapshot.children) {
+            val accessory = Accessory(
+                type = accSnapshot.child("type").getValue(String::class.java) ?: "",
+                ass1 = accSnapshot.child("ass1").getValue(String::class.java) ?: "#FFFFFF",
+                ass2 = accSnapshot.child("ass2").getValue(String::class.java) ?: "#FFFFFF",
+                scale = accSnapshot.child("scale").getValue(Double::class.java)?.toFloat() ?: 1.0f
+            )
+            if (accessory.type.isNotEmpty()) {
+                accessoriesList.add(accessory)
+            }
+        }
+
         return PetData(
             firebaseKey = snapshot.key ?: "",
             shortId = snapshot.child("shortId").getValue(String::class.java) ?: snapshot.key ?: "",
@@ -235,7 +252,8 @@ class FirebaseManager(private val context: Context) {
             xp = snapshot.child("xp").getValue(Double::class.java)?.toFloat() ?: 0f,
             xpToNextLevel = snapshot.child("xpToNextLevel").getValue(Double::class.java)?.toFloat() ?: 1f,
             bonesFetched = snapshot.child("bonesFetched").getValue(Int::class.java) ?: 0,
-            userPath = userPath
+            userPath = userPath,
+            accessories = accessoriesList
         )
     }
 
