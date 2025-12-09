@@ -336,6 +336,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var isPetAttentive by mutableStateOf(false)
   private var currentActivity by mutableStateOf(AttentionActivity.IDLE)
   private var attentionResumeJob: Job? = null
+  private var attentionGainedTimeMs: Long = 0L  // Timestamp when attention was gained (for grace period)
   private val ATTENTION_TIMEOUT_MS = 5000L
 
   // Fetch system - pet has bone in mouth
@@ -472,7 +473,14 @@ class ImmersiveActivity : AppSystemActivity() {
         }
       }
       // Tell PetLocomotion about attention state - accept move commands when FACING_PLAYER or WALKING
-      isAttentive = { isPetAttentive && (currentActivity == AttentionActivity.FACING_PLAYER || currentActivity == AttentionActivity.WALKING) }
+      // Also enforce 500ms grace period after gaining attention (so the trigger click that gained attention doesn't also move pet)
+      isAttentive = {
+        val attentionGracePeriodMs = 500L
+        val timeSinceAttention = System.currentTimeMillis() - attentionGainedTimeMs
+        isPetAttentive &&
+            (currentActivity == AttentionActivity.FACING_PLAYER || currentActivity == AttentionActivity.WALKING) &&
+            timeSinceAttention > attentionGracePeriodMs
+      }
       // Provide head entity for fetch return
       getHeadEntity = { this@ImmersiveActivity.getHeadEntity() }
       // Fetch callbacks
@@ -2843,6 +2851,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Set pet as attentive with FACING_PLAYER activity
     isPetAttentive = true
+    attentionGainedTimeMs = System.currentTimeMillis()  // Track when attention was gained
     currentActivity = AttentionActivity.FACING_PLAYER
 
     // Reset move command counter for new attention session
