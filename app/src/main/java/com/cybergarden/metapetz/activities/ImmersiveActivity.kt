@@ -1911,20 +1911,42 @@ class ImmersiveActivity : AppSystemActivity() {
       }
 
       if (labels.any { it == MRUKLabel.FLOOR.name }) {
-        val transform = anchor.tryGetComponent<Transform>()?.transform ?: continue
+        val transform = getAbsoluteTransform(anchor)  // Use world transform for multi-room support
         val planeComponent = anchor.tryGetComponent<MRUKPlane>() ?: continue
 
         val floorY = transform.t.y
-        val width = planeComponent.max.x - planeComponent.min.x
-        val height = planeComponent.max.y - planeComponent.min.y
+        val worldPos = transform.t
+        val worldRot = transform.q
 
-        // Calculate min/max bounds from anchor position and plane dimensions
-        val minX = transform.t.x - width / 2
-        val maxX = transform.t.x + width / 2
-        val minZ = transform.t.z - height / 2
-        val maxZ = transform.t.z + height / 2
+        // Get floor plane local bounds
+        val minLocal = planeComponent.min
+        val maxLocal = planeComponent.max
+
+        // Create 4 corners in local space (floor is XY plane, Z=0)
+        val localCorners = listOf(
+            Vector3(minLocal.x, minLocal.y, 0f),
+            Vector3(maxLocal.x, minLocal.y, 0f),
+            Vector3(maxLocal.x, maxLocal.y, 0f),
+            Vector3(minLocal.x, maxLocal.y, 0f)
+        )
+
+        // Transform corners to world space using full rotation
+        val worldCorners = localCorners.map { local ->
+            val rotated = worldRot.times(local)
+            Vector3(worldPos.x + rotated.x, worldPos.y + rotated.y, worldPos.z + rotated.z)
+        }
+
+        // Calculate axis-aligned bounding box from world corners
+        val minX = worldCorners.minOf { it.x }
+        val maxX = worldCorners.maxOf { it.x }
+        val minZ = worldCorners.minOf { it.z }
+        val maxZ = worldCorners.maxOf { it.z }
+
+        val width = maxX - minX
+        val height = maxZ - minZ
 
         Log.d(TAG, "Initializing NavGrid from floor: ${width}x${height} at Y=$floorY")
+        Log.d(TAG, "Floor rotation applied - world corners transformed")
         Log.d(TAG, "NavGrid bounds: X[$minX, $maxX] Z[$minZ, $maxZ]")
 
         navGrid = NavGrid(
@@ -3564,13 +3586,12 @@ class ImmersiveActivity : AppSystemActivity() {
       furnitureLabels.any { it.name == labelName }
     }
 
-    // Get the anchor's transform/pose
-    val transform = anchorEntity.tryGetComponent<Transform>()
-    if (transform == null) {
-      Log.d(TAG, "Anchor has no Transform component, skipping: $anchorLabels")
+    // Get the anchor's world transform (absolute, not local) for multi-room support
+    val anchorPose = getAbsoluteTransform(anchorEntity)
+    if (anchorPose == Pose()) {
+      Log.d(TAG, "Anchor has no valid Transform, skipping: $anchorLabels")
       return
     }
-    val anchorPose = transform.transform
 
     // Block furniture in NavGrid
     if (hasFurnitureLabel) {
@@ -3802,18 +3823,38 @@ class ImmersiveActivity : AppSystemActivity() {
       )
     }
 
-    // Transform local corners to world space (same as original sphere code)
+    // Transform local corners to world space using full rotation (supports multi-room)
     fun localToWorld(local: Vector3): Vector3 {
       val rotated = worldRot.times(local)
       return Vector3(
         worldPos.x + rotated.x,
-        worldPos.y + local.z,  // Height direct from local Z
+        worldPos.y + rotated.y,  // Use rotated.y for correct multi-room support
         worldPos.z + rotated.z
       )
     }
 
     val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
     val topWorld = topLocalCorners.map { localToWorld(it) }
+
+    // Debug: Create purple spheres at bottom corners to visualize furniture bounds
+    val labelName = labels.firstOrNull() ?: "furniture"
+    bottomWorld.forEachIndexed { i, corner ->
+      val debugSphere = Entity.create(
+        listOf(
+          Mesh(android.net.Uri.parse("mesh://sphere")),
+          Sphere(0.03f),
+          Material().apply {
+            baseColor = Color4(0.8f, 0.2f, 1f, 1f)  // Purple
+            unlit = true
+          },
+          Transform(Pose(corner, Quaternion())),
+          Scale(Vector3(1f, 1f, 1f)),
+          Visible(true)
+        )
+      )
+      furnitureDebugSpheres.add(debugSphere)
+      Log.d(TAG, "Debug sphere $i for $labelName at (${corner.x}, ${corner.y}, ${corner.z})")
+    }
 
     // Calculate box center from world corners
     val allCorners = bottomWorld + topWorld
@@ -3822,35 +3863,46 @@ class ImmersiveActivity : AppSystemActivity() {
     val centerZ = allCorners.map { it.z }.average().toFloat()
     val worldCenter = Vector3(centerX, centerY, centerZ)
 
-    // Calculate orientation from bottom corners (edge 0->1 gives X direction)
-    val edge0 = bottomWorld[0]
-    val edge1 = bottomWorld[1]
-    val dirX = edge1.x - edge0.x
-    val dirZ = edge1.z - edge0.z
-    val yawAngle = kotlin.math.atan2(dirZ, dirX)
-    val boxRotation = quaternionFromYaw(yawAngle)
+    // Use the original world rotation directly (not recomputed from corners)
+    // This preserves full 3D rotation for multi-room support
+    val boxRotation = worldRot
 
-    // Calculate box dimensions from world corners
-    // Width = distance along edge 0->1, Depth = distance along edge 0->3
-    val edge3 = bottomWorld[3]
-    val width = kotlin.math.sqrt((dirX * dirX + dirZ * dirZ).toDouble()).toFloat()
-    val depthX = edge3.x - edge0.x
-    val depthZ = edge3.z - edge0.z
-    val depth = kotlin.math.sqrt((depthX * depthX + depthZ * depthZ).toDouble()).toFloat()
-    val height = topWorld[0].y - bottomWorld[0].y
+    // Get box dimensions from original local bounds (not from world corners)
+    // This avoids floating point errors from recomputing distances
+    val width: Float
+    val depth: Float
+    val height: Float
+    if (volumeComponent != null) {
+      val min = volumeComponent.min
+      val max = volumeComponent.max
+      width = max.x - min.x   // Local X = width
+      depth = max.y - min.y   // Local Y = depth
+      height = max.z - min.z  // Local Z = height
+    } else if (planeComponent != null) {
+      val min = planeComponent.min
+      val max = planeComponent.max
+      width = max.x - min.x
+      depth = max.y - min.y
+      height = 0.02f  // Thin plane
+    } else {
+      width = 0.5f
+      depth = 0.5f
+      height = 0.5f
+    }
 
     try {
       // Create the occluder box mesh using SceneMesh.box with furnitureOccluderMaterial
+      // Box is created in local space, then transformed by worldRot
       val halfX = width / 2f
-      val halfY = height / 2f
-      val halfZ = depth / 2f
+      val halfY = depth / 2f   // Depth maps to mesh Y in local space
+      val halfZ = height / 2f  // Height maps to mesh Z in local space
       val occluderMesh = SceneMesh.box(
         Vector3(-halfX, -halfY, -halfZ),
         Vector3(halfX, halfY, halfZ),
         furnitureOccluderMaterial
       )
 
-      // Create entity with transform first
+      // Create entity with transform using original world rotation
       val occluderEntity = Entity.create(
         listOf(
           Transform(Pose(worldCenter, boxRotation)),
@@ -3868,7 +3920,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
       furnitureDebugSpheres.add(occluderEntity)
 
-      Log.d(TAG, "Created occluder box for $labelName: size=($width, $height, $depth) yaw=${Math.toDegrees(yawAngle.toDouble())}deg at ($centerX, $centerY, $centerZ)")
+      Log.d(TAG, "Created occluder box for $labelName: size=($width, $height, $depth) at ($centerX, $centerY, $centerZ)")
     } catch (e: Exception) {
       Log.e(TAG, "Failed to create occluder box: ${e.message}")
     }
