@@ -99,6 +99,7 @@ import com.meta.spatial.mruk.MRUKLabel
 import com.meta.spatial.mruk.MRUKSceneEventListener
 import com.meta.spatial.mruk.AnchorProceduralMesh
 import com.meta.spatial.mruk.AnchorProceduralMeshConfig
+import com.meta.spatial.mruk.MRUKSpawnMode
 import com.meta.spatial.mruk.MRUKPlane
 import com.meta.spatial.mruk.MRUKVolume
 import com.meta.spatial.mruk.Tracker
@@ -1995,7 +1996,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Recreate procMeshSpawner if it was destroyed
     if (procMeshSpawner == null) {
-      Log.d(TAG, "Recreating procMeshSpawner for room scan")
+      Log.d(TAG, "Recreating procMeshSpawner for room scan (CURRENT_ROOM_ONLY)")
       procMeshSpawner = AnchorProceduralMesh(
           mrukFeature,
           mapOf(
@@ -2010,7 +2011,8 @@ class ImmersiveActivity : AppSystemActivity() {
               MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
               MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
               MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
-          )
+          ),
+          MRUKSpawnMode.CURRENT_ROOM_ONLY  // Only spawn for current room, not all rooms
       )
     }
 
@@ -3316,6 +3318,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Create AnchorProceduralMesh with physics-only furniture colliders (no visual mesh)
     // Visual debug is handled separately to avoid blocking UI raycasts
+    // CURRENT_ROOM_ONLY ensures we only get furniture from the current room, not all scanned rooms
     procMeshSpawner = AnchorProceduralMesh(
         mrukFeature,
         mapOf(
@@ -3330,9 +3333,10 @@ class ImmersiveActivity : AppSystemActivity() {
             MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
             MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
             MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
-        )
+        ),
+        MRUKSpawnMode.CURRENT_ROOM_ONLY  // Only spawn for current room, not all rooms
     )
-    Log.d(TAG, "AnchorProceduralMesh initialized with physics-only colliders")
+    Log.d(TAG, "AnchorProceduralMesh initialized with physics-only colliders (CURRENT_ROOM_ONLY)")
 
     // Register scene event listener to handle room loading events
     sceneEventListener = object : MRUKSceneEventListener {
