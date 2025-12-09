@@ -77,6 +77,8 @@ fun OptionsPanel(
     isQRScanning: Boolean = false,
     // Pet activity state
     activityState: String = "IDLE",  // IDLE, FACING_PLAYER, FETCHING, WALKING
+    // Current room label for debug
+    currentRoomLabel: String? = null,
     // NavGrid edit mode
     isNavGridEditMode: Boolean = false,
     onNavGridEditModeToggle: ((Boolean) -> Unit)? = null,
@@ -1048,6 +1050,26 @@ fun OptionsPanel(
                             else -> Color.Gray
                         }
                     )
+                }
+
+                // Current room label
+                if (currentRoomLabel != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Room:",
+                            fontSize = 12.sp,
+                            color = Color.DarkGray
+                        )
+                        Text(
+                            text = currentRoomLabel,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF9C27B0)  // Purple for room
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

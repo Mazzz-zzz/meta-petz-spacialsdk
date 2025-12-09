@@ -205,7 +205,25 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // Current room tracking - only process anchors from the room user is in
   private var currentProcessedRoomUuid: String? = null
+  private var currentRoomLabel by mutableStateOf<String?>(null)  // For UI display
   private var roomChangeCheckJob: Job? = null
+  private var panelFollowJob: Job? = null
+
+  // Room floor bounds cache for head-based room detection
+  data class RoomFloorBounds(
+      val roomUuid: String,
+      val room: MRUKRoom,
+      val minX: Float,
+      val maxX: Float,
+      val minZ: Float,
+      val maxZ: Float,
+      val floorY: Float
+  ) {
+    fun containsPoint(x: Float, z: Float): Boolean {
+      return x >= minX && x <= maxX && z >= minZ && z <= maxZ
+    }
+  }
+  private val roomFloorBoundsCache = mutableListOf<RoomFloorBounds>()
 
   // Loading state for heavy room processing
   private var isRoomProcessing by mutableStateOf(false)
@@ -930,6 +948,9 @@ class ImmersiveActivity : AppSystemActivity() {
     // Start bone pickup proximity checking
     startBonePickupCheck()
 
+    // Start panel follow job (moves panel closer when user walks away)
+    startPanelFollowJob()
+
     // Grabbable handler: keeps physics while held and restores on release
     val inputSystem = systemManager.tryFindSystem<IsdkInputListenerSystem>()
     if (inputSystem == null) {
@@ -1240,9 +1261,32 @@ class ImmersiveActivity : AppSystemActivity() {
           val wanderCenterZ = headTransform?.t?.z ?: 0f
           petLocomotion.setWanderArea(wanderCenterX, wanderCenterZ, 2.0f)
 
-          // Start spinning animation FIRST (sets SPAWNING state)
+          // In room mode, move pet to walkable position BEFORE spin animation
+          var spawnPosition: Vector3? = null
+          if (isRoomMode && navGrid != null) {
+            val walkablePos = navGrid?.getRandomWalkablePoint()
+            if (walkablePos != null) {
+              // Remove parent to put pet in world space
+              currentPetEntity?.setComponent(TransformParent(Entity.nullEntity()))
+
+              // Get current rotation (the flip rotation)
+              val currentTransform = currentPetEntity?.tryGetComponent<Transform>()?.transform
+              val rotation = currentTransform?.q ?: Quaternion(1f, 0f, 0f, 0f)
+
+              // Add pet model Y offset (feet should be on surface, not center)
+              val petModelYOffset = 0.15f
+              spawnPosition = Vector3(walkablePos.x, walkablePos.y + petModelYOffset, walkablePos.z)
+
+              currentPetEntity?.setComponent(Transform(Pose(spawnPosition, rotation)))
+              Log.d(TAG, "Room mode: positioned pet at walkable spawn $spawnPosition before spin")
+            } else {
+              Log.w(TAG, "Room mode: no walkable position found, pet stays at panel for spin")
+            }
+          }
+
+          // Start spinning animation (sets SPAWNING state)
           // Idle wander will start after spin completes
-          startSpinning()
+          startSpinning(spawnPosition)
 
           // Spawn complete - allow new spawns after a brief delay
           delay(500)  // Small delay to ensure everything is set up
@@ -1405,12 +1449,13 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
 
-  private fun startSpinning() {
+  private fun startSpinning(worldSpawnPosition: Vector3? = null) {
     val entity = currentPetEntity ?: return
 
     // Set SPAWNING state to prevent other rotations from interfering
     currentActivity = AttentionActivity.SPAWNING
-    Log.d(TAG, "Starting spawn spin animation (${SPAWN_SPIN_DURATION_MS}ms)")
+    val isWorldSpace = worldSpawnPosition != null
+    Log.d(TAG, "Starting spawn spin animation (${SPAWN_SPIN_DURATION_MS}ms), worldSpace=$isWorldSpace")
 
     spinningJob = activityScope.launch {
       var angle = 0f
@@ -1447,20 +1492,28 @@ class ImmersiveActivity : AppSystemActivity() {
           val bounceHeight = kotlin.math.sin(time * 3f) * 0.03f // Bounce up/down
           val sideToSide = kotlin.math.sin(time * 2f) * 0.02f // Sway left/right
 
-          // Base position + dancing movements
-          val baseY = 0.2f
-          val baseX = 0f
-          val dancing = Vector3(
-              baseX + sideToSide, // X: side-to-side sway
-              baseY + bounceHeight, // Y: bouncing motion
-              0.2f // Z: fixed distance in front
-          )
+          // Calculate position based on whether we're in world space or local (panel) space
+          val position = if (worldSpawnPosition != null) {
+            // World space: bounce around the spawn position
+            Vector3(
+                worldSpawnPosition.x + sideToSide,
+                worldSpawnPosition.y + bounceHeight,
+                worldSpawnPosition.z
+            )
+          } else {
+            // Local space (panel): use original local positions
+            Vector3(
+                0f + sideToSide,  // X: side-to-side sway
+                0.2f + bounceHeight,  // Y: bouncing motion
+                0.2f  // Z: fixed distance in front
+            )
+          }
 
           // Update entity transform with dancing position
           entity.setComponent(
               Transform(
                   Pose(
-                      dancing,
+                      position,
                       rotation
                   )
               )
@@ -1761,6 +1814,9 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
         logMrukRoomData()
 
+        // Compute and cache floor bounds for ALL rooms (used for head-based room detection)
+        computeAllRoomFloorBounds()
+
         // Get the CURRENT room only - don't process all rooms
         val currentRoom = mrukFeature.getCurrentRoom()
         if (currentRoom == null) {
@@ -1797,6 +1853,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Track which room we're processing
     currentProcessedRoomUuid = roomUuid
+    currentRoomLabel = "Room: ${roomUuid.take(8)}..."  // Short UUID for display
 
     Log.d(TAG, "Processing ${room.anchors.size} anchors for current room $roomUuid")
 
@@ -1843,29 +1900,109 @@ class ImmersiveActivity : AppSystemActivity() {
     Log.d(TAG, "================================")
   }
 
+  // Panel follow distance threshold (meters)
+  private val PANEL_FOLLOW_DISTANCE = 2.0f
+
   /**
-   * Start polling for room changes. When user moves to a different room,
-   * clear the old room's entities and rebuild for the new room.
+   * Start the panel follow job that moves the panel closer when user walks away.
+   */
+  private fun startPanelFollowJob() {
+    panelFollowJob?.cancel()
+    panelFollowJob = activityScope.launch {
+      Log.d(TAG, "Panel follow job started (threshold: ${PANEL_FOLLOW_DISTANCE}m)")
+      while (isActive) {
+        delay(1000) // Check every 1 second
+        checkPanelFollowDistance()
+      }
+    }
+  }
+
+  /**
+   * Check if user is too far from panel and move it closer if needed.
+   */
+  private fun checkPanelFollowDistance() {
+    val panel = panelEntity ?: return
+    val headEntity = getHeadEntity() ?: return
+
+    val headTransform = headEntity.tryGetComponent<Transform>()?.transform ?: return
+    val panelTransform = panel.tryGetComponent<Transform>()?.transform ?: return
+
+    val headPos = headTransform.t
+    val panelPos = panelTransform.t
+
+    // Calculate horizontal distance (ignore Y)
+    val dx = headPos.x - panelPos.x
+    val dz = headPos.z - panelPos.z
+    val distance = kotlin.math.sqrt(dx * dx + dz * dz)
+
+    if (distance > PANEL_FOLLOW_DISTANCE) {
+      // Move panel to 1.5 meters in front of user
+      val headRot = headTransform.q
+
+      // Get forward direction from head rotation (negative Z is forward)
+      val forward = headRot.times(Vector3(0f, 0f, -1f))
+      // Flatten to horizontal
+      val forwardFlat = Vector3(forward.x, 0f, forward.z)
+      val forwardLen = kotlin.math.sqrt(forwardFlat.x * forwardFlat.x + forwardFlat.z * forwardFlat.z)
+
+      if (forwardLen > 0.01f) {
+        val normalizedForward = Vector3(forwardFlat.x / forwardLen, 0f, forwardFlat.z / forwardLen)
+
+        // New panel position: 1.5m in front of head, at head height
+        val newPanelPos = Vector3(
+          headPos.x + normalizedForward.x * 1.5f,
+          headPos.y,
+          headPos.z + normalizedForward.z * 1.5f
+        )
+
+        // Calculate rotation to face the user
+        val toUser = Vector3(headPos.x - newPanelPos.x, 0f, headPos.z - newPanelPos.z)
+        val yaw = kotlin.math.atan2(toUser.x, toUser.z)
+        val panelRot = Quaternion(0f, kotlin.math.sin(yaw / 2f).toFloat(), 0f, kotlin.math.cos(yaw / 2f).toFloat())
+
+        panel.setComponent(Transform(Pose(newPanelPos, panelRot)))
+        Log.d(TAG, "Panel moved closer: distance was ${distance}m, now at $newPanelPos")
+      }
+    }
+  }
+
+  /**
+   * Start polling for room changes using HEAD POSITION detection.
+   * This checks which room's floor bounds contain the user's head position,
+   * which is more reliable than getCurrentRoom() in roomscale mode.
    */
   private fun startRoomChangeDetection() {
     roomChangeCheckJob?.cancel()
     roomChangeCheckJob = activityScope.launch {
-      Log.d(TAG, "Room change detection started")
+      Log.d(TAG, "Room change detection started (using head position)")
       while (isActive) {
-        delay(2000) // Check every 2 seconds
+        delay(1000) // Check every 1 second for more responsive detection
 
-        if (!isRoomMode) continue // Only check in room mode
+        if (!isRoomMode) continue // Only check room changes in room mode
 
-        val currentRoom = mrukFeature.getCurrentRoom()
-        val currentUuid = currentRoom?.anchor?.uuid?.toString()
+        // Get user's head position
+        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+        if (headPos == null) {
+          Log.v(TAG, "Room check: no head position available")
+          continue
+        }
 
-        if (currentUuid != null && currentUuid != currentProcessedRoomUuid) {
-          Log.d(TAG, "=== ROOM CHANGE DETECTED ===")
+        // Find which room contains the head position
+        val detectedRoom = findRoomContainingPoint(headPos.x, headPos.z)
+        val detectedUuid = detectedRoom?.roomUuid
+
+        // Log current detection for debugging
+        Log.v(TAG, "Room check: head at (${headPos.x}, ${headPos.z}) -> room ${detectedUuid?.take(8) ?: "none"}")
+
+        if (detectedUuid != null && detectedUuid != currentProcessedRoomUuid) {
+          Log.d(TAG, "=== ROOM CHANGE DETECTED (HEAD POSITION) ===")
+          Log.d(TAG, "Head position: (${headPos.x}, ${headPos.y}, ${headPos.z})")
           Log.d(TAG, "Old room: $currentProcessedRoomUuid")
-          Log.d(TAG, "New room: $currentUuid")
+          Log.d(TAG, "New room: $detectedUuid")
+          Log.d(TAG, "Room bounds: X[${detectedRoom.minX}, ${detectedRoom.maxX}] Z[${detectedRoom.minZ}, ${detectedRoom.maxZ}]")
 
           // Clear old room data and rebuild for new room
-          rebuildForNewRoom(currentRoom, currentUuid)
+          rebuildForNewRoom(detectedRoom.room, detectedUuid)
         }
       }
     }
@@ -1896,6 +2033,41 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Process new room
     processRoomAnchors(room, roomUuid)
+
+    // Teleport pet to new room's walkable area
+    teleportPetToNewRoom()
+  }
+
+  /**
+   * Teleport the pet to a walkable position in the current room.
+   * Called when room changes are detected.
+   */
+  private fun teleportPetToNewRoom() {
+    val pet = currentPetEntity ?: return
+    val grid = navGrid ?: return
+
+    val walkablePos = grid.getRandomWalkablePoint()
+    if (walkablePos == null) {
+      Log.w(TAG, "Room change: no walkable position found for pet teleport")
+      return
+    }
+
+    // Get current rotation to preserve it
+    val currentTransform = pet.tryGetComponent<Transform>()?.transform
+    val rotation = currentTransform?.q ?: Quaternion(1f, 0f, 0f, 0f)
+
+    // Add pet model Y offset
+    val petModelYOffset = 0.15f
+    val newPos = Vector3(walkablePos.x, walkablePos.y + petModelYOffset, walkablePos.z)
+
+    // Make sure pet is in world space (not parented)
+    pet.setComponent(TransformParent(Entity.nullEntity()))
+    pet.setComponent(Transform(Pose(newPos, rotation)))
+
+    // Update wander area to new room
+    petLocomotion.setWanderArea(newPos.x, newPos.z, 2.0f)
+
+    Log.d(TAG, "Room change: teleported pet to new room at $newPos")
   }
 
   /**
@@ -1945,9 +2117,16 @@ class ImmersiveActivity : AppSystemActivity() {
         val width = maxX - minX
         val height = maxZ - minZ
 
-        Log.d(TAG, "Initializing NavGrid from floor: ${width}x${height} at Y=$floorY")
-        Log.d(TAG, "Floor rotation applied - world corners transformed")
-        Log.d(TAG, "NavGrid bounds: X[$minX, $maxX] Z[$minZ, $maxZ]")
+        Log.d(TAG, "=== NAVGRID AABB CALCULATION ===")
+        Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+        Log.d(TAG, "Floor world pos: (${worldPos.x}, ${worldPos.y}, ${worldPos.z})")
+        Log.d(TAG, "Floor world rot: (${worldRot.x}, ${worldRot.y}, ${worldRot.z}, ${worldRot.w})")
+        Log.d(TAG, "Local bounds: min=(${minLocal.x}, ${minLocal.y}) max=(${maxLocal.x}, ${maxLocal.y})")
+        Log.d(TAG, "World corners:")
+        worldCorners.forEachIndexed { i, c -> Log.d(TAG, "  Corner $i: (${c.x}, ${c.y}, ${c.z})") }
+        Log.d(TAG, "AABB: X[$minX, $maxX] Z[$minZ, $maxZ]")
+        Log.d(TAG, "NavGrid size: ${width}x${height} at floorY=$floorY")
+        Log.d(TAG, "================================")
 
         navGrid = NavGrid(
             cellSize = 0.15f,
@@ -1962,6 +2141,110 @@ class ImmersiveActivity : AppSystemActivity() {
         break
       }
     }
+  }
+
+  /**
+   * Compute and cache floor bounds for all MRUK rooms.
+   * This is used for head-based room detection (checking which room the user is standing in).
+   */
+  private fun computeAllRoomFloorBounds() {
+    roomFloorBoundsCache.clear()
+
+    for (room in mrukFeature.rooms) {
+      val roomUuid = room.anchor.uuid.toString()
+
+      // Find floor anchor
+      for (anchor in room.anchors) {
+        val mrukAnchor = anchor.tryGetComponent<MRUKAnchor>() ?: continue
+        val labels = mutableListOf<String>()
+        for (i in 0 until mrukAnchor.labelsCount) {
+          mrukAnchor.labels[i]?.let { labels.add(it) }
+        }
+
+        if (labels.any { it == MRUKLabel.FLOOR.name }) {
+          val transform = getAbsoluteTransform(anchor)
+          val planeComponent = anchor.tryGetComponent<MRUKPlane>() ?: continue
+
+          val floorY = transform.t.y
+          val worldPos = transform.t
+          val worldRot = transform.q
+
+          // Get floor plane local bounds
+          val minLocal = planeComponent.min
+          val maxLocal = planeComponent.max
+
+          // Create 4 corners in local space
+          val localCorners = listOf(
+              Vector3(minLocal.x, minLocal.y, 0f),
+              Vector3(maxLocal.x, minLocal.y, 0f),
+              Vector3(maxLocal.x, maxLocal.y, 0f),
+              Vector3(minLocal.x, maxLocal.y, 0f)
+          )
+
+          // Transform corners to world space
+          val worldCorners = localCorners.map { local ->
+              val rotated = worldRot.times(local)
+              Vector3(worldPos.x + rotated.x, worldPos.y + rotated.y, worldPos.z + rotated.z)
+          }
+
+          // Calculate axis-aligned bounding box
+          val minX = worldCorners.minOf { it.x }
+          val maxX = worldCorners.maxOf { it.x }
+          val minZ = worldCorners.minOf { it.z }
+          val maxZ = worldCorners.maxOf { it.z }
+
+          val bounds = RoomFloorBounds(
+              roomUuid = roomUuid,
+              room = room,
+              minX = minX,
+              maxX = maxX,
+              minZ = minZ,
+              maxZ = maxZ,
+              floorY = floorY
+          )
+          roomFloorBoundsCache.add(bounds)
+
+          Log.d(TAG, "Cached floor bounds for room ${roomUuid.take(8)}: X[$minX, $maxX] Z[$minZ, $maxZ]")
+          break
+        }
+      }
+    }
+
+    Log.d(TAG, "Computed floor bounds for ${roomFloorBoundsCache.size} rooms")
+  }
+
+  /**
+   * Find which room contains a given XZ point (typically user's head position).
+   * Returns the room that best contains the point, or null if no room found.
+   */
+  private fun findRoomContainingPoint(x: Float, z: Float): RoomFloorBounds? {
+    // First, check for exact containment
+    for (bounds in roomFloorBoundsCache) {
+      if (bounds.containsPoint(x, z)) {
+        return bounds
+      }
+    }
+
+    // If no exact match, find the closest room (user might be near a doorway)
+    var closestBounds: RoomFloorBounds? = null
+    var closestDistance = Float.MAX_VALUE
+
+    for (bounds in roomFloorBoundsCache) {
+      // Calculate distance to room center
+      val centerX = (bounds.minX + bounds.maxX) / 2f
+      val centerZ = (bounds.minZ + bounds.maxZ) / 2f
+      val dx = x - centerX
+      val dz = z - centerZ
+      val distance = kotlin.math.sqrt(dx * dx + dz * dz)
+
+      if (distance < closestDistance) {
+        closestDistance = distance
+        closestBounds = bounds
+      }
+    }
+
+    // Only return closest room if within reasonable distance (3 meters)
+    return if (closestDistance < 3f) closestBounds else null
   }
 
   /**
@@ -2173,6 +2456,8 @@ class ImmersiveActivity : AppSystemActivity() {
                       isQRScanning = isQRScanning,
                       // Pet activity state
                       activityState = currentActivity.name,
+                      // Current room label for debug
+                      currentRoomLabel = currentRoomLabel,
                       // NavGrid edit mode
                       isNavGridEditMode = isNavGridEditMode,
                       onNavGridEditModeToggle = ::toggleNavGridEditMode,
@@ -2209,6 +2494,8 @@ class ImmersiveActivity : AppSystemActivity() {
     hideAttentionIndicator()
     roomChangeCheckJob?.cancel()
     roomChangeCheckJob = null
+    panelFollowJob?.cancel()
+    panelFollowJob = null
     petLocomotion.cleanup()
     mrukFeature.stopEnvironmentRaycaster()
     // Clean up bone pickup system
@@ -3835,26 +4122,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
     val bottomWorld = bottomLocalCorners.map { localToWorld(it) }
     val topWorld = topLocalCorners.map { localToWorld(it) }
-
-    // Debug: Create purple spheres at bottom corners to visualize furniture bounds
-    val labelName = labels.firstOrNull() ?: "furniture"
-    bottomWorld.forEachIndexed { i, corner ->
-      val debugSphere = Entity.create(
-        listOf(
-          Mesh(android.net.Uri.parse("mesh://sphere")),
-          Sphere(0.03f),
-          Material().apply {
-            baseColor = Color4(0.8f, 0.2f, 1f, 1f)  // Purple
-            unlit = true
-          },
-          Transform(Pose(corner, Quaternion())),
-          Scale(Vector3(1f, 1f, 1f)),
-          Visible(true)
-        )
-      )
-      furnitureDebugSpheres.add(debugSphere)
-      Log.d(TAG, "Debug sphere $i for $labelName at (${corner.x}, ${corner.y}, ${corner.z})")
-    }
 
     // Calculate box center from world corners
     val allCorners = bottomWorld + topWorld
