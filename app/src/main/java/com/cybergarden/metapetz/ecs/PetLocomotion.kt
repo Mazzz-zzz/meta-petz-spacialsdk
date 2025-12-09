@@ -740,6 +740,7 @@ class PetLocomotion(
      * Automatically jumps UP when needed, falls with gravity when going DOWN.
      *
      * IMPORTANT: Only uses pathfinding in ROOM MODE. In OUTSIDE MODE, falls back to direct movement.
+     * In ROOM MODE, if pathfinding fails, the pet will NOT move (no fallback to prevent Y glitches).
      */
     fun moveToWithPathfinding(target: Vector3) {
         val pet = petEntity ?: run {
@@ -754,10 +755,9 @@ class PetLocomotion(
             return
         }
 
-        // ROOM MODE: Use NavGrid pathfinding
+        // ROOM MODE: Use NavGrid pathfinding - NO FALLBACK to prevent Y level glitches
         val grid = navGrid ?: run {
-            Log.w(TAG, "Room mode but navGrid is null, falling back to direct movement")
-            moveTo(target)
+            Log.w(TAG, "Room mode but navGrid is null - NOT moving (no fallback to prevent Y glitch)")
             return
         }
 
@@ -767,8 +767,7 @@ class PetLocomotion(
         // Find path using A*
         val path = grid.findPath(currentPos.x, currentPos.z, target.x, target.z)
         if (path == null || path.size < 2) {
-            Log.w(TAG, "No path found, falling back to direct movement")
-            moveTo(target)
+            Log.w(TAG, "No path found in room mode - NOT moving (no fallback to prevent Y glitch)")
             return
         }
 
@@ -1229,7 +1228,8 @@ class PetLocomotion(
                 Log.d(TAG, "Idle wander: moving to $finalTarget (isRoomMode=$isRoomMode)")
 
                 // Move to the random point - method chosen based on mode
-                // moveToWithPathfinding() internally checks isRoomMode and falls back to moveTo() if needed
+                // In room mode, uses A* pathfinding (no fallback if path fails)
+                // In outside mode, uses direct movement
                 moveToWithPathfinding(finalTarget)
 
                 // Wait for walk/jump to complete
