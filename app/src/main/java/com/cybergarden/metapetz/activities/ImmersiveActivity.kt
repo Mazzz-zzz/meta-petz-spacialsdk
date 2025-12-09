@@ -205,6 +205,10 @@ class ImmersiveActivity : AppSystemActivity() {
   data class PendingWall(val worldPos: Vector3, val worldRot: Quaternion, val width: Float)
   private val pendingWalls = mutableListOf<PendingWall>()
 
+  // Pending furniture data to block after NavGrid is created
+  data class PendingFurniture(val anchorEntity: Entity, val anchorPose: Pose, val labels: List<String>)
+  private val pendingFurniture = mutableListOf<PendingFurniture>()
+
   // Current room tracking - only process anchors from the room user is in
   private var currentProcessedRoomUuid: String? = null
   private var currentRoomLabel by mutableStateOf<String?>(null)  // For UI display
@@ -1936,9 +1940,10 @@ class ImmersiveActivity : AppSystemActivity() {
     currentProcessedRoomUuid = null
     Log.d(TAG, "Cleared currentProcessedRoomUuid")
 
-    // Clear pending walls
+    // Clear pending walls and furniture
     pendingWalls.clear()
-    Log.d(TAG, "Cleared pending walls")
+    pendingFurniture.clear()
+    Log.d(TAG, "Cleared pending walls and furniture")
 
     Log.d(TAG, "MRUK state reset complete")
   }
@@ -2111,8 +2116,9 @@ class ImmersiveActivity : AppSystemActivity() {
       onAnchorAddedHandler(room, anchor)
     }
 
-    // Process any walls that were queued before NavGrid was created
+    // Process any walls/furniture that were queued before NavGrid was created
     processPendingWalls()
+    processPendingFurniture()
 
     // Finalize NavGrid - heavy computation on background thread
     navGrid?.let { grid ->
@@ -2282,11 +2288,12 @@ class ImmersiveActivity : AppSystemActivity() {
     furniturePhysicsBoxes.forEach { it.destroy() }
     furniturePhysicsBoxes.clear()
     pendingWalls.clear()
+    pendingFurniture.clear()
 
     Log.d(TAG, "Cleared old room data, rebuilding for new room")
 
-    // Reinitialize NavGrid for new room
-    initializeNavGridForRoom(room)
+    // Note: NavGrid will be created by extractFloorPolygon() when FLOOR anchor is processed
+    // Don't call initializeNavGridForRoom() here as it creates a NavGrid that gets overwritten
 
     // Process new room
     processRoomAnchors(room, roomUuid)
@@ -4153,101 +4160,15 @@ class ImmersiveActivity : AppSystemActivity() {
     // NavGrid blocking requires grid to exist
     val grid = navGrid
     if (grid == null) {
-      Log.d(TAG, "NavGrid not ready, skipping blocking for: $labels (debug edges still created)")
+      // Queue for later processing when NavGrid is created
+      pendingFurniture.add(PendingFurniture(anchorEntity, anchorPose, labels))
+      Log.d(TAG, "NavGrid not ready, queued furniture for later: $labels (debug edges still created)")
       return
     }
 
-    // Only block furniture that sits on the ground
-    // Skip wall-mounted/floating items (> 1.5m above floor)
-    val floorY = grid.floorY
-    val heightAboveFloor = worldPos.y - floorY
-    if (heightAboveFloor > 1.5f) {
-      Log.d(TAG, "Skipping NavGrid blocking for wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
-      return
-    }
-
-    // volumeComponent and planeComponent already retrieved above
-
-    val localCorners: List<Vector3>
-    var furnitureTopHeight: Float  // Height of the furniture's top surface in world space
-
-    if (volumeComponent != null) {
-      // Use MRUKVolume - get the bottom face (floor footprint) corners
-      // In anchor-local space: X = width, Y = depth, Z = height
-      // Bottom face is at Z = min.z
-      val min = volumeComponent.min
-      val max = volumeComponent.max
-      Log.d(TAG, "=== FURNITURE (Volume): $labels ===")
-      Log.d(TAG, "  Volume min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)}, ${"%.3f".format(min.z)})")
-      Log.d(TAG, "  Volume max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)}, ${"%.3f".format(max.z)})")
-
-      // Calculate top surface height: anchor Y + max Z (top of volume in local space)
-      furnitureTopHeight = worldPos.y + max.z
-      Log.d(TAG, "  Top surface height: ${"%.3f".format(furnitureTopHeight)}m")
-
-      // Bottom face corners (z = min.z for floor footprint)
-      // X and Y define the horizontal footprint
-      localCorners = listOf(
-        Vector3(min.x, min.y, min.z),
-        Vector3(max.x, min.y, min.z),
-        Vector3(max.x, max.y, min.z),
-        Vector3(min.x, max.y, min.z)
-      )
-    } else if (planeComponent != null) {
-      // Fallback to MRUKPlane for 2D surfaces (horizontal surfaces like tabletops)
-      val min = planeComponent.min
-      val max = planeComponent.max
-      Log.d(TAG, "=== FURNITURE (Plane): $labels ===")
-      Log.d(TAG, "  Plane min=(${"%.3f".format(min.x)}, ${"%.3f".format(min.y)})")
-      Log.d(TAG, "  Plane max=(${"%.3f".format(max.x)}, ${"%.3f".format(max.y)})")
-
-      // For planes, the surface is at the anchor's Y position
-      furnitureTopHeight = worldPos.y
-      Log.d(TAG, "  Top surface height: ${"%.3f".format(furnitureTopHeight)}m")
-
-      // Plane corners (X = width, Y = depth in plane's local 2D space, Z = 0)
-      localCorners = listOf(
-        Vector3(min.x, min.y, 0f),
-        Vector3(max.x, min.y, 0f),
-        Vector3(max.x, max.y, 0f),
-        Vector3(min.x, max.y, 0f)
-      )
-    } else {
-      // No volume or plane - use default size and assume ~0.5m height
-      Log.d(TAG, "Furniture has no MRUKVolume/MRUKPlane, using default 0.5x0.5m: $labels")
-      furnitureTopHeight = worldPos.y + 0.5f  // Assume 0.5m height for unknown furniture
-      localCorners = listOf(
-        Vector3(-0.25f, 0f, -0.25f),
-        Vector3(+0.25f, 0f, -0.25f),
-        Vector3(+0.25f, 0f, +0.25f),
-        Vector3(-0.25f, 0f, +0.25f)
-      )
-    }
-
-    // Transform local corners to world space using the absolute transform
-    val worldCorners = localCorners.map { local ->
-      // Rotate the local point by the world rotation, then add world position
-      val rotated = worldRot.times(local)
-      Pair(worldPos.x + rotated.x, worldPos.z + rotated.z)
-    }
-
-    // Store for debug
-    furnitureQuads.add(FurnitureQuad(worldCorners, labels.firstOrNull() ?: "unknown"))
-    Log.d(TAG, "=== FURNITURE QUAD: ${labels.firstOrNull()} ===")
-    Log.d(TAG, "  World pos: (${"%.3f".format(worldPos.x)}, ${"%.3f".format(worldPos.y)}, ${"%.3f".format(worldPos.z)})")
-    Log.d(TAG, "  Top height: ${"%.3f".format(furnitureTopHeight)}m")
-    worldCorners.forEachIndexed { i, (x, z) ->
-      Log.d(TAG, "  Corner $i: (${"%.3f".format(x)}, ${"%.3f".format(z)})")
-    }
-
-    // Block the footprint in NavGrid with furniture height (15cm padding)
-    grid.blockPolygonWithHeight(worldCorners, furnitureTopHeight, padding = 0.15f)
-    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels with ${worldCorners.size} corners at height ${"%.2f".format(furnitureTopHeight)}m")
+    // Use internal function to block the footprint
+    blockFurnitureFootprintInGrid(anchorEntity, anchorPose, labels, grid)
     Log.d(TAG, "NavGrid now has ${grid.getWalkableCellCount()} walkable cells")
-    // Note: Physics colliders are now created automatically by AnchorProceduralMesh
-
-    // Create debug edge visualization (visual only, no physics/collision)
-    createFurnitureDebugEdges(worldPos, worldRot, volumeComponent, planeComponent, labels)
   }
 
   /**
@@ -4528,6 +4449,88 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
+   * Process any pending furniture that was queued before NavGrid existed.
+   * Re-calls blocking logic now that NavGrid is ready (skips debug edges since already created).
+   */
+  private fun processPendingFurniture() {
+    val grid = navGrid ?: return
+    if (pendingFurniture.isEmpty()) return
+
+    Log.d(TAG, "Processing ${pendingFurniture.size} pending furniture items")
+    for (furniture in pendingFurniture) {
+      // Call the blocking logic directly (skip debug edges as they were already created)
+      blockFurnitureFootprintInGrid(furniture.anchorEntity, furniture.anchorPose, furniture.labels, grid)
+    }
+    pendingFurniture.clear()
+    Log.d(TAG, "NavGrid after furniture: ${grid.getWalkableCellCount()} walkable cells")
+  }
+
+  /**
+   * Internal function to block furniture footprint in NavGrid.
+   * Called by blockFurnitureInNavGrid and processPendingFurniture.
+   * Does NOT create debug edges - those are handled separately.
+   */
+  private fun blockFurnitureFootprintInGrid(anchorEntity: Entity, anchorPose: Pose, labels: List<String>, grid: NavGrid) {
+    val worldTransform = getAbsoluteTransform(anchorEntity)
+    val worldPos = worldTransform.t
+    val worldRot = worldTransform.q
+
+    // Only block furniture that sits on the ground
+    // Skip wall-mounted/floating items (> 1.5m above floor)
+    val floorY = grid.floorY
+    val heightAboveFloor = worldPos.y - floorY
+    if (heightAboveFloor > 1.5f) {
+      Log.d(TAG, "Skipping NavGrid blocking for wall-mounted furniture: $labels at Y=${worldPos.y} (floor=$floorY, height=${heightAboveFloor}m)")
+      return
+    }
+
+    val volumeComponent = anchorEntity.tryGetComponent<MRUKVolume>()
+    val planeComponent = anchorEntity.tryGetComponent<MRUKPlane>()
+
+    val localCorners: List<Vector3>
+    var furnitureTopHeight: Float
+
+    if (volumeComponent != null) {
+      val min = volumeComponent.min
+      val max = volumeComponent.max
+      furnitureTopHeight = worldPos.y + max.z
+      localCorners = listOf(
+        Vector3(min.x, min.y, min.z),
+        Vector3(max.x, min.y, min.z),
+        Vector3(max.x, max.y, min.z),
+        Vector3(min.x, max.y, min.z)
+      )
+    } else if (planeComponent != null) {
+      val min = planeComponent.min
+      val max = planeComponent.max
+      furnitureTopHeight = worldPos.y
+      localCorners = listOf(
+        Vector3(min.x, min.y, 0f),
+        Vector3(max.x, min.y, 0f),
+        Vector3(max.x, max.y, 0f),
+        Vector3(min.x, max.y, 0f)
+      )
+    } else {
+      furnitureTopHeight = worldPos.y + 0.5f
+      localCorners = listOf(
+        Vector3(-0.25f, 0f, -0.25f),
+        Vector3(+0.25f, 0f, -0.25f),
+        Vector3(+0.25f, 0f, +0.25f),
+        Vector3(-0.25f, 0f, +0.25f)
+      )
+    }
+
+    val worldCorners = localCorners.map { local ->
+      val rotated = worldRot.times(local)
+      Pair(worldPos.x + rotated.x, worldPos.z + rotated.z)
+    }
+
+    furnitureQuads.add(FurnitureQuad(worldCorners, labels.firstOrNull() ?: "unknown"))
+    grid.blockPolygonWithHeight(worldCorners, furnitureTopHeight, padding = 0.15f)
+    Log.d(TAG, "Blocked furniture polygon in NavGrid: $labels at height ${"%.2f".format(furnitureTopHeight)}m")
+  }
+
+  /**
    * Extract the floor polygon from the FLOOR anchor's plane bounds.
    * Creates a polygon from the plane's min/max corners transformed to world space.
    * Also creates the NavGrid for pathfinding.
@@ -4584,6 +4587,9 @@ class ImmersiveActivity : AppSystemActivity() {
     petLocomotion.setNavGrid(navGrid)
     updatePhysicsFloorToRoomY(floorY)  // Match physics floor to actual room floor
     Log.d(TAG, "NavGrid created: ${navGrid?.gridWidth}x${navGrid?.gridHeight} cells, ${navGrid?.getWalkableCellCount()} walkable")
+
+    // Process any furniture that was queued before NavGrid existed
+    processPendingFurniture()
   }
 
   /**
