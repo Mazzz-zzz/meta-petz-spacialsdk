@@ -41,6 +41,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.border
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalClipboardManager
 
 @Composable
 @Preview(
@@ -108,6 +109,9 @@ fun OptionsPanel(
     var petIdInput by remember { mutableStateOf("") }
     var claimError by remember { mutableStateOf<String?>(null) }
     var isClaiming by remember { mutableStateOf(false) }
+
+    // Clipboard manager for paste functionality
+    val clipboardManager = LocalClipboardManager.current
 
     // Load demo pet and claimed pets on mount
     LaunchedEffect(firebaseManager) {
@@ -710,6 +714,32 @@ fun OptionsPanel(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
                             )
+                            // Paste button
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF4CAF50))
+                                    .clickable {
+                                        val clipText = clipboardManager.getText()?.text
+                                        if (clipText != null) {
+                                            // Extract alphanumeric characters and take first 6
+                                            val cleaned = clipText.filter { it.isLetterOrDigit() }.uppercase().take(6)
+                                            if (cleaned.isNotEmpty()) {
+                                                petIdInput = cleaned
+                                                claimError = null
+                                            }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "PASTE",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
                             // QR Scan button
                             Box(
                                 modifier = Modifier
