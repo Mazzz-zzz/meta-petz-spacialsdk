@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageButton
+        android:id="@+id/bone_btn"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/wrist_button_bg"
+        android:src="@drawable/ic_bone"
+        android:scaleType="fitCenter"
+        android:padding="4dp"
+        android:contentDescription="Spawn Bone" />
+
+</FrameLayout>

@@ -33,6 +33,11 @@ import com.cybergarden.metapetz.ecs.NavGridEditSystem
 import com.cybergarden.metapetz.ecs.PetLocomotion
 import com.cybergarden.metapetz.ecs.PettingDetector
 import com.cybergarden.metapetz.ecs.QRCodeSystem
+import com.cybergarden.metapetz.ecs.WristAttachedSystem
+import com.cybergarden.metapetz.HandSide
+import com.cybergarden.metapetz.WristAttached
+import com.meta.spatial.core.SendRate
+import android.widget.ImageButton
 import androidx.compose.ui.text.font.FontWeight
 import com.cybergarden.metapetz.model.Accessory
 import com.cybergarden.metapetz.model.PetData
@@ -164,6 +169,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var panelEntity: Entity? = null
   private var showBrowserPanel by mutableStateOf(false)
   private var browserPanelEntity: Entity? = null
+  private var wristBonePanelEntity: Entity? = null
   private var boneEntity: Entity? = null
   private var boneHand: Entity? = null
   private var boneSampleJob: Job? = null
@@ -699,6 +705,12 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // Register grabbable component for ISDK grabbing
     componentManager.registerComponent<IsdkGrabbable>(IsdkGrabbable.Companion)
+
+    // Register wrist-attached component and system for palm-up buttons
+    componentManager.registerComponent<WristAttached>(WristAttached.Companion, SendRate.DEFAULT)
+    systemManager.registerSystem(WristAttachedSystem())
+    Log.d(TAG, "WristAttachedSystem registered")
+
     checkAndRequestScenePermission()
     requestCameraPermission()  // Request camera permission at startup
 
@@ -950,6 +962,9 @@ class ImmersiveActivity : AppSystemActivity() {
         .firstOrNull {
           it.getComponent<Panel>().panelRegistrationId == R.id.ui_example
         }
+
+    // Create wrist-attached bone spawn button (appears when looking at left palm)
+    createWristBoneButton()
 
     // Add a simple physics floor to catch dynamic objects (like the bone)
     createPhysicsFloor()
@@ -2659,6 +2674,22 @@ class ImmersiveActivity : AppSystemActivity() {
               )
             },
         ),
+        // Wrist-attached bone spawn button
+        PanelRegistration(R.id.wrist_bone_btn) {
+          layoutResourceId = R.layout.ui_wrist_bone_btn
+          config {
+            themeResourceId = R.style.PanelAppThemeTransparent
+            includeGlass = false
+            width = 0.05f
+            height = 0.05f
+          }
+          panel {
+            rootView?.findViewById<ImageButton>(R.id.bone_btn)?.setOnClickListener {
+              Log.d(TAG, "Wrist bone button pressed!")
+              spawnBoneToy()
+            }
+          }
+        },
     )
   }
 
@@ -3239,6 +3270,26 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
   private var physicsFloorEntity: Entity? = null
+
+  /**
+   * Create wrist-attached bone spawn button that appears when looking at left palm.
+   */
+  private fun createWristBoneButton() {
+    wristBonePanelEntity = Entity.create(
+        listOf(
+            Panel(R.id.wrist_bone_btn),
+            Transform(Pose()),  // WristAttachedSystem will update position
+            WristAttached().apply {
+              side = HandSide.LEFT
+              position = Vector3(0.08f, -0.04f, -0.02f)
+              rotation = Vector3(-30f, -55f, -90f)
+              faceUser = true
+            },
+            Visible(false)
+        )
+    )
+    Log.d(TAG, "Created wrist bone button panel")
+  }
 
   private fun createPhysicsFloor() {
     // Destroy old floor if exists
