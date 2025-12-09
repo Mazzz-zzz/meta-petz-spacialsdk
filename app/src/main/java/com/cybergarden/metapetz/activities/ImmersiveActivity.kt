@@ -206,24 +206,10 @@ class ImmersiveActivity : AppSystemActivity() {
   // Current room tracking - only process anchors from the room user is in
   private var currentProcessedRoomUuid: String? = null
   private var currentRoomLabel by mutableStateOf<String?>(null)  // For UI display
+  private var debugHeadPosLabel by mutableStateOf<String?>(null)  // Debug: head position and detected room
   private var roomChangeCheckJob: Job? = null
   private var panelFollowJob: Job? = null
 
-  // Room floor bounds cache for head-based room detection
-  data class RoomFloorBounds(
-      val roomUuid: String,
-      val room: MRUKRoom,
-      val minX: Float,
-      val maxX: Float,
-      val minZ: Float,
-      val maxZ: Float,
-      val floorY: Float
-  ) {
-    fun containsPoint(x: Float, z: Float): Boolean {
-      return x >= minX && x <= maxX && z >= minZ && z <= maxZ
-    }
-  }
-  private val roomFloorBoundsCache = mutableListOf<RoomFloorBounds>()
 
   // Loading state for heavy room processing
   private var isRoomProcessing by mutableStateOf(false)
@@ -1066,6 +1052,35 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
+   * Called when the user recenters (resets their position/boundary).
+   * This happens when switching roomscale boundaries or resetting position.
+   */
+  override fun onRecenter() {
+    super.onRecenter()
+    Log.d(TAG, "=== ON RECENTER ===")
+
+    // Play bark to indicate recenter detected
+    bark1Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
+
+    // Update debug label
+    debugHeadPosLabel = "RECENTER detected!"
+
+    // If in room mode, check if room changed
+    if (isRoomMode) {
+      val currentRoom = mrukFeature.getCurrentRoom()
+      val currentUuid = currentRoom?.anchor?.uuid?.toString()
+      Log.d(TAG, "After recenter - MRUK room: ${currentUuid?.take(8)}, processed: ${currentProcessedRoomUuid?.take(8)}")
+
+      if (currentUuid != null && currentUuid != currentProcessedRoomUuid) {
+        Log.d(TAG, "Room changed after recenter! Rebuilding...")
+        activityScope.launch {
+          rebuildForNewRoom(currentRoom, currentUuid)
+        }
+      }
+    }
+  }
+
+  /**
    * Get the head entity from PlayerBodyAttachmentSystem
    */
   private fun getHeadEntity(): Entity? {
@@ -1814,9 +1829,6 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
         logMrukRoomData()
 
-        // Compute and cache floor bounds for ALL rooms (used for head-based room detection)
-        computeAllRoomFloorBounds()
-
         // Get the CURRENT room only - don't process all rooms
         val currentRoom = mrukFeature.getCurrentRoom()
         if (currentRoom == null) {
@@ -1967,44 +1979,65 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
-   * Start polling for room changes using HEAD POSITION detection.
-   * This checks which room's floor bounds contain the user's head position,
-   * which is more reliable than getCurrentRoom() in roomscale mode.
+   * Start polling for room changes using MRUK's getCurrentRoom().
+   * When room changes, plays a bark sound and rebuilds room data.
    */
   private fun startRoomChangeDetection() {
     roomChangeCheckJob?.cancel()
     roomChangeCheckJob = activityScope.launch {
-      Log.d(TAG, "Room change detection started (using head position)")
+      Log.d(TAG, "=== ROOM CHANGE DETECTION STARTED (MRUK getCurrentRoom) ===")
+      Log.d(TAG, "Current processed room: ${currentProcessedRoomUuid?.take(8) ?: "none"}")
+      Log.d(TAG, "isRoomMode: $isRoomMode")
+
+      // Bark once to confirm detection started
+      playBarkForRoomChange()
+
+      var checkCount = 0
       while (isActive) {
-        delay(1000) // Check every 1 second for more responsive detection
+        delay(2000) // Check every 2 seconds
 
-        if (!isRoomMode) continue // Only check room changes in room mode
+        // Log every check to debug
+        Log.d(TAG, "Room check #$checkCount: isRoomMode=$isRoomMode")
 
-        // Get user's head position
-        val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-        if (headPos == null) {
-          Log.v(TAG, "Room check: no head position available")
+        if (!isRoomMode) {
+          Log.d(TAG, "  -> Skipping (not in room mode)")
+          checkCount++
           continue
         }
 
-        // Find which room contains the head position
-        val detectedRoom = findRoomContainingPoint(headPos.x, headPos.z)
-        val detectedUuid = detectedRoom?.roomUuid
+        val currentRoom = mrukFeature.getCurrentRoom()
+        val currentUuid = currentRoom?.anchor?.uuid?.toString()
 
-        // Log current detection for debugging
-        Log.v(TAG, "Room check: head at (${headPos.x}, ${headPos.z}) -> room ${detectedUuid?.take(8) ?: "none"}")
+        Log.d(TAG, "  -> MRUK getCurrentRoom: ${currentUuid?.take(8) ?: "NULL"}")
+        Log.d(TAG, "  -> Our processed room: ${currentProcessedRoomUuid?.take(8) ?: "NULL"}")
 
-        if (detectedUuid != null && detectedUuid != currentProcessedRoomUuid) {
-          Log.d(TAG, "=== ROOM CHANGE DETECTED (HEAD POSITION) ===")
-          Log.d(TAG, "Head position: (${headPos.x}, ${headPos.y}, ${headPos.z})")
+        // Update debug label
+        debugHeadPosLabel = "MRUK: ${currentUuid?.take(8) ?: "NULL"} | Ours: ${currentProcessedRoomUuid?.take(8) ?: "NULL"}"
+
+        if (currentUuid != null && currentUuid != currentProcessedRoomUuid) {
+          Log.d(TAG, "=== ROOM CHANGE DETECTED (MRUK) ===")
           Log.d(TAG, "Old room: $currentProcessedRoomUuid")
-          Log.d(TAG, "New room: $detectedUuid")
-          Log.d(TAG, "Room bounds: X[${detectedRoom.minX}, ${detectedRoom.maxX}] Z[${detectedRoom.minZ}, ${detectedRoom.maxZ}]")
+          Log.d(TAG, "New room: $currentUuid")
+
+          // Play bark sound to indicate room change
+          playBarkForRoomChange()
 
           // Clear old room data and rebuild for new room
-          rebuildForNewRoom(detectedRoom.room, detectedUuid)
+          rebuildForNewRoom(currentRoom, currentUuid)
         }
+        checkCount++
       }
+    }
+  }
+
+  /**
+   * Play a bark sound when room change is detected.
+   */
+  private fun playBarkForRoomChange() {
+    val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+    if (headPos != null) {
+      bark1Player.play(headPos, 1.0f, false)
+      Log.d(TAG, "BARK! Room change detected")
     }
   }
 
@@ -2141,110 +2174,6 @@ class ImmersiveActivity : AppSystemActivity() {
         break
       }
     }
-  }
-
-  /**
-   * Compute and cache floor bounds for all MRUK rooms.
-   * This is used for head-based room detection (checking which room the user is standing in).
-   */
-  private fun computeAllRoomFloorBounds() {
-    roomFloorBoundsCache.clear()
-
-    for (room in mrukFeature.rooms) {
-      val roomUuid = room.anchor.uuid.toString()
-
-      // Find floor anchor
-      for (anchor in room.anchors) {
-        val mrukAnchor = anchor.tryGetComponent<MRUKAnchor>() ?: continue
-        val labels = mutableListOf<String>()
-        for (i in 0 until mrukAnchor.labelsCount) {
-          mrukAnchor.labels[i]?.let { labels.add(it) }
-        }
-
-        if (labels.any { it == MRUKLabel.FLOOR.name }) {
-          val transform = getAbsoluteTransform(anchor)
-          val planeComponent = anchor.tryGetComponent<MRUKPlane>() ?: continue
-
-          val floorY = transform.t.y
-          val worldPos = transform.t
-          val worldRot = transform.q
-
-          // Get floor plane local bounds
-          val minLocal = planeComponent.min
-          val maxLocal = planeComponent.max
-
-          // Create 4 corners in local space
-          val localCorners = listOf(
-              Vector3(minLocal.x, minLocal.y, 0f),
-              Vector3(maxLocal.x, minLocal.y, 0f),
-              Vector3(maxLocal.x, maxLocal.y, 0f),
-              Vector3(minLocal.x, maxLocal.y, 0f)
-          )
-
-          // Transform corners to world space
-          val worldCorners = localCorners.map { local ->
-              val rotated = worldRot.times(local)
-              Vector3(worldPos.x + rotated.x, worldPos.y + rotated.y, worldPos.z + rotated.z)
-          }
-
-          // Calculate axis-aligned bounding box
-          val minX = worldCorners.minOf { it.x }
-          val maxX = worldCorners.maxOf { it.x }
-          val minZ = worldCorners.minOf { it.z }
-          val maxZ = worldCorners.maxOf { it.z }
-
-          val bounds = RoomFloorBounds(
-              roomUuid = roomUuid,
-              room = room,
-              minX = minX,
-              maxX = maxX,
-              minZ = minZ,
-              maxZ = maxZ,
-              floorY = floorY
-          )
-          roomFloorBoundsCache.add(bounds)
-
-          Log.d(TAG, "Cached floor bounds for room ${roomUuid.take(8)}: X[$minX, $maxX] Z[$minZ, $maxZ]")
-          break
-        }
-      }
-    }
-
-    Log.d(TAG, "Computed floor bounds for ${roomFloorBoundsCache.size} rooms")
-  }
-
-  /**
-   * Find which room contains a given XZ point (typically user's head position).
-   * Returns the room that best contains the point, or null if no room found.
-   */
-  private fun findRoomContainingPoint(x: Float, z: Float): RoomFloorBounds? {
-    // First, check for exact containment
-    for (bounds in roomFloorBoundsCache) {
-      if (bounds.containsPoint(x, z)) {
-        return bounds
-      }
-    }
-
-    // If no exact match, find the closest room (user might be near a doorway)
-    var closestBounds: RoomFloorBounds? = null
-    var closestDistance = Float.MAX_VALUE
-
-    for (bounds in roomFloorBoundsCache) {
-      // Calculate distance to room center
-      val centerX = (bounds.minX + bounds.maxX) / 2f
-      val centerZ = (bounds.minZ + bounds.maxZ) / 2f
-      val dx = x - centerX
-      val dz = z - centerZ
-      val distance = kotlin.math.sqrt(dx * dx + dz * dz)
-
-      if (distance < closestDistance) {
-        closestDistance = distance
-        closestBounds = bounds
-      }
-    }
-
-    // Only return closest room if within reasonable distance (3 meters)
-    return if (closestDistance < 3f) closestBounds else null
   }
 
   /**
@@ -2458,6 +2387,7 @@ class ImmersiveActivity : AppSystemActivity() {
                       activityState = currentActivity.name,
                       // Current room label for debug
                       currentRoomLabel = currentRoomLabel,
+                      debugHeadPosLabel = debugHeadPosLabel,
                       // NavGrid edit mode
                       isNavGridEditMode = isNavGridEditMode,
                       onNavGridEditModeToggle = ::toggleNavGridEditMode,
@@ -3171,20 +3101,32 @@ class ImmersiveActivity : AppSystemActivity() {
     // Register scene event listener to handle room loading events
     sceneEventListener = object : MRUKSceneEventListener {
         override fun onRoomAdded(room: MRUKRoom) {
-            Log.d(TAG, "=== MRUK ROOM ADDED ===")
-            Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
-            Log.d(TAG, "Room has ${room.anchors.size} anchors")
-            // Procedural meshes are automatically created by AnchorProceduralMesh for furniture
+            val roomUuid = room.anchor.uuid.toString()
+            Log.d(TAG, "=== MRUK ROOM ADDED === UUID: ${roomUuid.take(8)}")
+            // Bark twice for room added
+            bark2Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
         }
 
         override fun onRoomUpdated(room: MRUKRoom) {
-            Log.d(TAG, "=== MRUK ROOM UPDATED ===")
-            Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+            val roomUuid = room.anchor.uuid.toString()
+            Log.d(TAG, "=== MRUK ROOM UPDATED === UUID: ${roomUuid.take(8)}, current: ${currentProcessedRoomUuid?.take(8)}")
+
+            // Get both viewer pose (world) and head entity (possibly local)
+            val viewerPose = scene.getViewerPose()
+            val headEntity = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
+            Log.d(TAG, "  ViewerPose: (${viewerPose.t.x}, ${viewerPose.t.y}, ${viewerPose.t.z})")
+            Log.d(TAG, "  HeadEntity: (${headEntity?.x}, ${headEntity?.y}, ${headEntity?.z})")
+
+            // Bark for room updated
+            bark3Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
+
+            // Update debug label with both positions
+            val vp = viewerPose.t
+            debugHeadPosLabel = "Updated ${roomUuid.take(8)} VP:(${String.format("%.1f", vp.x)},${String.format("%.1f", vp.z)})"
         }
 
         override fun onRoomRemoved(room: MRUKRoom) {
-            Log.d(TAG, "=== MRUK ROOM REMOVED ===")
-            Log.d(TAG, "Room UUID: ${room.anchor.uuid}")
+            Log.d(TAG, "=== MRUK ROOM REMOVED === UUID: ${room.anchor.uuid.toString().take(8)}")
             // Clean up edge entities when room is removed
             clearRoomBoundsEdges()
         }

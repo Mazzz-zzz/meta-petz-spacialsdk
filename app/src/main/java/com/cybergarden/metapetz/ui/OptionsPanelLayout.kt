@@ -79,6 +79,7 @@ fun OptionsPanel(
     activityState: String = "IDLE",  // IDLE, FACING_PLAYER, FETCHING, WALKING
     // Current room label for debug
     currentRoomLabel: String? = null,
+    debugHeadPosLabel: String? = null,  // Debug: head position and detected room
     // NavGrid edit mode
     isNavGridEditMode: Boolean = false,
     onNavGridEditModeToggle: ((Boolean) -> Unit)? = null,
@@ -1070,6 +1071,15 @@ fun OptionsPanel(
                             color = Color(0xFF9C27B0)  // Purple for room
                         )
                     }
+                }
+
+                // Debug: head position and detected room (real-time)
+                if (debugHeadPosLabel != null) {
+                    Text(
+                        text = debugHeadPosLabel,
+                        fontSize = 10.sp,
+                        color = Color(0xFF2196F3)  // Blue for debug
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
