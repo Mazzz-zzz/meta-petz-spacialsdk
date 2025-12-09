@@ -210,7 +210,6 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentRoomLabel by mutableStateOf<String?>(null)  // For UI display
   private var debugHeadPosLabel by mutableStateOf<String?>(null)  // Debug: head position and detected room
   private var lastRecenterTime: Long = 0  // Timestamp of last recenter for debug label cooldown
-  private var lastRescanTime: Long = 0  // Timestamp of last rescan to prevent infinite loop
   private var roomChangeCheckJob: Job? = null
   private var panelFollowJob: Job? = null
 
@@ -1176,13 +1175,9 @@ class ImmersiveActivity : AppSystemActivity() {
 
     // If in room mode, clear all room data and trigger fresh rescan
     // User may have moved to a different room, so we need to detect the new room
-    // Use cooldown to prevent infinite loop (scan process can trigger recenter)
-    val timeSinceLastRescan = System.currentTimeMillis() - lastRescanTime
-    val RESCAN_COOLDOWN_MS = 15000L  // 15 second cooldown
-
-    if (isRoomMode && timeSinceLastRescan > RESCAN_COOLDOWN_MS) {
+    // isRoomProcessing guard in scanRoom() prevents duplicate scans
+    if (isRoomMode) {
       Log.d(TAG, "=== RECENTER IN ROOM MODE - CLEARING AND RESCANNING ===")
-      lastRescanTime = System.currentTimeMillis()
 
       // Play bark to indicate room change/rescan
       playBarkForRoomChange()
@@ -1202,9 +1197,8 @@ class ImmersiveActivity : AppSystemActivity() {
       Log.d(TAG, "Room data cleared - triggering fresh scan")
 
       // Trigger fresh room scan (will use clearRooms() and detect current room)
+      // scanRoom() has isRoomProcessing guard to prevent duplicates
       scanRoom()
-    } else if (isRoomMode) {
-      Log.d(TAG, "Recenter ignored - within ${RESCAN_COOLDOWN_MS}ms cooldown (${timeSinceLastRescan}ms since last)")
     }
   }
 
