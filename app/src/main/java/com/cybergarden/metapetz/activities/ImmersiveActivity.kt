@@ -1989,27 +1989,27 @@ class ImmersiveActivity : AppSystemActivity() {
     furniturePhysicsBoxes.clear()
     Log.d(TAG, "Cleared furniture physics boxes for room scan")
 
-    // Recreate procMeshSpawner if it was destroyed
-    if (procMeshSpawner == null) {
-      Log.d(TAG, "Recreating procMeshSpawner for room scan (CURRENT_ROOM_ONLY)")
-      procMeshSpawner = AnchorProceduralMesh(
-          mrukFeature,
-          mapOf(
-              // Furniture: physics colliders only, no visual mesh (null material)
-              MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.STORAGE to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.SCREEN to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.LAMP to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.PLANT to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
-              MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
-          ),
-          MRUKSpawnMode.CURRENT_ROOM_ONLY  // Only spawn for current room, not all rooms
-      )
-    }
+    // ALWAYS destroy and recreate procMeshSpawner to clear old furniture meshes
+    // This ensures furniture from previous room doesn't persist
+    procMeshSpawner?.destroy()
+    Log.d(TAG, "Destroyed old procMeshSpawner, recreating for current room")
+    procMeshSpawner = AnchorProceduralMesh(
+        mrukFeature,
+        mapOf(
+            // Furniture: physics colliders only, no visual mesh (null material)
+            MRUKLabel.TABLE to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.COUCH to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.BED to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.STORAGE to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.SCREEN to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.LAMP to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.PLANT to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.OTHER to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.WINDOW_FRAME to AnchorProceduralMeshConfig(null, true),
+            MRUKLabel.DOOR_FRAME to AnchorProceduralMeshConfig(null, true),
+        ),
+        MRUKSpawnMode.CURRENT_ROOM_ONLY  // Only spawn for current room, not all rooms
+    )
 
     // Clear existing MRUK rooms before scanning - this ensures fresh room detection
     // From MRUK sample: mrukFeature.clearRooms() clears all loaded room data
