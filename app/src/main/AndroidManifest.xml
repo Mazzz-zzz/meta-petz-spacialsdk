@@ -2,7 +2,7 @@
 <manifest
   xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:horizonos="http://schemas.horizonos/sdk"
-  android:versionCode="1"
+  android:versionCode="2"
   android:versionName="1.0"
   android:installLocation="auto"
 >
@@ -20,11 +20,6 @@
     android:required="false"
   />
   <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
-  <!-- Tell the system this app uses experimental extensions -->
-  <uses-feature
-    android:name="com.oculus.experimental.enabled"
-    android:required="true"
-  />
   <!-- Tell the system this app can render passthrough -->
   <uses-feature
     android:name="com.oculus.feature.PASSTHROUGH"
@@ -74,6 +69,7 @@
       android:name="com.cybergarden.metapetz.activities.ImmersiveActivity"
       android:launchMode="singleTask"
       android:excludeFromRecents="false"
+      android:screenOrientation="landscape"
       android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode"
       android:exported="true"
     >

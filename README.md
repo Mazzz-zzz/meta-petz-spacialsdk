@@ -174,6 +174,14 @@ REPLICATE_API_TOKEN=your_token_here
 ```
 5. No authentication required - data isolated by device ID
 
+### Release Signing
+Keystore credentials for `metapetz-release.jks`:
+```
+Store Password: metapetz123
+Key Alias: metapetz
+Key Password: metapetz123
+```
+
 ## Key Algorithms
 
 ### Point-in-Polygon (Ray Casting)

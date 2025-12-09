@@ -22,17 +22,22 @@ android {
 
   defaultConfig {
     applicationId = "com.cybergarden.metapetz"
-    minSdk = 34
+    minSdk = 32
     // HorizonOS is Android 14 (API level 34)
     //noinspection OldTargetApi,ExpiredTargetSdkVersion
     targetSdk = 34
-    versionCode = 1
+    versionCode = 2
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     // Update the ndkVersion to the right version for your app
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "26.1.10909125"
+
+    // Target 64-bit only
+    ndk {
+      abiFilters += listOf("arm64-v8a")
+    }
 
     // API Keys from local.properties
     buildConfigField("String", "REPLICATE_API_TOKEN", "\"${localProperties.getProperty("REPLICATE_API_TOKEN", "")}\"")
@@ -46,10 +51,20 @@ android {
 
   lint { abortOnError = false }
 
+  signingConfigs {
+    create("release") {
+      storeFile = rootProject.file("metapetz-release.jks")
+      storePassword = "metapetz123"
+      keyAlias = "metapetz"
+      keyPassword = "metapetz123"
+    }
+  }
+
   buildTypes {
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      signingConfig = signingConfigs.getByName("release")
     }
   }
   buildFeatures {
