@@ -298,6 +298,14 @@ class ImmersiveActivity : AppSystemActivity() {
     SceneAudioPlayer(scene, bark3Sound)
   }
 
+  // Room change / recenter sound
+  private val roomChangeSound: SceneAudioAsset by lazy {
+    SceneAudioAsset.loadLocalFile("audio/roomchange.wav")
+  }
+  private val roomChangePlayer: SceneAudioPlayer by lazy {
+    SceneAudioPlayer(scene, roomChangeSound)
+  }
+
   /**
    * Play a random bark sound (1-3) at the pet's position
    */
@@ -1065,8 +1073,8 @@ class ImmersiveActivity : AppSystemActivity() {
     super.onRecenter()
     Log.d(TAG, "=== ON RECENTER ===")
 
-    // Play bark to indicate recenter detected
-    bark1Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
+    // Play roomchange sound to indicate recenter detected
+    roomChangePlayer.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
 
     // Check MRUK room state
     val mrukRoom = mrukFeature.getCurrentRoom()
