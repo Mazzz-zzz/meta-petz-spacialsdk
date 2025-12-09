@@ -843,10 +843,12 @@ class ImmersiveActivity : AppSystemActivity() {
       )
 
       // Then create the panel entity
+      // Rotate 180 degrees around Y axis to face the user (panel spawns at negative Z)
       browserPanelEntity = Entity.createPanelEntity(
         panelId,
-        Transform(Pose(position, Quaternion(1f, 0f, 0f, 0f))),
-        Grabbable(true, GrabbableType.FACE)
+        Transform(Pose(position, Quaternion(0f, 180f, 0f))),
+        Grabbable(true, GrabbableType.FACE),
+        Hittable()
       )
       Log.d(TAG, "Browser panel entity created at $position with ID $panelId")
     }
