@@ -1179,9 +1179,6 @@ class ImmersiveActivity : AppSystemActivity() {
     if (isRoomMode) {
       Log.d(TAG, "=== RECENTER IN ROOM MODE - CLEARING AND RESCANNING ===")
 
-      // Play bark to indicate room change/rescan
-      playBarkForRoomChange()
-
       // Clear all room visualizations and data
       clearRoomBoundsEdges()
       navGrid?.clearDebugVisualization()
@@ -1989,10 +1986,19 @@ class ImmersiveActivity : AppSystemActivity() {
     furniturePhysicsBoxes.clear()
     Log.d(TAG, "Cleared furniture physics boxes for room scan")
 
-    // ALWAYS destroy and recreate procMeshSpawner to clear old furniture meshes
-    // This ensures furniture from previous room doesn't persist
+    // STEP 1: Destroy old procMeshSpawner to stop it from spawning
     procMeshSpawner?.destroy()
-    Log.d(TAG, "Destroyed old procMeshSpawner, recreating for current room")
+    procMeshSpawner = null
+    Log.d(TAG, "Destroyed old procMeshSpawner")
+
+    // STEP 2: Clear MRUK rooms BEFORE creating new spawner
+    // This ensures the new spawner doesn't pick up old room data
+    Log.d(TAG, "Clearing existing MRUK rooms before scan...")
+    mrukFeature.clearRooms()
+    Log.d(TAG, "MRUK rooms cleared")
+
+    // STEP 3: Create new procMeshSpawner (now mrukFeature.rooms is empty)
+    Log.d(TAG, "Creating new procMeshSpawner for current room")
     procMeshSpawner = AnchorProceduralMesh(
         mrukFeature,
         mapOf(
@@ -2010,12 +2016,6 @@ class ImmersiveActivity : AppSystemActivity() {
         ),
         MRUKSpawnMode.CURRENT_ROOM_ONLY  // Only spawn for current room, not all rooms
     )
-
-    // Clear existing MRUK rooms before scanning - this ensures fresh room detection
-    // From MRUK sample: mrukFeature.clearRooms() clears all loaded room data
-    Log.d(TAG, "Clearing existing MRUK rooms before scan...")
-    mrukFeature.clearRooms()
-    Log.d(TAG, "MRUK rooms cleared")
 
     Log.d(TAG, "Requesting scene capture via MRUK...")
 
@@ -2216,9 +2216,6 @@ class ImmersiveActivity : AppSystemActivity() {
       Log.d(TAG, "Current processed room: ${currentProcessedRoomUuid?.take(8) ?: "none"}")
       Log.d(TAG, "isRoomMode: $isRoomMode")
 
-      // Bark once to confirm detection started
-      playBarkForRoomChange()
-
       var checkCount = 0
       while (isActive) {
         delay(2000) // Check every 2 seconds
@@ -2249,9 +2246,6 @@ class ImmersiveActivity : AppSystemActivity() {
           Log.d(TAG, "Old room: $currentProcessedRoomUuid")
           Log.d(TAG, "New room: $currentUuid")
 
-          // Play bark sound to indicate room change
-          playBarkForRoomChange()
-
           // Clear old room data and rebuild for new room
           rebuildForNewRoom(currentRoom, currentUuid)
         }
@@ -2260,16 +2254,6 @@ class ImmersiveActivity : AppSystemActivity() {
     }
   }
 
-  /**
-   * Play a bark sound when room change is detected.
-   */
-  private fun playBarkForRoomChange() {
-    val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-    if (headPos != null) {
-      bark1Player.play(headPos, 1.0f, false)
-      Log.d(TAG, "BARK! Room change detected")
-    }
-  }
 
   /**
    * Clear old room's entities and rebuild for a new room.
@@ -3338,8 +3322,6 @@ class ImmersiveActivity : AppSystemActivity() {
         override fun onRoomAdded(room: MRUKRoom) {
             val roomUuid = room.anchor.uuid.toString()
             Log.d(TAG, "=== MRUK ROOM ADDED === UUID: ${roomUuid.take(8)}")
-            // Bark twice for room added
-            bark2Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
         }
 
         override fun onRoomUpdated(room: MRUKRoom) {
@@ -3362,9 +3344,6 @@ class ImmersiveActivity : AppSystemActivity() {
               val anchorCount = r.anchors.size
               Log.d(TAG, "    Room $idx: $rUuid anchors=$anchorCount ${if (isUpdatedRoom) "[UPDATED]" else ""} ${if (isOurRoom) "[OURS]" else ""}")
             }
-
-            // Bark for room updated
-            bark3Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
 
             // Update debug label showing the updated room
             lastRecenterTime = System.currentTimeMillis()  // Use cooldown to keep this visible
