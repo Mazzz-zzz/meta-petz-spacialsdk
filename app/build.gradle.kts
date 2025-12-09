@@ -22,17 +22,17 @@ android {
 
   defaultConfig {
     applicationId = "com.cybergarden.metapetz"
-    minSdk = 34
+    minSdk = 32
     // HorizonOS is Android 14 (API level 34)
     //noinspection OldTargetApi,ExpiredTargetSdkVersion
     targetSdk = 34
-    versionCode = 1
+    versionCode = 4
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     // Update the ndkVersion to the right version for your app
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "26.1.10909125"
 
     // API Keys from local.properties
     buildConfigField("String", "REPLICATE_API_TOKEN", "\"${localProperties.getProperty("REPLICATE_API_TOKEN", "")}\"")

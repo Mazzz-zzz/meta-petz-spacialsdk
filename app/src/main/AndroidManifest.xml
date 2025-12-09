@@ -2,10 +2,18 @@
 <manifest
   xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:horizonos="http://schemas.horizonos/sdk"
-  android:versionCode="1"
+  xmlns:tools="http://schemas.android.com/tools"
+  android:versionCode="4"
   android:versionName="1.0"
   android:installLocation="auto"
 >
+  <!-- Remove unnecessary permissions added by dependencies -->
+  <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove" />
+  <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
+  <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+
   <horizonos:uses-horizonos-sdk
     horizonos:minSdkVersion="69"
     horizonos:targetSdkVersion="69"
@@ -20,11 +28,6 @@
     android:required="false"
   />
   <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
-  <!-- Tell the system this app uses experimental extensions -->
-  <uses-feature
-    android:name="com.oculus.experimental.enabled"
-    android:required="true"
-  />
   <!-- Tell the system this app can render passthrough -->
   <uses-feature
     android:name="com.oculus.feature.PASSTHROUGH"
@@ -74,6 +77,7 @@
       android:name="com.cybergarden.metapetz.activities.ImmersiveActivity"
       android:launchMode="singleTask"
       android:excludeFromRecents="false"
+      android:screenOrientation="landscape"
       android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode"
       android:exported="true"
     >
