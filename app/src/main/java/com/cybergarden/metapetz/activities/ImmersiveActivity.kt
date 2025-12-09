@@ -1940,6 +1940,15 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun scanRoom() {
     Log.d(TAG, "=== SCAN ROOM (MRUK) ===")
 
+    // Prevent double-scanning if already processing
+    if (isRoomProcessing) {
+      Log.w(TAG, "Room scan already in progress, ignoring duplicate request")
+      return
+    }
+
+    // Mark as processing immediately to prevent duplicate calls
+    isRoomProcessing = true
+
     // Set mode to ROOM (room scan mode with pathfinding)
     isRoomMode = true
     Log.d(TAG, "Mode set to ROOM (isRoomMode=true)")
@@ -2023,7 +2032,7 @@ class ImmersiveActivity : AppSystemActivity() {
    * Only processes the CURRENT room the user is in (not all scanned rooms).
    */
   private fun loadSceneFromDeviceWithLogging() {
-    isRoomProcessing = true
+    // Note: isRoomProcessing is already set to true by scanRoom()
     mrukFeature.loadSceneFromDevice().whenComplete { result: MRUKLoadDeviceResult, error: Throwable? ->
       if (error != null) {
         Log.e(TAG, "loadSceneFromDevice error: ${error.message}", error)
