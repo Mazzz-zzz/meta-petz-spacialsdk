@@ -2100,6 +2100,26 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Process anchors for a specific room. Runs heavy work on background thread.
+   *
+   * === NAVGRID LIFECYCLE ===
+   * All room processing flows through this function:
+   * - scanRoom() → loadSceneFromDeviceWithLogging() → processRoomAnchors()
+   * - onRecenter() → scanRoom() → processRoomAnchors()
+   * - onRoomUpdated() → rebuildForNewRoom() → processRoomAnchors()
+   * - Room change polling → rebuildForNewRoom() → processRoomAnchors()
+   *
+   * NavGrid creation order:
+   * 1. clearRoomBoundsEdges() - clears old NavGrid, furniture, walls
+   * 2. Loop through anchors via onAnchorAddedHandler():
+   *    - Furniture: queued to pendingFurniture (NavGrid doesn't exist yet)
+   *    - Walls: queued to pendingWalls (NavGrid doesn't exist yet)
+   *    - FLOOR: extractFloorPolygon() creates NavGrid, then processPendingFurniture()
+   * 3. processPendingWalls() - blocks wall footprints
+   * 4. processPendingFurniture() - blocks furniture footprints (backup, usually already done)
+   * 5. keepLargestConnectedRegion() - finalizes NavGrid
+   *
+   * IMPORTANT: Do NOT call initializeNavGridForRoom() before this function.
+   * The NavGrid is created by extractFloorPolygon() when FLOOR anchor is processed.
    */
   private suspend fun processRoomAnchors(room: MRUKRoom, roomUuid: String) {
     // Clear any existing room data first (on main thread for entity operations)
@@ -2273,29 +2293,14 @@ class ImmersiveActivity : AppSystemActivity() {
 
   /**
    * Clear old room's entities and rebuild for a new room.
+   * Called when room change is detected (via polling or onRoomUpdated).
+   * See processRoomAnchors() for NavGrid lifecycle documentation.
    */
   private suspend fun rebuildForNewRoom(room: MRUKRoom, roomUuid: String) {
     isRoomProcessing = true
+    Log.d(TAG, "Rebuilding for new room: ${roomUuid.take(8)}")
 
-    // Clear all existing room data
-    clearRoomBoundsEdges()
-    navGrid?.clearDebugVisualization()
-    navGrid = null
-    petLocomotion.setNavGrid(null)
-    furnitureQuads.clear()
-    furnitureDebugSpheres.forEach { it.destroy() }
-    furnitureDebugSpheres.clear()
-    furniturePhysicsBoxes.forEach { it.destroy() }
-    furniturePhysicsBoxes.clear()
-    pendingWalls.clear()
-    pendingFurniture.clear()
-
-    Log.d(TAG, "Cleared old room data, rebuilding for new room")
-
-    // Note: NavGrid will be created by extractFloorPolygon() when FLOOR anchor is processed
-    // Don't call initializeNavGridForRoom() here as it creates a NavGrid that gets overwritten
-
-    // Process new room
+    // Process new room (clearRoomBoundsEdges is called at start of processRoomAnchors)
     processRoomAnchors(room, roomUuid)
 
     // Teleport pet to new room's walkable area
@@ -4032,12 +4037,19 @@ class ImmersiveActivity : AppSystemActivity() {
 
   // --- Room bounds edge geometry functions ---
 
+  /**
+   * Clear all room-related entities and data.
+   * Called at the start of processRoomAnchors() to ensure clean slate.
+   * This is the single source of truth for room data cleanup.
+   */
   private fun clearRoomBoundsEdges() {
+    // Clear room edge entities (walls, floor, ceiling outlines)
     for (entity in roomEdgeEntities) {
       entity.destroy()
     }
     roomEdgeEntities.clear()
 
+    // Clear wall physics colliders
     for (entity in roomBoundsPhysicsEntities) {
       entity.destroy()
     }
@@ -4056,7 +4068,16 @@ class ImmersiveActivity : AppSystemActivity() {
 
     furnitureQuads.clear()
 
-    Log.d(TAG, "Cleared all room bounds, edges, and furniture entities")
+    // Clear NavGrid (new one will be created by extractFloorPolygon)
+    navGrid?.clearDebugVisualization()
+    navGrid = null
+    petLocomotion.setNavGrid(null)
+
+    // Clear pending queues (will be repopulated during anchor processing)
+    pendingWalls.clear()
+    pendingFurniture.clear()
+
+    Log.d(TAG, "Cleared all room data: edges, physics, furniture, NavGrid, pending queues")
   }
 
   /**
