@@ -42,8 +42,15 @@ class NavGrid(
 
         /**
          * Create a NavGrid from a FloorPolygon's bounding box.
+         * Returns null if polygon is invalid (empty, NaN bounds, etc.)
          */
-        fun fromFloorPolygon(polygon: PetLocomotion.FloorPolygon, floorY: Float = 0f, cellSize: Float = 0.15f): NavGrid {
+        fun fromFloorPolygon(polygon: PetLocomotion.FloorPolygon, floorY: Float = 0f, cellSize: Float = 0.15f): NavGrid? {
+            // Validate polygon has vertices
+            if (polygon.vertices.isEmpty()) {
+                Log.e(TAG, "Cannot create NavGrid: floor polygon has no vertices")
+                return null
+            }
+
             // Find bounding box of polygon
             var minX = Float.MAX_VALUE
             var maxX = Float.MIN_VALUE
@@ -51,10 +58,21 @@ class NavGrid(
             var maxZ = Float.MIN_VALUE
 
             for (vertex in polygon.vertices) {
+                // Check for NaN/Infinity
+                if (vertex.x.isNaN() || vertex.x.isInfinite() || vertex.z.isNaN() || vertex.z.isInfinite()) {
+                    Log.e(TAG, "Cannot create NavGrid: polygon has invalid vertex (${vertex.x}, ${vertex.z})")
+                    return null
+                }
                 minX = minOf(minX, vertex.x)
                 maxX = maxOf(maxX, vertex.x)
                 minZ = minOf(minZ, vertex.z)
                 maxZ = maxOf(maxZ, vertex.z)
+            }
+
+            // Validate bounds are sensible
+            if (maxX <= minX || maxZ <= minZ) {
+                Log.e(TAG, "Cannot create NavGrid: invalid bounds X[$minX, $maxX] Z[$minZ, $maxZ]")
+                return null
             }
 
             // Add small margin
@@ -63,6 +81,20 @@ class NavGrid(
             maxX += margin
             minZ -= margin
             maxZ += margin
+
+            // Validate floorY
+            if (floorY.isNaN() || floorY.isInfinite()) {
+                Log.e(TAG, "Cannot create NavGrid: invalid floorY=$floorY")
+                return null
+            }
+
+            // Validate resulting grid size won't be too large
+            val width = ((maxX - minX) / cellSize).toInt() + 1
+            val height = ((maxZ - minZ) / cellSize).toInt() + 1
+            if (width <= 0 || height <= 0 || width > 1000 || height > 1000) {
+                Log.e(TAG, "Cannot create NavGrid: invalid dimensions ${width}x${height}")
+                return null
+            }
 
             val grid = NavGrid(cellSize, minX, maxX, minZ, maxZ, floorY)
             grid.initFromFloorPolygon(polygon)
@@ -1119,11 +1151,24 @@ class NavGrid(
      * Clear all debug visualization entities.
      */
     fun clearDebugVisualization() {
-        debugEntities.forEach { it.destroy() }
+        var destroyedCount = 0
+        var failedCount = 0
+        for (entity in debugEntities) {
+            try {
+                entity.destroy()
+                destroyedCount++
+            } catch (e: Exception) {
+                failedCount++
+            }
+        }
         debugEntities.clear()
         debugVisualizationCreated = false
         debugVisualizationVisible = false
-        Log.d(TAG, "Cleared debug visualization")
+        if (failedCount > 0) {
+            Log.w(TAG, "Cleared debug visualization: $destroyedCount destroyed, $failedCount failed")
+        } else {
+            Log.d(TAG, "Cleared debug visualization: $destroyedCount entities")
+        }
     }
 
     /**

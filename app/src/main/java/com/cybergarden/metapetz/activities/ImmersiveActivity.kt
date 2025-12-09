@@ -2297,8 +2297,16 @@ class ImmersiveActivity : AppSystemActivity() {
    * See processRoomAnchors() for NavGrid lifecycle documentation.
    */
   private suspend fun rebuildForNewRoom(room: MRUKRoom, roomUuid: String) {
+    // Guard against concurrent room processing
+    if (isRoomProcessing) {
+      Log.w(TAG, "rebuildForNewRoom: Already processing room, skipping rebuild for ${roomUuid.take(8)}")
+      return
+    }
     isRoomProcessing = true
     Log.d(TAG, "Rebuilding for new room: ${roomUuid.take(8)}")
+
+    // Reset debug grid state (visualization will be cleared with old NavGrid)
+    isDebugGridEnabled = false
 
     // Process new room (clearRoomBoundsEdges is called at start of processRoomAnchors)
     processRoomAnchors(room, roomUuid)
@@ -2715,9 +2723,14 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun toggleDebugGrid(enabled: Boolean) {
     Log.d(TAG, "Toggle debug grid: $enabled")
     isDebugGridEnabled = enabled
-    val grid = navGrid ?: return
+    val grid = navGrid
+    if (grid == null) {
+      Log.w(TAG, "Cannot toggle debug grid - NavGrid is null (room not processed?)")
+      return
+    }
     if (enabled) {
       // Create visualization lazily on first enable
+      Log.d(TAG, "Creating debug visualization for grid: ${grid.gridWidth}x${grid.gridHeight}, floorY=${grid.floorY}")
       grid.createDebugVisualization(showBlocked = true)
       grid.showDebugVisualization()
     } else {
@@ -3372,11 +3385,20 @@ class ImmersiveActivity : AppSystemActivity() {
             lastRecenterTime = System.currentTimeMillis()  // Use cooldown to keep this visible
             debugHeadPosLabel = "UPDATED: ${roomUuid.take(8)}\ngetCurrent: ${currentRoomUuidNow?.take(8) ?: "NULL"} rooms:${allRooms.size}"
 
-            // If this is a different room than what we processed, rebuild!
-            if (isRoomMode && roomUuid != currentProcessedRoomUuid) {
-              Log.d(TAG, "=== ROOM CHANGED VIA onRoomUpdated - REBUILDING ===")
-              Log.d(TAG, "  Old room: ${currentProcessedRoomUuid?.take(8)}")
-              Log.d(TAG, "  New room: ${roomUuid.take(8)}")
+            // Rebuild whenever we're in room mode and any room is updated:
+            // - Room CHANGED to a different room, OR
+            // - Same room was EDITED (updated in Quest settings)
+            // Both cases require rebuilding NavGrid with fresh floor/furniture data
+            if (isRoomMode) {
+              val isRoomChange = roomUuid != currentProcessedRoomUuid
+              if (isRoomChange) {
+                Log.d(TAG, "=== ROOM CHANGED VIA onRoomUpdated - REBUILDING ===")
+                Log.d(TAG, "  Old room: ${currentProcessedRoomUuid?.take(8)}")
+                Log.d(TAG, "  New room: ${roomUuid.take(8)}")
+              } else {
+                Log.d(TAG, "=== SAME ROOM EDITED VIA onRoomUpdated - REBUILDING ===")
+                Log.d(TAG, "  Room: ${roomUuid.take(8)} (edited)")
+              }
               activityScope.launch {
                 rebuildForNewRoom(room, roomUuid)
               }
@@ -4045,31 +4067,35 @@ class ImmersiveActivity : AppSystemActivity() {
   private fun clearRoomBoundsEdges() {
     // Clear room edge entities (walls, floor, ceiling outlines)
     for (entity in roomEdgeEntities) {
-      entity.destroy()
+      try { entity.destroy() } catch (e: Exception) { Log.w(TAG, "Failed to destroy room edge entity: ${e.message}") }
     }
     roomEdgeEntities.clear()
 
     // Clear wall physics colliders
     for (entity in roomBoundsPhysicsEntities) {
-      entity.destroy()
+      try { entity.destroy() } catch (e: Exception) { Log.w(TAG, "Failed to destroy physics entity: ${e.message}") }
     }
     roomBoundsPhysicsEntities.clear()
 
     // Clear furniture occluder entities (these are the visible boxes!)
     for (entity in furnitureDebugSpheres) {
-      entity.destroy()
+      try { entity.destroy() } catch (e: Exception) { Log.w(TAG, "Failed to destroy furniture sphere: ${e.message}") }
     }
     furnitureDebugSpheres.clear()
 
     for (entity in furniturePhysicsBoxes) {
-      entity.destroy()
+      try { entity.destroy() } catch (e: Exception) { Log.w(TAG, "Failed to destroy furniture physics: ${e.message}") }
     }
     furniturePhysicsBoxes.clear()
 
     furnitureQuads.clear()
 
     // Clear NavGrid (new one will be created by extractFloorPolygon)
-    navGrid?.clearDebugVisualization()
+    try {
+      navGrid?.clearDebugVisualization()
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to clear NavGrid debug visualization: ${e.message}")
+    }
     navGrid = null
     petLocomotion.setNavGrid(null)
 
