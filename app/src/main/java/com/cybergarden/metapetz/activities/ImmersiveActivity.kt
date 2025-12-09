@@ -4025,7 +4025,20 @@ class ImmersiveActivity : AppSystemActivity() {
     }
     roomBoundsPhysicsEntities.clear()
 
-    Log.d(TAG, "Cleared all room bounds edge and physics entities")
+    // Clear furniture occluder entities (these are the visible boxes!)
+    for (entity in furnitureDebugSpheres) {
+      entity.destroy()
+    }
+    furnitureDebugSpheres.clear()
+
+    for (entity in furniturePhysicsBoxes) {
+      entity.destroy()
+    }
+    furniturePhysicsBoxes.clear()
+
+    furnitureQuads.clear()
+
+    Log.d(TAG, "Cleared all room bounds, edges, and furniture entities")
   }
 
   /**
