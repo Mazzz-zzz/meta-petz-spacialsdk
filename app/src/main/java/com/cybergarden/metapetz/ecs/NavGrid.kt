@@ -972,9 +972,21 @@ class NavGrid(
             return
         }
 
+        // Safety check: limit total entities to prevent crashes on huge grids
+        val totalCells = gridWidth * gridHeight
+        val maxEntities = 10000  // Reasonable limit
+        if (totalCells > maxEntities) {
+            Log.e(TAG, "Grid too large for debug visualization: $totalCells cells (max: $maxEntities). Grid: ${gridWidth}x${gridHeight}")
+            Log.e(TAG, "Bounds: X[$minX, $maxX] Z[$minZ, $maxZ]")
+            return
+        }
+
+        Log.d(TAG, "Creating debug visualization for $totalCells cells (${gridWidth}x${gridHeight})")
+
         val sphereRadius = cellSize * 0.3f  // Small spheres
         val sphereScale = Vector3(1f, 0.3f, 1f)  // Flatten to disc
 
+        try {
         for (gx in 0 until gridWidth) {
             for (gz in 0 until gridHeight) {
                 val isWalkable = grid[gx][gz]
@@ -1030,6 +1042,13 @@ class NavGrid(
         debugVisualizationCreated = true
         debugVisualizationVisible = false
         Log.d(TAG, "Created ${debugEntities.size} debug visualization entities (hidden)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create debug visualization: ${e.message}", e)
+            // Clean up any partially created entities
+            debugEntities.forEach { try { it.destroy() } catch (_: Exception) {} }
+            debugEntities.clear()
+            debugVisualizationCreated = false
+        }
     }
 
     /**
