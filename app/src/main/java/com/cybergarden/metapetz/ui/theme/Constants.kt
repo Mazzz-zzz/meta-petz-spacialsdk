@@ -7,5 +7,3 @@ const val PHOTO_MODAL_WIDTH = 0.7f
 const val PHOTO_MODAL_HEIGHT = 0.85f
 const val BROWSER_PANEL_WIDTH = 1.2f
 const val BROWSER_PANEL_HEIGHT = 0.9f
-const val ROOM_PICKER_PANEL_WIDTH = 0.6f
-const val ROOM_PICKER_PANEL_HEIGHT = 0.5f

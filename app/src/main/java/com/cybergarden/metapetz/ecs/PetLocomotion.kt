@@ -52,7 +52,7 @@ import kotlin.random.Random
  */
 class PetLocomotion(
     private val scope: CoroutineScope,
-    private val floorY: Float = 0f,
+    private var floorY: Float = 0f,
     private val walkSpeed: Float = 0.5f // meters per second
 ) {
     companion object {
@@ -327,6 +327,21 @@ class PetLocomotion(
         isRoomMode = roomMode
         Log.d(TAG, "Room mode set: $roomMode (${if (roomMode) "pathfinding enabled" else "bounded area mode"})")
     }
+
+    /**
+     * Set the floor Y height for outside mode.
+     * This affects where the pet walks/stands when not using NavGrid pathfinding.
+     * @param y The floor Y position in world coordinates
+     */
+    fun setFloorY(y: Float) {
+        floorY = y
+        Log.d(TAG, "Floor Y set to: $y")
+    }
+
+    /**
+     * Get the current floor Y height
+     */
+    fun getFloorY(): Float = floorY
 
     /**
      * Get current room mode
@@ -1053,7 +1068,7 @@ class PetLocomotion(
     fun createPointingSystem(mrukFeature: MRUKFeature): PointToMoveSystem {
         val system = PointToMoveSystem(
             mrukFeature = mrukFeature,
-            floorY = floorY,
+            getFloorY = { floorY },  // Dynamic getter - always gets current floorY
             getNavGrid = { navGrid },  // Dynamic getter - always gets current navGrid
             isRoomMode = { isRoomMode },  // Dynamic getter - always gets current mode
             isAttentive = { isAttentive?.invoke() ?: false },
@@ -1752,7 +1767,7 @@ class PetLocomotion(
  */
 class PointToMoveSystem(
     private val mrukFeature: MRUKFeature,
-    private val floorY: Float = 0f,
+    private val getFloorY: () -> Float = { 0f },  // Dynamic getter for floor Y
     private val getNavGrid: () -> NavGrid? = { null },  // Dynamic getter for navGrid
     private val isRoomMode: () -> Boolean = { false },   // Dynamic getter for room mode
     private val isAttentive: () -> Boolean = { true },
@@ -1949,6 +1964,9 @@ class PointToMoveSystem(
         if (direction.y > -0.05f) {
             return null
         }
+
+        // Get current floor Y (dynamic for outside mode floor offset)
+        val floorY = getFloorY()
 
         // Calculate intersection with floor plane
         val t = (floorY - origin.y) / direction.y

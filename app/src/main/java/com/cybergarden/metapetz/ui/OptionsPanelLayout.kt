@@ -89,8 +89,9 @@ fun OptionsPanel(
     onShowAccessoriesToggle: ((Boolean) -> Unit)? = null,
     // Open pet page in browser
     onOpenPetPage: ((String) -> Unit)? = null,  // Opens browser to pet's page with shortId
-    // Room picker
-    onShowRoomPicker: (() -> Unit)? = null  // Show room selection panel
+    // Outside mode floor offset
+    outsideFloorOffset: Float = 0f,
+    onAdjustFloorOffset: ((Float) -> Unit)? = null  // Adjust floor height in outside mode
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -182,6 +183,74 @@ fun OptionsPanel(
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // Floor height offset controls (only in outside mode)
+                if (isOutsideActive && onAdjustFloorOffset != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Floor Height",
+                            fontSize = 14.sp,
+                            color = Color.DarkGray
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Minus button
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF2196F3))
+                                    .clickable {
+                                        Log.d("OptionsPanel", "Floor offset - button pressed")
+                                        onAdjustFloorOffset(-0.05f)  // -5cm
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "-",
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                            // Current value display
+                            Text(
+                                text = String.format("%.2fm", outsideFloorOffset),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.DarkGray,
+                                modifier = Modifier.width(60.dp),
+                                textAlign = TextAlign.Center
+                            )
+                            // Plus button
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF4CAF50))
+                                    .clickable {
+                                        Log.d("OptionsPanel", "Floor offset + button pressed")
+                                        onAdjustFloorOffset(0.05f)  // +5cm
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "+",
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
             }
 
             // Room Scan button (MRUK) - highlighted when active, shows loading state
@@ -227,19 +296,6 @@ fun OptionsPanel(
                         }
                     )
                 }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Change Room button - only visible in room mode
-            if (isEnvironmentSetup && isRoomMode && onShowRoomPicker != null && !isRoomProcessing) {
-                SecondaryButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Change Room",
-                    onClick = {
-                        Log.d("OptionsPanel", "Change Room button pressed")
-                        onShowRoomPicker()
-                    }
-                )
                 Spacer(modifier = Modifier.height(8.dp))
             }
 

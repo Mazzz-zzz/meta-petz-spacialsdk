@@ -44,10 +44,6 @@ import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_WIDTH
 import com.cybergarden.metapetz.ui.theme.BROWSER_PANEL_WIDTH
 import com.cybergarden.metapetz.ui.theme.BROWSER_PANEL_HEIGHT
-import com.cybergarden.metapetz.ui.theme.ROOM_PICKER_PANEL_WIDTH
-import com.cybergarden.metapetz.ui.theme.ROOM_PICKER_PANEL_HEIGHT
-import com.cybergarden.metapetz.ui.RoomPickerPanel
-import com.cybergarden.metapetz.ui.RoomPickerInfo
 import com.cybergarden.metapetz.ui.BrowserPanel
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
@@ -159,9 +155,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var showAccessories by mutableStateOf(true)  // Toggle accessory visibility
   private var isEnvironmentSetup by mutableStateOf(false)
   private var isRoomMode by mutableStateOf(false)  // true = scanned room with pathfinding, false = outside mode
-  private var showRoomPicker by mutableStateOf(false)  // Show room selection panel
-  private var availableRooms by mutableStateOf<List<RoomPickerInfo>>(emptyList())  // Rooms for picker
-  private var roomPickerPanelEntity: Entity? = null  // Panel entity for room picker
+  private var outsideFloorOffset by mutableStateOf(0f)  // Floor height offset for outside mode (meters)
   private var isDebugGridEnabled by mutableStateOf(false)
   private var isNavGridEditMode by mutableStateOf(false)
   private var navGridEditSystem: NavGridEditSystem? = null
@@ -215,6 +209,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentRoomLabel by mutableStateOf<String?>(null)  // For UI display
   private var debugHeadPosLabel by mutableStateOf<String?>(null)  // Debug: head position and detected room
   private var lastRecenterTime: Long = 0  // Timestamp of last recenter for debug label cooldown
+  private var lastRescanTime: Long = 0  // Timestamp of last rescan to prevent infinite loop
   private var roomChangeCheckJob: Job? = null
   private var panelFollowJob: Job? = null
 
@@ -613,7 +608,8 @@ class ImmersiveActivity : AppSystemActivity() {
 
   private fun floorHeight(): Float {
     // Use LOCAL_FLOOR origin to keep drops on floor plane
-    return 0f
+    // In outside mode, apply user-adjustable offset for incorrect ground detection
+    return if (isRoomMode) 0f else outsideFloorOffset
   }
 
   // Firebase Manager for cloud persistence (lazy so available during registerPanels)
@@ -782,7 +778,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
   private var browserPanelId = 9000  // Counter for dynamic panel IDs
   private var currentBrowserUrl = "https://metapetz.com"  // Current URL for browser panel
-  private var roomPickerPanelId = 9500  // Counter for room picker panel IDs
 
   private fun openBrowserPanel() {
     openBrowserWithUrl("https://metapetz.com")
@@ -1168,18 +1163,37 @@ class ImmersiveActivity : AppSystemActivity() {
     lastRecenterTime = System.currentTimeMillis()  // Set cooldown
     debugHeadPosLabel = "[$totalRooms] ${roomList.joinToString(" ")}\nVP:(${String.format("%.1f", vp.x)},${String.format("%.1f", vp.z)}) Ours:$oursShort"
 
-    // If in room mode and room changed, rebuild
-    if (isRoomMode && mrukUuid != null && mrukUuid != currentProcessedRoomUuid) {
-      Log.d(TAG, "=== ROOM CHANGED AFTER RECENTER - REBUILDING ===")
-      activityScope.launch {
-        rebuildForNewRoom(mrukRoom, mrukUuid)
-      }
-    }
+    // If in room mode, clear all room data and trigger fresh rescan
+    // User may have moved to a different room, so we need to detect the new room
+    // Use cooldown to prevent infinite loop (scan process can trigger recenter)
+    val timeSinceLastRescan = System.currentTimeMillis() - lastRescanTime
+    val RESCAN_COOLDOWN_MS = 15000L  // 15 second cooldown
 
-    // If in room mode and multiple rooms exist, show room picker for manual confirmation
-    if (isRoomMode && totalRooms > 1) {
-      Log.d(TAG, "Multiple rooms detected on recenter - showing room picker")
-      showRoomPickerDialog()
+    if (isRoomMode && timeSinceLastRescan > RESCAN_COOLDOWN_MS) {
+      Log.d(TAG, "=== RECENTER IN ROOM MODE - CLEARING AND RESCANNING ===")
+      lastRescanTime = System.currentTimeMillis()
+
+      // Play bark to indicate room change/rescan
+      playBarkForRoomChange()
+
+      // Clear all room visualizations and data
+      clearRoomBoundsEdges()
+      navGrid?.clearDebugVisualization()
+      navGrid = null
+      petLocomotion.setNavGrid(null)
+      furnitureQuads.clear()
+      furnitureDebugSpheres.forEach { it.destroy() }
+      furnitureDebugSpheres.clear()
+      furniturePhysicsBoxes.forEach { it.destroy() }
+      furniturePhysicsBoxes.clear()
+      isEnvironmentSetup = false
+
+      Log.d(TAG, "Room data cleared - triggering fresh scan")
+
+      // Trigger fresh room scan (will use clearRooms() and detect current room)
+      scanRoom()
+    } else if (isRoomMode) {
+      Log.d(TAG, "Recenter ignored - within ${RESCAN_COOLDOWN_MS}ms cooldown (${timeSinceLastRescan}ms since last)")
     }
   }
 
@@ -1737,6 +1751,53 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
+   * Adjust the floor height offset for outside mode.
+   * Positive values raise the floor, negative values lower it.
+   */
+  private fun adjustOutsideFloorOffset(delta: Float) {
+    outsideFloorOffset += delta
+    Log.d(TAG, "Outside floor offset adjusted to: ${outsideFloorOffset}m")
+
+    // Recreate room walls at new floor height if in outside mode
+    if (!isRoomMode && isEnvironmentSetup) {
+      // Clear existing walls
+      roomColliderEntities.forEach { it.destroy() }
+      roomColliderEntities.clear()
+
+      // Get current head position to recenter
+      val headEntity = getHeadEntity()
+      val headTransform = headEntity?.tryGetComponent<Transform>()?.transform
+      val roomCenterX = headTransform?.t?.x ?: 0f
+      val roomCenterZ = headTransform?.t?.z ?: 0f
+
+      // Recreate walls at new floor height
+      createRoomWalls(roomCenterX, roomCenterZ)
+
+      // Recreate physics floor at new height
+      createPhysicsFloor()
+
+      // Update pet locomotion floor Y and polygon at new height
+      petLocomotion.setFloorY(outsideFloorOffset)
+      petLocomotion.setFloorPolygonFromRect(roomCenterX, roomCenterZ, roomHalfSize, roomHalfSize)
+
+      // Update pet's current position to new floor height
+      currentPetEntity?.let { pet ->
+        val petTransform = pet.tryGetComponent<Transform>()
+        if (petTransform != null) {
+          val currentPos = petTransform.transform.t
+          // Pet model Y offset is 0.15f (75% of model height to put feet on ground)
+          val petModelYOffset = 0.15f
+          petTransform.transform.t = Vector3(currentPos.x, outsideFloorOffset + petModelYOffset, currentPos.z)
+          pet.setComponent(petTransform)
+          Log.d(TAG, "Pet position updated to floor offset: Y=${outsideFloorOffset + petModelYOffset}")
+        }
+      }
+
+      Log.d(TAG, "Room walls, physics floor, pet position, and locomotion updated at floor offset: ${outsideFloorOffset}m")
+    }
+  }
+
+  /**
    * Create a 5x5 meter room with 4 walls centered on the given position.
    * Each wall has physics collider + visible green mesh.
    * @param centerX X coordinate of room center (from head position)
@@ -1870,9 +1931,6 @@ class ImmersiveActivity : AppSystemActivity() {
 
     Log.d(TAG, "MRUK state reset complete")
   }
-
-  // Track if this is a re-scan to force room picker
-  private var isRescanMode = false
 
   /**
    * Scan room using MRUK - loads scene data and triggers Space Setup if needed.
@@ -2194,137 +2252,6 @@ class ImmersiveActivity : AppSystemActivity() {
     if (headPos != null) {
       bark1Player.play(headPos, 1.0f, false)
       Log.d(TAG, "BARK! Room change detected")
-    }
-  }
-
-  /**
-   * Show room picker panel in front of the player.
-   */
-  private fun showRoomPickerDialog() {
-    val rooms = mrukFeature.rooms
-    if (rooms.isEmpty()) {
-      Log.w(TAG, "No rooms available to pick from")
-      return
-    }
-
-    // Build room info list with furniture labels
-    availableRooms = rooms.map { room ->
-      val uuid = room.anchor.uuid.toString()
-      val shortId = uuid.take(8)
-
-      // Collect furniture labels from anchors (skip room bounds)
-      val furnitureLabels = mutableSetOf<String>()
-      val boundsLabels = setOf("WALL_FACE", "FLOOR", "CEILING", "INVISIBLE_WALL_FACE")
-
-      for (anchorEntity in room.anchors) {
-        val mrukAnchor = anchorEntity.tryGetComponent<MRUKAnchor>() ?: continue
-        for (i in 0 until mrukAnchor.labelsCount) {
-          val label = mrukAnchor.labels[i] ?: continue
-          if (label !in boundsLabels) {
-            // Convert SCREAMING_CASE to Title Case
-            val readable = label.split("_").joinToString(" ") { word ->
-              word.lowercase().replaceFirstChar { it.uppercase() }
-            }
-            furnitureLabels.add(readable)
-          }
-        }
-      }
-
-      val furnitureStr = if (furnitureLabels.isEmpty()) {
-        "Empty room"
-      } else {
-        furnitureLabels.take(4).joinToString(", ") + if (furnitureLabels.size > 4) "..." else ""
-      }
-
-      RoomPickerInfo(
-        uuid = uuid,
-        shortId = shortId,
-        furnitureList = furnitureStr,
-        anchorCount = room.anchors.size
-      )
-    }
-
-    showRoomPicker = true
-    Log.d(TAG, "Showing room picker with ${availableRooms.size} rooms")
-
-    // Spawn the room picker panel in front of the player
-    spawnRoomPickerPanel()
-  }
-
-  /**
-   * Spawn room picker panel directly in front of the player.
-   */
-  private fun spawnRoomPickerPanel() {
-    // Destroy existing panel if any
-    roomPickerPanelEntity?.destroy()
-    roomPickerPanelEntity = null
-
-    // Get player position and forward direction
-    val viewerPose = scene.getViewerPose()
-    val forward = viewerPose.forward()
-    val panelDistance = 1.0f  // 1 meter in front
-
-    // Position panel in front of player
-    val panelPos = Vector3(
-      viewerPose.t.x + forward.x * panelDistance,
-      viewerPose.t.y,  // Same height as head
-      viewerPose.t.z + forward.z * panelDistance
-    )
-
-    val panelId = roomPickerPanelId++
-
-    // First register the panel dynamically
-    registerPanel(
-      PanelRegistration(panelId) {
-        config {
-          width = ROOM_PICKER_PANEL_WIDTH
-          height = ROOM_PICKER_PANEL_HEIGHT
-          layoutWidthInDp = ROOM_PICKER_PANEL_WIDTH * 1000  // Convert meters to dp
-          themeResourceId = R.style.PanelAppThemeTransparent
-        }
-        composePanel {
-          setContent {
-            RoomPickerPanel(
-              rooms = availableRooms,
-              currentRoomUuid = currentProcessedRoomUuid,
-              onRoomSelected = { roomInfo -> onRoomSelected(roomInfo) }
-            )
-          }
-        }
-      }
-    )
-
-    // Then create the panel entity in front of the player
-    roomPickerPanelEntity = Entity.createPanelEntity(
-      panelId,
-      Transform(Pose(panelPos, Quaternion.lookRotation(forward * -1f))),
-      Grabbable(true, GrabbableType.FACE)  // Allow grabbing and interaction
-    )
-    Log.d(TAG, "Spawned room picker panel at $panelPos with ID $panelId, forward=$forward")
-    Log.d(TAG, "Room picker panel has ${availableRooms.size} rooms to display")
-  }
-
-  /**
-   * User selected a room from the picker.
-   */
-  private fun onRoomSelected(roomInfo: RoomPickerInfo) {
-    showRoomPicker = false
-    Log.d(TAG, "User selected room: ${roomInfo.shortId} (${roomInfo.furnitureList})")
-
-    // Destroy the picker panel
-    roomPickerPanelEntity?.destroy()
-    roomPickerPanelEntity = null
-
-    // Find the MRUKRoom by UUID
-    val selectedRoom = mrukFeature.rooms.find { it.anchor.uuid.toString() == roomInfo.uuid }
-    if (selectedRoom == null) {
-      Log.e(TAG, "Could not find room with UUID: ${roomInfo.uuid}")
-      return
-    }
-
-    // Rebuild for the selected room
-    activityScope.launch {
-      rebuildForNewRoom(selectedRoom, roomInfo.uuid)
     }
   }
 
@@ -2684,8 +2611,9 @@ class ImmersiveActivity : AppSystemActivity() {
                       onShowAccessoriesToggle = ::setAccessoriesVisible,
                       // Open pet page
                       onOpenPetPage = ::openPetPage,
-                      // Room picker
-                      onShowRoomPicker = ::showRoomPickerDialog
+                      // Outside mode floor offset
+                      outsideFloorOffset = outsideFloorOffset,
+                      onAdjustFloorOffset = ::adjustOutsideFloorOffset
                   )
                 }
               }
