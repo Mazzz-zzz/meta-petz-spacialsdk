@@ -1672,13 +1672,13 @@ class PetLocomotion(
 
     /**
      * Start or restart the boredom timer for sitting.
-     * Pet will stop sitting after 10 seconds.
+     * Pet will stop sitting after 5 seconds.
      */
     private fun startSitBoredomTimer() {
         sitJob?.cancel()
         sitJob = scope.launch {
-            // Fixed duration of 10 seconds
-            val boredomTime = 10000L
+            // Fixed duration of 5 seconds
+            val boredomTime = 5000L
             Log.d(TAG, "Sit boredom timer started: ${boredomTime}ms")
 
             delay(boredomTime)

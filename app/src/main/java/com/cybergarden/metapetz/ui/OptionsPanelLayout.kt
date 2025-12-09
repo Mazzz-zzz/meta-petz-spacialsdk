@@ -1154,35 +1154,6 @@ fun OptionsPanel(
                     )
                 }
 
-                // Current room label
-                if (currentRoomLabel != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Room:",
-                            fontSize = 12.sp,
-                            color = Color.DarkGray
-                        )
-                        Text(
-                            text = currentRoomLabel,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF9C27B0)  // Purple for room
-                        )
-                    }
-                }
-
-                // Debug: head position and detected room (real-time)
-                if (debugHeadPosLabel != null) {
-                    Text(
-                        text = debugHeadPosLabel,
-                        fontSize = 10.sp,
-                        color = Color(0xFF2196F3)  // Blue for debug
-                    )
-                }
-
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Clear local data button
