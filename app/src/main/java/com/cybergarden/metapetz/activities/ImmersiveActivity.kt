@@ -1929,8 +1929,9 @@ class ImmersiveActivity : AppSystemActivity() {
     Log.d(TAG, "Stopped MRUK trackers and raycaster")
 
     // Destroy procMeshSpawner - will be recreated in scanRoom()
+    procMeshSpawner?.destroy()
     procMeshSpawner = null
-    Log.d(TAG, "Cleared procMeshSpawner")
+    Log.d(TAG, "Destroyed procMeshSpawner to clear old room furniture")
 
     // Clear tracked room UUID
     currentProcessedRoomUuid = null
