@@ -2,47 +2,89 @@
 
 **[www.metapetz.com](https://www.metapetz.com)**
 
-A mixed reality pet companion built with Meta Spatial SDK for Meta Quest. Features advanced spatial awareness with real-time room understanding, dynamic pathfinding, and physics-based interactions.
+A Tamagotchi-style virtual pet that lives in your real space. Your pet understands your room, walks around furniture, responds to gestures, and saves progress to the cloud.
 
-## Features
+## What You Can Do
 
-### Customizable Pets
+- **Care for your pet** - Feed, play, and heal to keep stats up. Stats decay over time like a real Tamagotchi.
+- **Customize appearance** - Change coat, eye, and snout colors. Add hats (party, wizard, spinning).
+- **Play fetch** - Throw a bone with your hand, pet brings it back.
+- **Use gestures** - Clap to get attention, raise hand for sit, pet them for XP.
+- **Take photos** - Capture passthrough photos with your pet in the scene.
+- **Scan QR codes** - Look up pet IDs via QR scanning.
 
-Create unique virtual companions with full color and accessory customization:
-
-- **Variety of hats** - Customize your dog with different hat accessories
-- **Color picker UI** - Customize coat, eye, and snout colors via hex values
-- **Runtime recoloring** - Colors applied by modifying GLB materials on-the-fly
-- **Persistent customization** - Pet appearance saved to Firebase, restored on launch
-
-### Tamagotchi-Style Care
-
-- **Stat system** - Hunger, happiness, and health decay over time
-- **Care actions** - Feed, play, and heal to maintain pet wellbeing
-- **XP progression** - Earn experience from interactions, level up your pet
-- **Visual feedback** - Pet animations respond to stat levels
-
-### Attention & Command System
+## Attention & Command System
 
 Gesture-based attention system with activity states reflecting real pet behavior:
 
 **Activity States:**
+
 - **IDLE** - Pet wanders around autonomously
 - **FACING_PLAYER** - Pet has attention, continuously smooth-tracks your head
 - **WALKING** - Pet walking to commanded position (maintains attention)
-- **SITTING** - Pet sitting on command (10s duration, awards 2% XP)
+- **SITTING** - Pet sitting on command (5s duration, awards 2% XP)
 - **FETCHING** - Pet fetching a thrown bone (awards 5% XP on completion)
 
 **Gestures:**
-- **Clap** - Call pet's attention (triggers whistle sound, pet turns to face you)
-- **Raise Hand** - Sit command (only when pet has attention)
-- **Point & Click** - Direct pet to walk somewhere (limit: 2 commands per session)
 
-**Attention Mechanics:**
-- 5-second timeout when FACING_PLAYER - pet loses attention if no command given
-- Timeout resets on each command or clap
-- Move command limit prevents XP farming (pet gets "tired of being bossed around")
-- Visual indicator (yellow disc) shows above pet during any non-IDLE activity
+| Gesture       | Action                              |
+| ------------- | ----------------------------------- |
+| Clap hands    | Get pet's attention (whistle plays) |
+| Raise hand    | Sit command (5s, awards XP)         |
+| Point & click | Walk to location                    |
+| Pet with hand | Petting animation + XP              |
+| Throw bone    | Fetch game (awards XP on return)    |
+| Wrist button  | Spawn bone from wrist UI            |
+
+## Tech Stack
+
+| Component          | Technology                                        |
+| ------------------ | ------------------------------------------------- |
+| Platform           | Meta Quest 3/3S (HorizonOS)                       |
+| SDK                | Meta Spatial SDK                                  |
+| Room Understanding | MRUK                                              |
+| Language           | Kotlin                                            |
+| UI                 | Jetpack Compose + Meta Spatial UISet              |
+| 3D Models          | glTF/GLB with runtime colorization                |
+| Backend            | Firebase Realtime Database                        |
+| AI                 | Replicate API (background removal, 3D generation) |
+| QR Scanning        | ZXing                                             |
+| Camera             | CameraX + HorizonOS headset camera                |
+
+## Architecture
+
+```
+app/src/main/java/com/cybergarden/metapetz/
+├── activities/
+│   └── ImmersiveActivity.kt      # Main VR activity, entity management
+├── ecs/
+│   ├── NavGrid.kt                # 2D pathfinding grid (15cm resolution)
+│   ├── PetLocomotion.kt          # Movement, jumping, animations
+│   ├── ClapDetector.kt           # Clap gesture detection
+│   ├── PettingDetector.kt        # Hand petting detection
+│   ├── WristAttachedSystem.kt    # Wrist UI positioning
+│   └── QRCodeSystem.kt           # QR detection via MRUK
+├── model/
+│   └── Pet.kt                    # Pet data, colors, accessories
+├── services/
+│   ├── FirebaseManager.kt        # Cloud persistence
+│   ├── ReplicateManager.kt       # AI image/3D API
+│   ├── PhotoCaptureManager.kt    # Headset camera
+│   └── QRScannerManager.kt       # QR code scanning
+├── utils/
+│   ├── GlbColorizer.kt           # Runtime GLB recoloring
+│   └── MathUtils.kt              # Quaternion helpers
+└── ui/
+    ├── OptionsPanelLayout.kt     # Main Compose UI panel
+    ├── layouts/                  # PetInfo, PetSelection, PhotoCapture
+    ├── components/               # PetCard, StatBar, CareActionButton
+    └── theme/                    # Theme.kt, Constants.kt
+
+app/src/shaders/
+├── solidColor.vert/frag          # Transparent solid color
+├── edgeOnly.vert/frag            # Wireframe edges
+└── furnitureOccluder.vert/frag   # Furniture occlusion
+```
 
 ## Technical Highlights
 
@@ -54,14 +96,12 @@ A 2D navigation grid (15cm resolution) for intelligent pet movement:
 - **Furniture blocking** via `MRUKVolume`/`MRUKPlane` footprints with padding
 - **Wall blocking** using pending queue pattern (handles async anchor loading)
 - **Flood fill optimization** keeps only largest connected walkable region
-- **Lag-free debug visualization** using `Visible` component toggle
 
 ### Room Understanding (MRUK Integration)
 
 - **Real-time room scanning** - Loads room data from Meta's Mixed Reality Utility Kit
 - **Anchor processing** - Handles floor, walls, ceiling, and furniture anchors
 - **Physics colliders** - Creates invisible wall colliders for pet containment
-- **Room mesh visualization** - Toggle to show/hide room boundaries
 
 ### Physics-Based Interactions
 
@@ -71,28 +111,10 @@ A 2D navigation grid (15cm resolution) for intelligent pet movement:
 
 ### Cloud Persistence (Firebase)
 
-Real-time database for pet state persistence across sessions:
-
 - **Device-based isolation** - Each device gets unique ID, data stored under `/pets/{deviceId}`
-- **Pet stats sync** - Hunger, happiness, health values persist and restore on launch
+- **Pet stats sync** - Hunger, happiness, health, colors, accessories persist
 - **XP/Level system** - Progression tracking with automatic cloud backup
 - **Offline support** - Firebase SDK handles connectivity, syncs when back online
-
-Database structure:
-```json
-{
-  "pets": {
-    "device_abc123": {
-      "name": "Buddy",
-      "hunger": 0.75,
-      "happiness": 0.9,
-      "health": 1.0,
-      "xp": 1250,
-      "level": 5
-    }
-  }
-}
-```
 
 ### Runtime GLB Colorization
 
@@ -103,12 +125,13 @@ Custom GLB parser for dynamic pet color customization without external tools:
 - **Name-based mapping** - Maps material names (coat, eye, snout) to hex colors
 - **Cache output** - Writes modified GLB with proper 4-byte alignment
 
-### Custom Transparent Shaders
+### Custom Shaders
 
 GLSL shaders for room mesh visualization:
 
 - **Solid Color** (`solidColor.vert/frag`) - Unlit transparent rendering with `customColor` uniform
 - **Edge-Only** (`edgeOnly.vert/frag`) - UV-based wireframe effect, configurable thickness in meters
+- **Furniture Occluder** (`furnitureOccluder.vert/frag`) - Furniture visibility occlusion
 
 ```glsl
 // Edge detection (edgeOnly.frag)
@@ -117,88 +140,10 @@ vec2 thicknessUV = thicknessMeters * fwidth(uv) / fwidth(worldPosition);
 if (edgeDist.x >= thicknessUV.x && edgeDist.y >= thicknessUV.y) discard;
 ```
 
-## Architecture
-
-```
-app/src/main/java/com/cybergarden/metapetz/
-├── activities/
-│   └── ImmersiveActivity.kt    # Main activity, room processing, entity management
-├── ecs/
-│   ├── NavGrid.kt              # 2D navigation grid with blocking & pathfinding
-│   ├── PetLocomotion.kt        # Pet movement with floor polygon constraints
-│   └── ClapDetector.kt         # Audio-based gesture detection
-├── services/
-│   └── FirebaseManager.kt      # Cloud persistence
-├── utils/
-│   └── GlbColorizer.kt         # Runtime GLB material color modification
-└── ui/
-    └── OptionsPanelLayout.kt   # Compose UI panels
-
-app/src/shaders/
-├── solidColor.vert/frag        # Unlit transparent solid color shader
-└── edgeOnly.vert/frag          # UV-based edge wireframe shader
-```
-
-## Technology Stack
-
-| Component | Technology |
-|-----------|------------|
-| Platform | Meta Quest 3/3S |
-| SDK | Meta Spatial SDK |
-| Room Understanding | MRUK (Mixed Reality Utility Kit) |
-| Language | Kotlin |
-| UI | Jetpack Compose + Meta Spatial UISet |
-| 3D Models | glTF/GLB |
-| Architecture | Entity Component System (ECS) |
-| Backend | Firebase Realtime Database |
-| AI | Replicate API (background removal) |
-
-## Building
-
-```bash
-# Debug build
-./gradlew assembleDebug
-
-# Install on connected Quest
-./gradlew installDebug
-
-# Fast Kotlin-only compile
-./gradlew :app:compileDebugKotlin
-```
-
-### Prerequisites
-- Android Studio
-- Meta Quest device with room setup completed
-- Meta Spatial Editor (for scene editing)
-
-### API Keys
-Add to `local.properties`:
-```properties
-REPLICATE_API_TOKEN=your_token_here
-```
-
-### Firebase Setup
-1. Create project at [Firebase Console](https://console.firebase.google.com)
-2. Add Android app with package `com.cybergarden.metapetz`
-3. Download `google-services.json` to `app/` folder
-4. Enable Realtime Database with these rules:
-```json
-{
-  "rules": {
-    "pets": {
-      "$deviceId": {
-        ".read": true,
-        ".write": true
-      }
-    }
-  }
-}
-```
-5. No authentication required - data isolated by device ID
-
 ## Key Algorithms
 
 ### Point-in-Polygon (Ray Casting)
+
 ```kotlin
 fun contains(px: Float, pz: Float): Boolean {
     var inside = false
@@ -216,20 +161,52 @@ fun contains(px: Float, pz: Float): Boolean {
 ```
 
 ### Polygon Expansion (Padding)
+
 - Calculates signed area to detect winding order (CW vs CCW)
 - Computes outward normals for each edge
 - Moves vertices along angle bisectors
 - Scales by `padding / cos(half-angle)` to maintain edge distance
 
 ### Flood Fill (BFS)
+
 - Iterative queue-based to avoid stack overflow
 - 4-connected neighbor checking
 - Returns list of all connected walkable cells
 
-## License
+## Building
 
-Multi-licensed under [Zero-Clause BSD](LICENSE) and [Meta Platform Technologies SDK License](https://developer.oculus.com/licenses/oculussdk/).
+```bash
+./gradlew assembleDebug      # Build
+./gradlew installDebug       # Install on Quest
+```
 
----
+### Prerequisites
+
+- Android Studio
+- Meta Quest with room setup completed
+
+### Configuration
+
+Add to `local.properties`:
+
+```properties
+REPLICATE_API_TOKEN=your_token_here
+```
+
+Firebase setup:
+
+1. Create project at [Firebase Console](https://console.firebase.google.com)
+2. Add Android app: `com.cybergarden.metapetz`
+3. Download `google-services.json` to `app/`
+4. Enable Realtime Database
+
+## Documentation
+
+See `/docs/` for detailed guides:
+
+- `LOCOMOTION_API.md` - Pet movement system
+- `navgrid.md` - Pathfinding implementation
+- `WRIST_ATTACHED_CONTROLS.md` - Wrist UI reference
+
 
 **[www.metapetz.com](https://www.metapetz.com)** | **Built for Meta Quest** | **Powered by Meta Spatial SDK**
