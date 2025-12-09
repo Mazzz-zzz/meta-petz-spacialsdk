@@ -88,7 +88,9 @@ fun OptionsPanel(
     showAccessories: Boolean = true,
     onShowAccessoriesToggle: ((Boolean) -> Unit)? = null,
     // Open pet page in browser
-    onOpenPetPage: ((String) -> Unit)? = null  // Opens browser to pet's page with shortId
+    onOpenPetPage: ((String) -> Unit)? = null,  // Opens browser to pet's page with shortId
+    // Room picker
+    onShowRoomPicker: (() -> Unit)? = null  // Show room selection panel
 ) {
     var demoPet by remember { mutableStateOf<PetData?>(null) }
     var claimedPets by remember { mutableStateOf<List<PetData>>(emptyList()) }
@@ -225,6 +227,19 @@ fun OptionsPanel(
                         }
                     )
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Change Room button - only visible in room mode
+            if (isEnvironmentSetup && isRoomMode && onShowRoomPicker != null && !isRoomProcessing) {
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Change Room",
+                    onClick = {
+                        Log.d("OptionsPanel", "Change Room button pressed")
+                        onShowRoomPicker()
+                    }
+                )
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
@@ -1292,4 +1307,3 @@ fun BrowserPanel(
         }
     }
 }
-

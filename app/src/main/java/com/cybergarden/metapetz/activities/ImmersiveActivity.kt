@@ -44,6 +44,10 @@ import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_HEIGHT
 import com.cybergarden.metapetz.ui.theme.OPTIONS_PANEL_WIDTH
 import com.cybergarden.metapetz.ui.theme.BROWSER_PANEL_WIDTH
 import com.cybergarden.metapetz.ui.theme.BROWSER_PANEL_HEIGHT
+import com.cybergarden.metapetz.ui.theme.ROOM_PICKER_PANEL_WIDTH
+import com.cybergarden.metapetz.ui.theme.ROOM_PICKER_PANEL_HEIGHT
+import com.cybergarden.metapetz.ui.RoomPickerPanel
+import com.cybergarden.metapetz.ui.RoomPickerInfo
 import com.cybergarden.metapetz.ui.BrowserPanel
 import com.meta.spatial.castinputforward.CastInputForwardFeature
 import com.meta.spatial.compose.ComposeFeature
@@ -155,6 +159,9 @@ class ImmersiveActivity : AppSystemActivity() {
   private var showAccessories by mutableStateOf(true)  // Toggle accessory visibility
   private var isEnvironmentSetup by mutableStateOf(false)
   private var isRoomMode by mutableStateOf(false)  // true = scanned room with pathfinding, false = outside mode
+  private var showRoomPicker by mutableStateOf(false)  // Show room selection panel
+  private var availableRooms by mutableStateOf<List<RoomPickerInfo>>(emptyList())  // Rooms for picker
+  private var roomPickerPanelEntity: Entity? = null  // Panel entity for room picker
   private var isDebugGridEnabled by mutableStateOf(false)
   private var isNavGridEditMode by mutableStateOf(false)
   private var navGridEditSystem: NavGridEditSystem? = null
@@ -207,6 +214,7 @@ class ImmersiveActivity : AppSystemActivity() {
   private var currentProcessedRoomUuid: String? = null
   private var currentRoomLabel by mutableStateOf<String?>(null)  // For UI display
   private var debugHeadPosLabel by mutableStateOf<String?>(null)  // Debug: head position and detected room
+  private var lastRecenterTime: Long = 0  // Timestamp of last recenter for debug label cooldown
   private var roomChangeCheckJob: Job? = null
   private var panelFollowJob: Job? = null
 
@@ -774,6 +782,7 @@ class ImmersiveActivity : AppSystemActivity() {
 
   private var browserPanelId = 9000  // Counter for dynamic panel IDs
   private var currentBrowserUrl = "https://metapetz.com"  // Current URL for browser panel
+  private var roomPickerPanelId = 9500  // Counter for room picker panel IDs
 
   private fun openBrowserPanel() {
     openBrowserWithUrl("https://metapetz.com")
@@ -1062,21 +1071,115 @@ class ImmersiveActivity : AppSystemActivity() {
     // Play bark to indicate recenter detected
     bark1Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
 
-    // Update debug label
-    debugHeadPosLabel = "RECENTER detected!"
+    // Check MRUK room state
+    val mrukRoom = mrukFeature.getCurrentRoom()
+    val mrukUuid = mrukRoom?.anchor?.uuid?.toString()
+    val allRooms = mrukFeature.rooms
+    val totalRooms = allRooms.size
 
-    // If in room mode, check if room changed
-    if (isRoomMode) {
-      val currentRoom = mrukFeature.getCurrentRoom()
-      val currentUuid = currentRoom?.anchor?.uuid?.toString()
-      Log.d(TAG, "After recenter - MRUK room: ${currentUuid?.take(8)}, processed: ${currentProcessedRoomUuid?.take(8)}")
+    Log.d(TAG, "MRUK getCurrentRoom: ${mrukUuid?.take(8) ?: "NULL"}")
+    Log.d(TAG, "Our processed room: ${currentProcessedRoomUuid?.take(8) ?: "NULL"}")
+    Log.d(TAG, "Total rooms loaded: $totalRooms")
+    Log.d(TAG, "isRoomMode: $isRoomMode")
 
-      if (currentUuid != null && currentUuid != currentProcessedRoomUuid) {
-        Log.d(TAG, "Room changed after recenter! Rebuilding...")
-        activityScope.launch {
-          rebuildForNewRoom(currentRoom, currentUuid)
+    // List ALL rooms that MRUK knows about with their anchor positions
+    Log.d(TAG, "=== ALL MRUK ROOMS ===")
+    val roomList = mutableListOf<String>()
+    var closestRoom: MRUKRoom? = null
+    var closestDist = Float.MAX_VALUE
+
+    allRooms.forEachIndexed { index, room ->
+      val uuid = room.anchor.uuid.toString()
+      val shortUuid = uuid.take(8)
+      val isOurs = uuid == currentProcessedRoomUuid
+
+      // Find floor anchor to get room position
+      var floorPos: Vector3? = null
+      for (anchorEntity in room.anchors) {
+        val mrukAnchor = anchorEntity.tryGetComponent<MRUKAnchor>() ?: continue
+        // Check labels for FLOOR
+        var isFloor = false
+        for (i in 0 until mrukAnchor.labelsCount) {
+          if (mrukAnchor.labels[i] == MRUKLabel.FLOOR.name) {
+            isFloor = true
+            break
+          }
+        }
+        if (isFloor) {
+          floorPos = anchorEntity.tryGetComponent<Transform>()?.transform?.t
+          break
         }
       }
+
+      val anchorPos = floorPos ?: Vector3(0f, 0f, 0f)
+      val distFromOrigin = sqrt(anchorPos.x * anchorPos.x + anchorPos.z * anchorPos.z)
+
+      // Track closest to origin
+      if (distFromOrigin < closestDist) {
+        closestDist = distFromOrigin
+        closestRoom = room
+      }
+
+      val marker = if (isOurs) "[OURS]" else ""
+      Log.d(TAG, "  Room $index: $shortUuid floor:(${String.format("%.2f", anchorPos.x)},${String.format("%.2f", anchorPos.z)}) dist:${String.format("%.2f", distFromOrigin)} $marker")
+      roomList.add("$shortUuid:${String.format("%.1f", distFromOrigin)}m")
+    }
+
+    val closestUuid = closestRoom?.anchor?.uuid?.toString()?.take(8) ?: "?"
+    Log.d(TAG, "  -> Closest to origin: $closestUuid (${String.format("%.2f", closestDist)}m)")
+
+    // Get viewer pose to see offset from anchor space
+    val viewerPose = scene.getViewerPose()
+    val vp = viewerPose.t
+    Log.d(TAG, "  -> Viewer pose: (${String.format("%.2f", vp.x)}, ${String.format("%.2f", vp.y)}, ${String.format("%.2f", vp.z)})")
+
+    // Check which room's floor the viewer is actually inside (in anchor space)
+    // Viewer at (0,0,0) in viewer space, but floors are in anchor space
+    // The room we're in should have its floor near viewer position... but coordinate spaces differ
+    // Log the offset from viewer to each floor
+    Log.d(TAG, "=== VIEWER TO FLOOR OFFSETS ===")
+    allRooms.forEachIndexed { index, room ->
+      val uuid = room.anchor.uuid.toString().take(8)
+      // Find floor anchor
+      var floorPos: Vector3? = null
+      for (anchorEntity in room.anchors) {
+        val mrukAnchor = anchorEntity.tryGetComponent<MRUKAnchor>() ?: continue
+        var isFloor = false
+        for (i in 0 until mrukAnchor.labelsCount) {
+          if (mrukAnchor.labels[i] == MRUKLabel.FLOOR.name) {
+            isFloor = true
+            break
+          }
+        }
+        if (isFloor) {
+          floorPos = anchorEntity.tryGetComponent<Transform>()?.transform?.t
+          break
+        }
+      }
+      if (floorPos != null) {
+        val offsetX = vp.x - floorPos.x
+        val offsetZ = vp.z - floorPos.z
+        Log.d(TAG, "  Room $uuid: floor(${String.format("%.2f", floorPos.x)},${String.format("%.2f", floorPos.z)}) offset(${String.format("%.2f", offsetX)},${String.format("%.2f", offsetZ)})")
+      }
+    }
+
+    // Update debug label with room distances from origin
+    val oursShort = currentProcessedRoomUuid?.take(8) ?: "NULL"
+    lastRecenterTime = System.currentTimeMillis()  // Set cooldown
+    debugHeadPosLabel = "[$totalRooms] ${roomList.joinToString(" ")}\nVP:(${String.format("%.1f", vp.x)},${String.format("%.1f", vp.z)}) Ours:$oursShort"
+
+    // If in room mode and room changed, rebuild
+    if (isRoomMode && mrukUuid != null && mrukUuid != currentProcessedRoomUuid) {
+      Log.d(TAG, "=== ROOM CHANGED AFTER RECENTER - REBUILDING ===")
+      activityScope.launch {
+        rebuildForNewRoom(mrukRoom, mrukUuid)
+      }
+    }
+
+    // If in room mode and multiple rooms exist, show room picker for manual confirmation
+    if (isRoomMode && totalRooms > 1) {
+      Log.d(TAG, "Multiple rooms detected on recenter - showing room picker")
+      showRoomPickerDialog()
     }
   }
 
@@ -1735,6 +1838,43 @@ class ImmersiveActivity : AppSystemActivity() {
   }
 
   /**
+   * Reset MRUK-related state for re-scanning.
+   * Does NOT recreate MRUKFeature (causes issues with spatial framework).
+   */
+  private fun resetMrukState() {
+    Log.d(TAG, "=== RESETTING MRUK STATE FOR RE-SCAN ===")
+
+    // Remove scene event listener
+    sceneEventListener?.let {
+      mrukFeature.removeSceneEventListener(it)
+      Log.d(TAG, "Removed scene event listener")
+    }
+    sceneEventListener = null
+
+    // Stop any active trackers
+    mrukFeature.stopTrackers()
+    mrukFeature.stopEnvironmentRaycaster()
+    Log.d(TAG, "Stopped MRUK trackers and raycaster")
+
+    // Destroy procMeshSpawner - will be recreated in scanRoom()
+    procMeshSpawner = null
+    Log.d(TAG, "Cleared procMeshSpawner")
+
+    // Clear tracked room UUID
+    currentProcessedRoomUuid = null
+    Log.d(TAG, "Cleared currentProcessedRoomUuid")
+
+    // Clear pending walls
+    pendingWalls.clear()
+    Log.d(TAG, "Cleared pending walls")
+
+    Log.d(TAG, "MRUK state reset complete")
+  }
+
+  // Track if this is a re-scan to force room picker
+  private var isRescanMode = false
+
+  /**
    * Scan room using MRUK - loads scene data and triggers Space Setup if needed.
    * This follows the MixedRealitySample pattern for proper room mesh alignment.
    * The AnchorProceduralMesh automatically creates visible meshes for all room anchors.
@@ -1797,11 +1937,17 @@ class ImmersiveActivity : AppSystemActivity() {
       )
     }
 
-    Log.d(TAG, "Requesting scene capture to ensure fresh room data...")
+    // Clear existing MRUK rooms before scanning - this ensures fresh room detection
+    // From MRUK sample: mrukFeature.clearRooms() clears all loaded room data
+    Log.d(TAG, "Clearing existing MRUK rooms before scan...")
+    mrukFeature.clearRooms()
+    Log.d(TAG, "MRUK rooms cleared")
 
-    // Always request scene capture first to ensure up-to-date room data
-    // This launches the Space Setup UI if no scene exists, or updates existing data
-    scene.requestSceneCapture().whenComplete { _, captureError ->
+    Log.d(TAG, "Requesting scene capture via MRUK...")
+
+    // Request scene capture, then load from device (pattern from MRUK sample)
+    // Using mrukFeature.requestSceneCapture() as per MRUK sample
+    mrukFeature.requestSceneCapture().whenComplete { _, captureError ->
       if (captureError != null) {
         Log.e(TAG, "Scene capture error: ${captureError.message}", captureError)
         // Try loading existing scene data even if capture failed
@@ -1829,14 +1975,21 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "=== MRUK SCENE LOADED SUCCESSFULLY ===")
         logMrukRoomData()
 
-        // Get the CURRENT room only - don't process all rooms
-        val currentRoom = mrukFeature.getCurrentRoom()
+        // Get the CURRENT room - or fall back to first room if detection fails
+        var currentRoom = mrukFeature.getCurrentRoom()
         if (currentRoom == null) {
-          Log.w(TAG, "No current room detected - user may not be in a scanned room")
+          Log.w(TAG, "getCurrentRoom() returned NULL - falling back to first available room")
           Log.w(TAG, "Total rooms available: ${mrukFeature.rooms.size}")
-          isRoomProcessing = false
-          isEnvironmentSetup = false
-          return@whenComplete
+
+          // Use first room as fallback
+          currentRoom = mrukFeature.rooms.firstOrNull()
+          if (currentRoom == null) {
+            Log.e(TAG, "No rooms available at all")
+            isRoomProcessing = false
+            isEnvironmentSetup = false
+            return@whenComplete
+          }
+          Log.d(TAG, "Using first room as fallback: ${currentRoom.anchor.uuid}")
         }
 
         val roomUuid = currentRoom.anchor.uuid.toString()
@@ -2011,8 +2164,11 @@ class ImmersiveActivity : AppSystemActivity() {
         Log.d(TAG, "  -> MRUK getCurrentRoom: ${currentUuid?.take(8) ?: "NULL"}")
         Log.d(TAG, "  -> Our processed room: ${currentProcessedRoomUuid?.take(8) ?: "NULL"}")
 
-        // Update debug label
-        debugHeadPosLabel = "MRUK: ${currentUuid?.take(8) ?: "NULL"} | Ours: ${currentProcessedRoomUuid?.take(8) ?: "NULL"}"
+        // Update debug label (skip if within 10s of recenter to let that info stay visible)
+        val timeSinceRecenter = System.currentTimeMillis() - lastRecenterTime
+        if (timeSinceRecenter > 10000) {
+          debugHeadPosLabel = "MRUK: ${currentUuid?.take(8) ?: "NULL"} | Ours: ${currentProcessedRoomUuid?.take(8) ?: "NULL"}"
+        }
 
         if (currentUuid != null && currentUuid != currentProcessedRoomUuid) {
           Log.d(TAG, "=== ROOM CHANGE DETECTED (MRUK) ===")
@@ -2038,6 +2194,137 @@ class ImmersiveActivity : AppSystemActivity() {
     if (headPos != null) {
       bark1Player.play(headPos, 1.0f, false)
       Log.d(TAG, "BARK! Room change detected")
+    }
+  }
+
+  /**
+   * Show room picker panel in front of the player.
+   */
+  private fun showRoomPickerDialog() {
+    val rooms = mrukFeature.rooms
+    if (rooms.isEmpty()) {
+      Log.w(TAG, "No rooms available to pick from")
+      return
+    }
+
+    // Build room info list with furniture labels
+    availableRooms = rooms.map { room ->
+      val uuid = room.anchor.uuid.toString()
+      val shortId = uuid.take(8)
+
+      // Collect furniture labels from anchors (skip room bounds)
+      val furnitureLabels = mutableSetOf<String>()
+      val boundsLabels = setOf("WALL_FACE", "FLOOR", "CEILING", "INVISIBLE_WALL_FACE")
+
+      for (anchorEntity in room.anchors) {
+        val mrukAnchor = anchorEntity.tryGetComponent<MRUKAnchor>() ?: continue
+        for (i in 0 until mrukAnchor.labelsCount) {
+          val label = mrukAnchor.labels[i] ?: continue
+          if (label !in boundsLabels) {
+            // Convert SCREAMING_CASE to Title Case
+            val readable = label.split("_").joinToString(" ") { word ->
+              word.lowercase().replaceFirstChar { it.uppercase() }
+            }
+            furnitureLabels.add(readable)
+          }
+        }
+      }
+
+      val furnitureStr = if (furnitureLabels.isEmpty()) {
+        "Empty room"
+      } else {
+        furnitureLabels.take(4).joinToString(", ") + if (furnitureLabels.size > 4) "..." else ""
+      }
+
+      RoomPickerInfo(
+        uuid = uuid,
+        shortId = shortId,
+        furnitureList = furnitureStr,
+        anchorCount = room.anchors.size
+      )
+    }
+
+    showRoomPicker = true
+    Log.d(TAG, "Showing room picker with ${availableRooms.size} rooms")
+
+    // Spawn the room picker panel in front of the player
+    spawnRoomPickerPanel()
+  }
+
+  /**
+   * Spawn room picker panel directly in front of the player.
+   */
+  private fun spawnRoomPickerPanel() {
+    // Destroy existing panel if any
+    roomPickerPanelEntity?.destroy()
+    roomPickerPanelEntity = null
+
+    // Get player position and forward direction
+    val viewerPose = scene.getViewerPose()
+    val forward = viewerPose.forward()
+    val panelDistance = 1.0f  // 1 meter in front
+
+    // Position panel in front of player
+    val panelPos = Vector3(
+      viewerPose.t.x + forward.x * panelDistance,
+      viewerPose.t.y,  // Same height as head
+      viewerPose.t.z + forward.z * panelDistance
+    )
+
+    val panelId = roomPickerPanelId++
+
+    // First register the panel dynamically
+    registerPanel(
+      PanelRegistration(panelId) {
+        config {
+          width = ROOM_PICKER_PANEL_WIDTH
+          height = ROOM_PICKER_PANEL_HEIGHT
+          layoutWidthInDp = ROOM_PICKER_PANEL_WIDTH * 1000  // Convert meters to dp
+          themeResourceId = R.style.PanelAppThemeTransparent
+        }
+        composePanel {
+          setContent {
+            RoomPickerPanel(
+              rooms = availableRooms,
+              currentRoomUuid = currentProcessedRoomUuid,
+              onRoomSelected = { roomInfo -> onRoomSelected(roomInfo) }
+            )
+          }
+        }
+      }
+    )
+
+    // Then create the panel entity in front of the player
+    roomPickerPanelEntity = Entity.createPanelEntity(
+      panelId,
+      Transform(Pose(panelPos, Quaternion.lookRotation(forward * -1f))),
+      Grabbable(true, GrabbableType.FACE)  // Allow grabbing and interaction
+    )
+    Log.d(TAG, "Spawned room picker panel at $panelPos with ID $panelId, forward=$forward")
+    Log.d(TAG, "Room picker panel has ${availableRooms.size} rooms to display")
+  }
+
+  /**
+   * User selected a room from the picker.
+   */
+  private fun onRoomSelected(roomInfo: RoomPickerInfo) {
+    showRoomPicker = false
+    Log.d(TAG, "User selected room: ${roomInfo.shortId} (${roomInfo.furnitureList})")
+
+    // Destroy the picker panel
+    roomPickerPanelEntity?.destroy()
+    roomPickerPanelEntity = null
+
+    // Find the MRUKRoom by UUID
+    val selectedRoom = mrukFeature.rooms.find { it.anchor.uuid.toString() == roomInfo.uuid }
+    if (selectedRoom == null) {
+      Log.e(TAG, "Could not find room with UUID: ${roomInfo.uuid}")
+      return
+    }
+
+    // Rebuild for the selected room
+    activityScope.launch {
+      rebuildForNewRoom(selectedRoom, roomInfo.uuid)
     }
   }
 
@@ -2396,7 +2683,9 @@ class ImmersiveActivity : AppSystemActivity() {
                       showAccessories = showAccessories,
                       onShowAccessoriesToggle = ::setAccessoriesVisible,
                       // Open pet page
-                      onOpenPetPage = ::openPetPage
+                      onOpenPetPage = ::openPetPage,
+                      // Room picker
+                      onShowRoomPicker = ::showRoomPickerDialog
                   )
                 }
               }
@@ -3111,18 +3400,39 @@ class ImmersiveActivity : AppSystemActivity() {
             val roomUuid = room.anchor.uuid.toString()
             Log.d(TAG, "=== MRUK ROOM UPDATED === UUID: ${roomUuid.take(8)}, current: ${currentProcessedRoomUuid?.take(8)}")
 
-            // Get both viewer pose (world) and head entity (possibly local)
-            val viewerPose = scene.getViewerPose()
-            val headEntity = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
-            Log.d(TAG, "  ViewerPose: (${viewerPose.t.x}, ${viewerPose.t.y}, ${viewerPose.t.z})")
-            Log.d(TAG, "  HeadEntity: (${headEntity?.x}, ${headEntity?.y}, ${headEntity?.z})")
+            // Also check what getCurrentRoom returns right now
+            val currentRoomNow = mrukFeature.getCurrentRoom()
+            val currentRoomUuidNow = currentRoomNow?.anchor?.uuid?.toString()
+            Log.d(TAG, "  getCurrentRoom() at this moment: ${currentRoomUuidNow?.take(8) ?: "NULL"}")
+
+            // Log ALL rooms to see their states
+            Log.d(TAG, "  === ALL ROOMS STATE ===")
+            val allRooms = mrukFeature.rooms
+            allRooms.forEachIndexed { idx, r ->
+              val rUuid = r.anchor.uuid.toString().take(8)
+              val isUpdatedRoom = r.anchor.uuid.toString() == roomUuid
+              val isOurRoom = r.anchor.uuid.toString() == currentProcessedRoomUuid
+              // Check room's anchor count - maybe the "active" room has more anchors loaded?
+              val anchorCount = r.anchors.size
+              Log.d(TAG, "    Room $idx: $rUuid anchors=$anchorCount ${if (isUpdatedRoom) "[UPDATED]" else ""} ${if (isOurRoom) "[OURS]" else ""}")
+            }
 
             // Bark for room updated
             bark3Player.play(Vector3(0f, 1.5f, 0f), 1.0f, false)
 
-            // Update debug label with both positions
-            val vp = viewerPose.t
-            debugHeadPosLabel = "Updated ${roomUuid.take(8)} VP:(${String.format("%.1f", vp.x)},${String.format("%.1f", vp.z)})"
+            // Update debug label showing the updated room
+            lastRecenterTime = System.currentTimeMillis()  // Use cooldown to keep this visible
+            debugHeadPosLabel = "UPDATED: ${roomUuid.take(8)}\ngetCurrent: ${currentRoomUuidNow?.take(8) ?: "NULL"} rooms:${allRooms.size}"
+
+            // If this is a different room than what we processed, rebuild!
+            if (isRoomMode && roomUuid != currentProcessedRoomUuid) {
+              Log.d(TAG, "=== ROOM CHANGED VIA onRoomUpdated - REBUILDING ===")
+              Log.d(TAG, "  Old room: ${currentProcessedRoomUuid?.take(8)}")
+              Log.d(TAG, "  New room: ${roomUuid.take(8)}")
+              activityScope.launch {
+                rebuildForNewRoom(room, roomUuid)
+              }
+            }
         }
 
         override fun onRoomRemoved(room: MRUKRoom) {
