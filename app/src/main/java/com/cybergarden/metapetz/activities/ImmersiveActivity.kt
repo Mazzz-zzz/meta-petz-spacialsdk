@@ -365,13 +365,15 @@ class ImmersiveActivity : AppSystemActivity() {
       // Only accumulate trigger button points when pet is NOT attentive (idle)
       isAttentive = { isPetAttentive }
       // Play bone sound when cumulative displacement threshold reached
-      onClapDetected = {
+      // isHandClap: true = hand clap gesture, false = controller trigger
+      onClapDetected = { isHandClap ->
         val headPos = getHeadEntity()?.tryGetComponent<Transform>()?.transform?.t
         if (headPos != null) {
           boneSoundPlayer.play(headPos, 1.0f, false)
         }
-        Log.d(TAG, "CLAP TRIGGERED! Playing bone sound and getting attention")
-        callPetAttention()
+        Log.d(TAG, "CLAP TRIGGERED! isHandClap=$isHandClap - Playing bone sound and getting attention")
+        // Only play whistle for hand claps, not controller triggers
+        callPetAttention(silent = !isHandClap)
       }
       // Raise hand gesture triggers sit command (only when pet is attentive)
       onRaiseHandDetected = {

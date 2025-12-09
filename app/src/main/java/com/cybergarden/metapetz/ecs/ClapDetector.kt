@@ -94,7 +94,8 @@ class ClapDetector(
         private set
 
     // Callback when clap is detected
-    var onClapDetected: (() -> Unit)? = null
+    // Boolean parameter: true = hand clap, false = controller trigger
+    var onClapDetected: ((Boolean) -> Unit)? = null
 
     // Callback when raise hand gesture is detected (for sit command)
     var onRaiseHandDetected: (() -> Unit)? = null
@@ -261,8 +262,8 @@ class ClapDetector(
                     windowStartTimeMs = 0L
                     currentCumulative = 0f
 
-                    // Trigger callback
-                    onClapDetected?.invoke()
+                    // Trigger callback (true = hand clap)
+                    onClapDetected?.invoke(true)
                 }
             }
 
@@ -348,7 +349,8 @@ class ClapDetector(
                 cumulativeDisplacement = 0f
                 windowStartTimeMs = 0L
                 currentCumulative = 0f
-                onClapDetected?.invoke()
+                // false = controller trigger (not hand clap)
+                onClapDetected?.invoke(false)
             }
         }
 
