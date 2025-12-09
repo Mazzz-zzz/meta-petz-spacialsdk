@@ -2082,6 +2082,8 @@ class ImmersiveActivity : AppSystemActivity() {
         // Process room on background thread to avoid UI jank
         activityScope.launch {
           processRoomAnchors(currentRoom, roomUuid)
+          // Teleport pet to walkable area in new room (if pet exists)
+          teleportPetToNewRoom()
         }
       } else {
         Log.e(TAG, "MRUK load failed with result: $result")
